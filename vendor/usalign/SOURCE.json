@@ -1,0 +1,10 @@
+{
+  "download_utc": "2026-02-10T19:39:05Z",
+  "origin": {
+    "ref": "metric/usalign",
+    "type": "kaggle_dataset"
+  },
+  "sha256": {
+    "USalign": "d9ab2389b3b9c4943d898b04682a002fbb2b2816a1997a54611b28d05e99bd95"
+  }
+}

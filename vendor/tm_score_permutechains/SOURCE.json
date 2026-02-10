@@ -1,0 +1,10 @@
+{
+  "download_utc": "2026-02-10T19:39:04Z",
+  "origin": {
+    "ref": "rhijudas/tm-score-permutechains",
+    "type": "kaggle_kernel_output"
+  },
+  "sha256": {
+    "metric.py": "f8661dc6a79bb6ab757fc348574207e7be7d4630dc9969b563094b862f0a3314"
+  }
+}

@@ -1,0 +1,15 @@
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data (never commit competition artifacts)
+/input/
+/data/
+/runs/
+
+# Vendored binaries (downloaded locally)
+/vendor/usalign/USalign
+/vendor/usalign/*.zip
