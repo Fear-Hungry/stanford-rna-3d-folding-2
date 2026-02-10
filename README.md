@@ -37,6 +37,27 @@ Notas:
 - Se a submissao divergir do `sample_submission` (colunas, chaves, duplicatas, nulos), o fluxo falha imediatamente com erro acionavel no padrao do `AGENTS.md`.
 - `data/`, `input/` e `runs/` sao ignorados pelo git (artefatos locais).
 
+## Benchmark e diagnostico (CASP16)
+
+O artigo **Assessment of nucleic acid structure prediction in CASP16** sera a nossa referencia oficial para **benchmark e diagnostico** (alem de um score unico).
+
+Aplicacao pratica neste repositorio:
+- metrica primaria alinhada ao Kaggle (score local identico ao Kaggle);
+- protocolo de comparacao e diagnostico reprodutivel, inspirado nos tipos de falha observados em CASP16.
+
+Runbook e template: `benchmarks/CASP16.md`.
+
+## Template-aware + RNAPro (implementado)
+
+O pipeline modular do artigo 1 (ver `PLANS.md` / `PLAN-002`) esta implementado e exposto na CLI:
+- `build-template-db` -> `retrieve-templates` -> `predict-tbm`
+- `train-rnapro` -> `predict-rnapro` -> `ensemble-predict`
+- `export-submission` -> `check-submission` -> `submit-kaggle` (com gating estrito)
+
+Observacoes:
+- Para rodar em dados reais, e necessario fornecer uma base externa de templates (entrada `--external-templates`) e respeitar cutoff temporal sem fallback.
+- A integracao tecnica esta coberta por testes sinteticos; qualidade/score deve ser validado via `benchmarks/CASP16.md` antes de qualquer submissao.
+
 ## (Opcional) CV em `train` (splits por cluster)
 
 Para criar splits deterministicas e um dataset de score local por fold (usando a mesma metrica):
