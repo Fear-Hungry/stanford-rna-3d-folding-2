@@ -5,6 +5,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Editable installs / build artifacts
+*.egg-info/
+
 # Data (never commit competition artifacts)
 /input/
 /data/
