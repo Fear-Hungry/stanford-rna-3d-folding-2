@@ -5,20 +5,31 @@ from pathlib import Path
 
 import polars as pl
 
+from .bigdata import (
+    DEFAULT_MAX_ROWS_IN_MEMORY,
+    DEFAULT_MEMORY_BUDGET_MB,
+    TableReadConfig,
+    assert_memory_budget,
+    assert_row_budget,
+    collect_streaming,
+    scan_table,
+)
 from .contracts import validate_submission_against_sample
 from .errors import raise_error
 
 
 def _read_frame(path: Path, *, location: str) -> pl.DataFrame:
-    if not path.exists():
-        raise_error("EXPORT", location, "arquivo nao encontrado", impact="1", examples=[str(path)])
-    suffix = path.suffix.lower()
-    if suffix == ".parquet":
-        return pl.read_parquet(path)
-    if suffix == ".csv":
-        return pl.read_csv(path, infer_schema_length=1000)
-    raise_error("EXPORT", location, "formato nao suportado (csv/parquet)", impact="1", examples=[str(path)])
-    raise AssertionError("unreachable")
+    return collect_streaming(
+        lf=scan_table(
+            config=TableReadConfig(
+                path=path,
+                stage="EXPORT",
+                location=location,
+            )
+        ),
+        stage="EXPORT",
+        location=location,
+    )
 
 
 def _extract_model_ids(sample_cols: list[str], *, location: str) -> list[int]:
@@ -49,13 +60,26 @@ def export_submission_from_long(
     sample_submission_path: Path,
     predictions_long_path: Path,
     out_submission_path: Path,
+    memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
+    max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> Path:
     """
     Export strict Kaggle-format submission from long predictions:
     expected columns in long file: ID,resid,resname,model_id,x,y,z
     """
     location = "src/rna3d_local/export.py:export_submission_from_long"
-    sample = pl.read_csv(sample_submission_path, infer_schema_length=1000)
+    assert_memory_budget(stage="EXPORT", location=location, budget_mb=memory_budget_mb)
+    sample = collect_streaming(
+        lf=scan_table(
+            config=TableReadConfig(
+                path=sample_submission_path,
+                stage="EXPORT",
+                location=location,
+            )
+        ),
+        stage="EXPORT",
+        location=location,
+    )
     required_sample = ["ID", "resname", "resid"]
     miss = [c for c in required_sample if c not in sample.columns]
     if miss:
@@ -63,6 +87,13 @@ def export_submission_from_long(
 
     model_ids = _extract_model_ids(sample.columns, location=location)
     preds = _read_frame(predictions_long_path, location=location)
+    assert_row_budget(
+        stage="EXPORT",
+        location=location,
+        rows=int(sample.height + preds.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="sample+predictions_long",
+    )
     required_preds = ["ID", "resid", "resname", "model_id", "x", "y", "z"]
     miss_preds = [c for c in required_preds if c not in preds.columns]
     if miss_preds:
@@ -93,19 +124,33 @@ def export_submission_from_long(
             examples=[f"expected={model_ids}", f"found={found_models}"],
         )
 
-    key_pairs = set(preds.select("ID", "model_id").iter_rows())
-    expected_pairs = {(r["ID"], mid) for r in sample.select("ID").to_dicts() for mid in model_ids}
-    missing = sorted(expected_pairs - key_pairs)
-    extra = sorted(key_pairs - expected_pairs)
-    if missing or extra:
-        examples = [f"missing:{x[0]}:{x[1]}" for x in missing[:4]] + [f"extra:{x[0]}:{x[1]}" for x in extra[:4]]
+    sample_ids = sample.select(pl.col("ID").cast(pl.Utf8)).unique()
+    pred_ids = preds.select("ID").unique()
+    missing_id_df = sample_ids.join(pred_ids, on="ID", how="anti")
+    extra_id_df = pred_ids.join(sample_ids, on="ID", how="anti")
+    if missing_id_df.height > 0 or extra_id_df.height > 0:
+        examples = [f"missing_id:{r[0]}" for r in missing_id_df.head(4).iter_rows()] + [f"extra_id:{r[0]}" for r in extra_id_df.head(4).iter_rows()]
         raise_error(
             "EXPORT",
             location,
-            "chaves da predicao nao batem com sample",
-            impact=f"missing={len(missing)} extra={len(extra)}",
+            "IDs da predicao nao batem com sample",
+            impact=f"missing={int(missing_id_df.height)} extra={int(extra_id_df.height)}",
             examples=examples,
         )
+    # Per-model key validation with anti-joins avoids building huge cross-product sets in Python.
+    for mid in model_ids:
+        pred_mid = preds.filter(pl.col("model_id") == mid).select("ID").unique()
+        missing_mid = sample_ids.join(pred_mid, on="ID", how="anti")
+        extra_mid = pred_mid.join(sample_ids, on="ID", how="anti")
+        if missing_mid.height > 0 or extra_mid.height > 0:
+            ex = [f"missing:{r[0]}:{mid}" for r in missing_mid.head(4).iter_rows()] + [f"extra:{r[0]}:{mid}" for r in extra_mid.head(4).iter_rows()]
+            raise_error(
+                "EXPORT",
+                location,
+                "chaves da predicao nao batem com sample por modelo",
+                impact=f"missing={int(missing_mid.height)} extra={int(extra_mid.height)} model_id={mid}",
+                examples=ex,
+            )
 
     sample_meta = sample.select(pl.col("ID").cast(pl.Utf8), pl.col("resname").cast(pl.Utf8), pl.col("resid").cast(pl.Int32))
     merged = preds.join(sample_meta, on="ID", how="inner", suffix="_sample")
@@ -135,6 +180,7 @@ def export_submission_from_long(
             impact=str(int(null_rows.sum())),
             examples=bad,
         )
+    assert_memory_budget(stage="EXPORT", location=location, budget_mb=memory_budget_mb)
 
     out = out.select(sample.columns)
     out_submission_path.parent.mkdir(parents=True, exist_ok=True)

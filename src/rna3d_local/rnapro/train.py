@@ -8,6 +8,14 @@ import numpy as np
 import polars as pl
 import xxhash
 
+from ..bigdata import (
+    DEFAULT_MAX_ROWS_IN_MEMORY,
+    DEFAULT_MEMORY_BUDGET_MB,
+    LabelStoreConfig,
+    assert_memory_budget,
+    assert_row_budget,
+    scan_labels,
+)
 from ..errors import raise_error
 from ..utils import sha256_file
 from .config import RnaProConfig
@@ -26,7 +34,7 @@ def _rel(path: Path, root: Path) -> str:
 
 def _hash_kmer_features(seq: str, *, k: int, dim: int, seed: int) -> np.ndarray:
     s = (seq or "").strip().upper()
-    arr = np.zeros(dim, dtype=np.float64)
+    arr = np.zeros(dim, dtype=np.float32)
     if len(s) == 0:
         return arr
     if len(s) < k:
@@ -46,9 +54,11 @@ def train_rnapro(
     *,
     repo_root: Path,
     train_sequences_path: Path,
-    train_labels_path: Path,
+    train_labels_parquet_dir: Path,
     out_dir: Path,
     config: RnaProConfig,
+    memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
+    max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> Path:
     """
     Train a lightweight RNAPro proxy model:
@@ -56,7 +66,8 @@ def train_rnapro(
     - persists training coordinates for nearest-neighbor inference
     """
     location = "src/rna3d_local/rnapro/train.py:train_rnapro"
-    for p in (train_sequences_path, train_labels_path):
+    assert_memory_budget(stage="RNAPRO_TRAIN", location=location, budget_mb=memory_budget_mb)
+    for p in (train_sequences_path,):
         if not p.exists():
             raise_error("RNAPRO_TRAIN", location, "arquivo obrigatorio ausente", impact="1", examples=[str(p)])
     try:
@@ -65,6 +76,13 @@ def train_rnapro(
         raise_error("RNAPRO_TRAIN", location, "config invalida", impact="1", examples=[str(e)])
 
     seq_df = pl.read_csv(train_sequences_path, infer_schema_length=1000)
+    assert_row_budget(
+        stage="RNAPRO_TRAIN",
+        location=location,
+        rows=int(seq_df.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="train_sequences",
+    )
     required_seq = ["target_id", "sequence", "temporal_cutoff"]
     miss = [c for c in required_seq if c not in seq_df.columns]
     if miss:
@@ -100,18 +118,14 @@ def train_rnapro(
             examples=dup_targets[:8],
         )
 
-    scan = pl.scan_csv(train_labels_path, infer_schema_length=1000)
-    label_cols = scan.collect_schema().names()
-    required_labels = ["ID", "resid", "resname", "x_1", "y_1", "z_1"]
-    miss_labels = [c for c in required_labels if c not in label_cols]
-    if miss_labels:
-        raise_error(
-            "RNAPRO_TRAIN",
-            location,
-            "train_labels sem coluna obrigatoria",
-            impact=str(len(miss_labels)),
-            examples=miss_labels[:8],
+    scan = scan_labels(
+        config=LabelStoreConfig(
+            labels_parquet_dir=train_labels_parquet_dir,
+            required_columns=("ID", "resid", "resname", "x_1", "y_1", "z_1"),
+            stage="RNAPRO_TRAIN",
+            location=location,
         )
+    )
 
     train_ids = seq_df.get_column("target_id").to_list()
     labels_df = (
@@ -126,6 +140,13 @@ def train_rnapro(
             pl.col("z_1").cast(pl.Float64).alias("z"),
         )
         .collect(engine="streaming")
+    )
+    assert_row_budget(
+        stage="RNAPRO_TRAIN",
+        location=location,
+        rows=int(labels_df.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="train_labels_filtered",
     )
     if labels_df.height == 0:
         raise_error("RNAPRO_TRAIN", location, "nenhuma coordenada de treino encontrada", impact="0", examples=[])
@@ -142,20 +163,21 @@ def train_rnapro(
         )
 
     seq_sorted = seq_df.sort("target_id")
-    feats: list[dict] = []
     feat_cols = [f"f_{i}" for i in range(config.feature_dim)]
-    for row in seq_sorted.select("target_id", "sequence").to_dicts():
-        vec = _hash_kmer_features(
-            str(row["sequence"]),
+    target_ids_sorted: list[str] = []
+    feature_matrix = np.zeros((int(seq_sorted.height), config.feature_dim), dtype=np.float32)
+    for idx, (tid, seq) in enumerate(seq_sorted.select("target_id", "sequence").iter_rows()):
+        target_ids_sorted.append(str(tid))
+        feature_matrix[idx, :] = _hash_kmer_features(
+            str(seq),
             k=config.kmer_size,
             dim=config.feature_dim,
             seed=config.seed,
         )
-        out = {"target_id": str(row["target_id"])}
-        out.update({c: float(v) for c, v in zip(feat_cols, vec)})
-        feats.append(out)
-
-    features_df = pl.DataFrame(feats).sort("target_id")
+    features_df = pl.DataFrame(feature_matrix, schema=feat_cols).with_columns(pl.Series("target_id", target_ids_sorted)).select(
+        ["target_id", *feat_cols]
+    )
+    assert_memory_budget(stage="RNAPRO_TRAIN", location=location, budget_mb=memory_budget_mb)
     coords_df = labels_df.join(seq_df.select("target_id", "release_date"), on="target_id", how="inner").sort(
         ["target_id", "resid"]
     )
@@ -167,6 +189,7 @@ def train_rnapro(
     features_df.write_parquet(features_path)
     seq_sorted.write_parquet(seq_lookup_path)
     coords_df.write_parquet(coords_path)
+    assert_memory_budget(stage="RNAPRO_TRAIN", location=location, budget_mb=memory_budget_mb)
 
     model = {
         "created_utc": _utc_now(),

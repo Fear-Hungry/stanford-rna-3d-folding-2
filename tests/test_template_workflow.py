@@ -7,6 +7,7 @@ import polars as pl
 import pytest
 
 from rna3d_local.ensemble import blend_predictions
+from rna3d_local.datasets import prepare_train_labels_parquet
 from rna3d_local.errors import PipelineError
 from rna3d_local.export import export_submission_from_long
 from rna3d_local.gating import assert_submission_allowed
@@ -36,6 +37,7 @@ def _make_sample(path: Path, *, targets: dict[str, str], n_models: int) -> None:
 def _setup_small_dataset(tmp_path: Path) -> dict[str, Path]:
     train_sequences = tmp_path / "train_sequences.csv"
     train_labels = tmp_path / "train_labels.csv"
+    labels_parquet_dir = tmp_path / "labels_parquet"
     external_templates = tmp_path / "external_templates.csv"
     test_sequences = tmp_path / "test_sequences.csv"
     sample = tmp_path / "sample_submission.csv"
@@ -76,10 +78,17 @@ def _setup_small_dataset(tmp_path: Path) -> dict[str, Path]:
             {"target_id": "Q2", "sequence": "ACGA", "temporal_cutoff": "2022-01-01"},
         ],
     )
+    prepare_train_labels_parquet(
+        repo_root=tmp_path,
+        train_labels_csv=train_labels,
+        out_dir=labels_parquet_dir,
+        rows_per_file=4,
+        compression="zstd",
+    )
     _make_sample(sample, targets={"Q1": "ACGU", "Q2": "ACGA"}, n_models=2)
     return {
         "train_sequences": train_sequences,
-        "train_labels": train_labels,
+        "train_labels_parquet_dir": labels_parquet_dir,
         "external_templates": external_templates,
         "test_sequences": test_sequences,
         "sample": sample,
@@ -94,7 +103,7 @@ def test_tbm_rnapro_ensemble_export_and_gating(tmp_path: Path) -> None:
     build_template_db(
         repo_root=repo,
         train_sequences_path=paths["train_sequences"],
-        train_labels_path=paths["train_labels"],
+        train_labels_parquet_dir=paths["train_labels_parquet_dir"],
         external_templates_path=paths["external_templates"],
         out_dir=template_dir,
     )
@@ -124,7 +133,7 @@ def test_tbm_rnapro_ensemble_export_and_gating(tmp_path: Path) -> None:
     train_rnapro(
         repo_root=repo,
         train_sequences_path=paths["train_sequences"],
-        train_labels_path=paths["train_labels"],
+        train_labels_parquet_dir=paths["train_labels_parquet_dir"],
         out_dir=model_dir,
         config=RnaProConfig(n_models=2, feature_dim=32, kmer_size=2, seed=7, min_coverage=0.30),
     )
@@ -192,7 +201,7 @@ def test_retrieval_fails_when_temporal_filter_removes_all(tmp_path: Path) -> Non
     build_template_db(
         repo_root=repo,
         train_sequences_path=paths["train_sequences"],
-        train_labels_path=paths["train_labels"],
+        train_labels_parquet_dir=paths["train_labels_parquet_dir"],
         external_templates_path=paths["external_templates"],
         out_dir=template_dir,
     )

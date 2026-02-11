@@ -4,19 +4,30 @@ from pathlib import Path
 
 import polars as pl
 
+from .bigdata import (
+    DEFAULT_MAX_ROWS_IN_MEMORY,
+    DEFAULT_MEMORY_BUDGET_MB,
+    TableReadConfig,
+    assert_memory_budget,
+    assert_row_budget,
+    collect_streaming,
+    scan_table,
+)
 from .errors import raise_error
 
 
 def _read_predictions(path: Path, *, location: str) -> pl.DataFrame:
-    if not path.exists():
-        raise_error("ENSEMBLE", location, "arquivo nao encontrado", impact="1", examples=[str(path)])
-    suffix = path.suffix.lower()
-    if suffix == ".parquet":
-        return pl.read_parquet(path)
-    if suffix == ".csv":
-        return pl.read_csv(path, infer_schema_length=1000)
-    raise_error("ENSEMBLE", location, "formato nao suportado (csv/parquet)", impact="1", examples=[str(path)])
-    raise AssertionError("unreachable")
+    return collect_streaming(
+        lf=scan_table(
+            config=TableReadConfig(
+                path=path,
+                stage="ENSEMBLE",
+                location=location,
+            )
+        ),
+        stage="ENSEMBLE",
+        location=location,
+    )
 
 
 def blend_predictions(
@@ -26,6 +37,8 @@ def blend_predictions(
     out_path: Path,
     tbm_weight: float = 0.6,
     rnapro_weight: float = 0.4,
+    memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
+    max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> Path:
     """
     Deterministic blending of TBM and RNAPro predictions on exact (ID, model_id) keys.
@@ -42,9 +55,17 @@ def blend_predictions(
     denom = tbm_weight + rnapro_weight
     if denom <= 0:
         raise_error("ENSEMBLE", location, "soma dos pesos invalida", impact="1", examples=[str(denom)])
+    assert_memory_budget(stage="ENSEMBLE", location=location, budget_mb=memory_budget_mb)
 
     tbm = _read_predictions(tbm_predictions_path, location=location)
     rnp = _read_predictions(rnapro_predictions_path, location=location)
+    assert_row_budget(
+        stage="ENSEMBLE",
+        location=location,
+        rows=int(tbm.height + rnp.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="tbm+rnapro_predictions",
+    )
     required = ["ID", "model_id", "resid", "resname", "x", "y", "z"]
     for col in required:
         if col not in tbm.columns:
@@ -74,18 +95,20 @@ def blend_predictions(
             examples=ex.head(8).to_list(),
         )
 
-    tbm_keys = set(tbm.select("ID", "model_id").iter_rows())
-    rnp_keys = set(rnp.select("ID", "model_id").iter_rows())
-    missing = sorted(tbm_keys - rnp_keys)
-    extra = sorted(rnp_keys - tbm_keys)
-    if missing or extra:
-        examples = [f"missing:{k[0]}:{k[1]}" for k in missing[:4]] + [f"extra:{k[0]}:{k[1]}" for k in extra[:4]]
+    # Use anti-join to avoid materializing massive Python sets of keys.
+    tbm_keys = tbm.select("ID", "model_id").unique()
+    rnp_keys = rnp.select("ID", "model_id").unique()
+    missing_df = tbm_keys.join(rnp_keys, on=["ID", "model_id"], how="anti")
+    extra_df = rnp_keys.join(tbm_keys, on=["ID", "model_id"], how="anti")
+    if missing_df.height > 0 or extra_df.height > 0:
+        missing = [f"missing:{r[0]}:{r[1]}" for r in missing_df.head(4).iter_rows()]
+        extra = [f"extra:{r[0]}:{r[1]}" for r in extra_df.head(4).iter_rows()]
         raise_error(
             "ENSEMBLE",
             location,
             "chaves divergentes entre TBM e RNAPRO",
-            impact=f"missing={len(missing)} extra={len(extra)}",
-            examples=examples,
+            impact=f"missing={int(missing_df.height)} extra={int(extra_df.height)}",
+            examples=missing + extra,
         )
 
     merged = tbm.select(
@@ -130,8 +153,8 @@ def blend_predictions(
         ((pl.col("tbm_y") * tbm_weight + pl.col("rnp_y") * rnapro_weight) / denom).alias("y"),
         ((pl.col("tbm_z") * tbm_weight + pl.col("rnp_z") * rnapro_weight) / denom).alias("z"),
     ).with_columns(pl.col("ID").str.extract(r"^(.*)_\d+$", 1).alias("target_id"))
+    assert_memory_budget(stage="ENSEMBLE", location=location, budget_mb=memory_budget_mb)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out.sort(["target_id", "model_id", "resid"]).write_parquet(out_path)
     return out_path
-

@@ -7,6 +7,17 @@ from pathlib import Path
 
 import polars as pl
 
+from .bigdata import (
+    DEFAULT_MAX_ROWS_IN_MEMORY,
+    DEFAULT_MEMORY_BUDGET_MB,
+    LabelStoreConfig,
+    TableReadConfig,
+    assert_memory_budget,
+    assert_row_budget,
+    collect_streaming,
+    scan_labels,
+    scan_table,
+)
 from .errors import raise_error
 from .utils import sha256_file
 
@@ -30,21 +41,17 @@ class TemplateDbBuildResult:
 
 
 def _read_frame(path: Path, *, location: str) -> pl.DataFrame:
-    if not path.exists():
-        raise_error("TEMPLATE_DB", location, "arquivo nao encontrado", impact="1", examples=[str(path)])
-    suffix = path.suffix.lower()
-    if suffix == ".parquet":
-        return pl.read_parquet(path)
-    if suffix == ".csv":
-        return pl.read_csv(path, infer_schema_length=1000)
-    raise_error(
-        "TEMPLATE_DB",
-        location,
-        "formato nao suportado (use CSV ou Parquet)",
-        impact="1",
-        examples=[str(path)],
+    return collect_streaming(
+        lf=scan_table(
+            config=TableReadConfig(
+                path=path,
+                stage="TEMPLATE_DB",
+                location=location,
+            )
+        ),
+        stage="TEMPLATE_DB",
+        location=location,
     )
-    raise AssertionError("unreachable")
 
 
 def _validate_columns(df: pl.DataFrame, required: list[str], *, location: str, stage: str) -> None:
@@ -93,11 +100,19 @@ def _validate_non_nulls(df: pl.DataFrame, columns: list[str], *, location: str, 
 def _local_templates_from_train(
     *,
     train_sequences_path: Path,
-    train_labels_path: Path,
+    train_labels_parquet_dir: Path,
     max_train_templates: int | None,
     location: str,
+    max_rows_in_memory: int,
 ) -> pl.DataFrame:
     seq_df = pl.read_csv(train_sequences_path, infer_schema_length=1000)
+    assert_row_budget(
+        stage="TEMPLATE_DB",
+        location=location,
+        rows=int(seq_df.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="train_sequences",
+    )
     _validate_columns(
         seq_df,
         ["target_id", "sequence", "temporal_cutoff"],
@@ -128,18 +143,14 @@ def _local_templates_from_train(
         seq_df = seq_df.sort("target_id").head(max_train_templates)
 
     train_ids = seq_df.get_column("target_id").to_list()
-    scan = pl.scan_csv(train_labels_path, infer_schema_length=1000)
-    label_cols = scan.collect_schema().names()
-    required = ["ID", "resname", "resid", "x_1", "y_1", "z_1"]
-    missing = [c for c in required if c not in label_cols]
-    if missing:
-        raise_error(
-            "TEMPLATE_DB",
-            location,
-            "train_labels sem colunas obrigatorias",
-            impact=str(len(missing)),
-            examples=missing[:8],
+    scan = scan_labels(
+        config=LabelStoreConfig(
+            labels_parquet_dir=train_labels_parquet_dir,
+            required_columns=("ID", "resname", "resid", "x_1", "y_1", "z_1"),
+            stage="TEMPLATE_DB",
+            location=location,
         )
+    )
 
     labels = (
         scan.with_columns(pl.col("ID").cast(pl.Utf8).str.extract(r"^(.*)_\d+$", 1).alias("template_id"))
@@ -153,6 +164,13 @@ def _local_templates_from_train(
             pl.col("z_1").cast(pl.Float64).alias("z"),
         )
         .collect(engine="streaming")
+    )
+    assert_row_budget(
+        stage="TEMPLATE_DB",
+        location=location,
+        rows=int(labels.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="train_labels_filtered",
     )
     if labels.height == 0:
         raise_error("TEMPLATE_DB", location, "nenhuma coordenada local encontrada", impact="0", examples=[])
@@ -188,8 +206,16 @@ def _external_templates(
     *,
     external_templates_path: Path,
     location: str,
+    max_rows_in_memory: int,
 ) -> pl.DataFrame:
     df = _read_frame(external_templates_path, location=location)
+    assert_row_budget(
+        stage="TEMPLATE_DB",
+        location=location,
+        rows=int(df.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="external_templates",
+    )
     required = ["template_id", "sequence", "release_date", "resid", "resname", "x", "y", "z"]
     _validate_columns(df, required, location=location, stage="TEMPLATE_DB")
     if "source" not in df.columns:
@@ -225,28 +251,43 @@ def build_template_db(
     *,
     repo_root: Path,
     train_sequences_path: Path,
-    train_labels_path: Path,
     external_templates_path: Path,
     out_dir: Path,
+    train_labels_parquet_dir: Path,
     max_train_templates: int | None = None,
+    memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
+    max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> TemplateDbBuildResult:
     """
     Build a strict, temporal-aware template database combining local Kaggle train and external templates.
     """
     location = "src/rna3d_local/template_db.py:build_template_db"
-    for p in (train_sequences_path, train_labels_path, external_templates_path):
+    assert_memory_budget(stage="TEMPLATE_DB", location=location, budget_mb=memory_budget_mb)
+    for p in (train_sequences_path, external_templates_path):
         if not p.exists():
             raise_error("TEMPLATE_DB", location, "arquivo obrigatorio ausente", impact="1", examples=[str(p)])
 
     local_df = _local_templates_from_train(
         train_sequences_path=train_sequences_path,
-        train_labels_path=train_labels_path,
+        train_labels_parquet_dir=train_labels_parquet_dir,
         max_train_templates=max_train_templates,
         location=location,
+        max_rows_in_memory=max_rows_in_memory,
     )
-    ext_df = _external_templates(external_templates_path=external_templates_path, location=location)
+    ext_df = _external_templates(
+        external_templates_path=external_templates_path,
+        location=location,
+        max_rows_in_memory=max_rows_in_memory,
+    )
 
     all_df = pl.concat([local_df, ext_df], how="vertical_relaxed")
+    assert_row_budget(
+        stage="TEMPLATE_DB",
+        location=location,
+        rows=int(all_df.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="all_templates",
+    )
     _validate_non_nulls(
         all_df,
         ["template_uid", "template_id", "source", "sequence", "release_date", "resid", "resname", "x", "y", "z"],
@@ -281,6 +322,7 @@ def build_template_db(
     )
     index_path = out_dir / "template_index.parquet"
     idx.write_parquet(index_path)
+    assert_memory_budget(stage="TEMPLATE_DB", location=location, budget_mb=memory_budget_mb)
 
     manifest = {
         "created_utc": _utc_now(),
@@ -290,7 +332,7 @@ def build_template_db(
             "templates": _rel(templates_path, repo_root),
             "template_index": _rel(index_path, repo_root),
             "train_sequences": _rel(train_sequences_path, repo_root),
-            "train_labels": _rel(train_labels_path, repo_root),
+            "train_labels_parquet_dir": _rel(train_labels_parquet_dir, repo_root),
             "external_templates": _rel(external_templates_path, repo_root),
         },
         "sha256": {

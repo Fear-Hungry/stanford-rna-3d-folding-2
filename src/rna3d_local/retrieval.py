@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import json
+import heapq
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import polars as pl
 
+from .bigdata import (
+    DEFAULT_MAX_ROWS_IN_MEMORY,
+    DEFAULT_MEMORY_BUDGET_MB,
+    TableReadConfig,
+    assert_memory_budget,
+    assert_row_budget,
+    collect_streaming,
+    scan_table,
+)
 from .errors import raise_error
 from .utils import sha256_file
 
@@ -52,11 +64,15 @@ def retrieve_template_candidates(
     out_path: Path,
     top_k: int = 20,
     kmer_size: int = 3,
+    chunk_size: int = 200_000,
+    memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
+    max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> RetrievalResult:
     """
     Retrieve top-k template candidates per target with strict temporal filtering.
     """
     location = "src/rna3d_local/retrieval.py:retrieve_template_candidates"
+    assert_memory_budget(stage="RETRIEVAL", location=location, budget_mb=memory_budget_mb)
     for p in (template_index_path, target_sequences_path):
         if not p.exists():
             raise_error("RETRIEVAL", location, "arquivo obrigatorio ausente", impact="1", examples=[str(p)])
@@ -64,11 +80,21 @@ def retrieve_template_candidates(
         raise_error("RETRIEVAL", location, "top_k deve ser > 0", impact="1", examples=[str(top_k)])
     if kmer_size <= 0:
         raise_error("RETRIEVAL", location, "kmer_size deve ser > 0", impact="1", examples=[str(kmer_size)])
+    if chunk_size <= 0:
+        raise_error("RETRIEVAL", location, "chunk_size deve ser > 0", impact="1", examples=[str(chunk_size)])
 
-    idx = pl.read_parquet(template_index_path)
-    for col in ("template_uid", "template_id", "source", "sequence", "release_date"):
-        if col not in idx.columns:
-            raise_error("RETRIEVAL", location, "template_index sem coluna obrigatoria", impact="1", examples=[col])
+    idx = collect_streaming(
+        lf=scan_table(
+            config=TableReadConfig(
+                path=template_index_path,
+                stage="RETRIEVAL",
+                location=location,
+                columns=("template_uid", "template_id", "source", "sequence", "release_date"),
+            )
+        ),
+        stage="RETRIEVAL",
+        location=location,
+    )
     idx = idx.with_columns(
         pl.col("template_uid").cast(pl.Utf8),
         pl.col("template_id").cast(pl.Utf8),
@@ -84,11 +110,26 @@ def retrieve_template_candidates(
             impact=str(int(idx.get_column("release_date").null_count())),
             examples=[],
         )
+    assert_row_budget(
+        stage="RETRIEVAL",
+        location=location,
+        rows=int(idx.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="template_index",
+    )
 
-    tgt = pl.read_csv(target_sequences_path, infer_schema_length=1000)
-    for col in ("target_id", "sequence", "temporal_cutoff"):
-        if col not in tgt.columns:
-            raise_error("RETRIEVAL", location, "target_sequences sem coluna obrigatoria", impact="1", examples=[col])
+    tgt = collect_streaming(
+        lf=scan_table(
+            config=TableReadConfig(
+                path=target_sequences_path,
+                stage="RETRIEVAL",
+                location=location,
+                columns=("target_id", "sequence", "temporal_cutoff"),
+            )
+        ),
+        stage="RETRIEVAL",
+        location=location,
+    )
     tgt = tgt.with_columns(
         pl.col("target_id").cast(pl.Utf8),
         pl.col("sequence").cast(pl.Utf8),
@@ -103,64 +144,116 @@ def retrieve_template_candidates(
             impact=str(int(tgt.get_column("temporal_cutoff").null_count())),
             examples=bad,
         )
+    assert_row_budget(
+        stage="RETRIEVAL",
+        location=location,
+        rows=int(idx.height + tgt.height),
+        max_rows_in_memory=max_rows_in_memory,
+        label="template_index+targets",
+    )
 
-    idx_rows = idx.select("template_uid", "template_id", "source", "sequence", "release_date").to_dicts()
-    rows: list[dict] = []
-    no_candidates: list[str] = []
-    for target in tgt.select("target_id", "sequence", "temporal_cutoff").to_dicts():
-        tid = str(target["target_id"])
-        seq = str(target["sequence"])
-        cutoff = target["temporal_cutoff"]
-        if cutoff is None:
-            raise_error("RETRIEVAL", location, "temporal_cutoff nulo apos cast", impact="1", examples=[tid])
-
-        target_kmers = _kmer_set(seq, kmer_size)
-        scored: list[tuple[float, str, str, str, object]] = []
-        for tpl in idx_rows:
-            if tpl["release_date"] is None or tpl["release_date"] > cutoff:
-                continue
-            sim = _jaccard(target_kmers, _kmer_set(str(tpl["sequence"]), kmer_size))
-            scored.append(
-                (
-                    sim,
-                    str(tpl["template_uid"]),
-                    str(tpl["template_id"]),
-                    str(tpl["source"]),
-                    tpl["release_date"],
-                )
-            )
-        if not scored:
-            no_candidates.append(tid)
-            continue
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        for rank, (sim, template_uid, template_id, source, release_date) in enumerate(scored[:top_k], start=1):
-            rows.append(
-                {
-                    "target_id": tid,
-                    "template_uid": template_uid,
-                    "template_id": template_id,
-                    "source": source,
-                    "rank": rank,
-                    "similarity": float(sim),
-                    "template_release_date": release_date,
-                    "target_temporal_cutoff": cutoff,
-                }
-            )
-
-    if no_candidates:
-        raise_error(
-            "RETRIEVAL",
-            location,
-            "sem candidatos apos filtro temporal",
-            impact=str(len(no_candidates)),
-            examples=no_candidates[:8],
-        )
-    if not rows:
-        raise_error("RETRIEVAL", location, "nenhum candidato gerado", impact="0", examples=[])
-
+    idx_rows: list[tuple[str, str, str, object, set[str]]] = []
+    for uid, tid, source, seq, release_date in idx.select(
+        "template_uid",
+        "template_id",
+        "source",
+        "sequence",
+        "release_date",
+    ).iter_rows():
+        idx_rows.append((str(uid), str(tid), str(source), release_date, _kmer_set(str(seq), kmer_size)))
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_df = pl.DataFrame(rows).sort(["target_id", "rank"])
-    out_df.write_parquet(out_path)
+    tmp_out_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    if tmp_out_path.exists():
+        tmp_out_path.unlink()
+    writer: pq.ParquetWriter | None = None
+    buffer: list[dict] = []
+    rows_written = 0
+    targets_written: set[str] = set()
+    finalized = False
+
+    def _flush() -> None:
+        nonlocal writer, rows_written
+        if not buffer:
+            return
+        table = pa.Table.from_pylist(buffer)
+        if writer is None:
+            writer = pq.ParquetWriter(str(tmp_out_path), table.schema, compression="zstd")
+        writer.write_table(table)
+        rows_written += len(buffer)
+        buffer.clear()
+
+    no_candidates_count = 0
+    no_candidates_examples: list[str] = []
+    try:
+        for tid, seq, cutoff in tgt.select("target_id", "sequence", "temporal_cutoff").sort("target_id").iter_rows():
+            tid = str(tid)
+            seq = str(seq)
+            if cutoff is None:
+                raise_error("RETRIEVAL", location, "temporal_cutoff nulo apos cast", impact="1", examples=[tid])
+
+            target_kmers = _kmer_set(seq, kmer_size)
+            top_heap: list[tuple[float, str, str, str, object]] = []
+            candidate_count = 0
+            for template_uid, template_id, source, release_date, tpl_kmers in idx_rows:
+                if release_date is None or release_date > cutoff:
+                    continue
+                candidate_count += 1
+                item = (_jaccard(target_kmers, tpl_kmers), template_uid, template_id, source, release_date)
+                if len(top_heap) < top_k:
+                    heapq.heappush(top_heap, item)
+                elif item > top_heap[0]:
+                    heapq.heapreplace(top_heap, item)
+
+            if candidate_count == 0:
+                no_candidates_count += 1
+                if len(no_candidates_examples) < 8:
+                    no_candidates_examples.append(tid)
+                continue
+
+            top_ranked = sorted(top_heap, key=lambda x: (-x[0], x[1]))
+            for rank, (sim, template_uid, template_id, source, release_date) in enumerate(top_ranked, start=1):
+                buffer.append(
+                    {
+                        "target_id": tid,
+                        "template_uid": template_uid,
+                        "template_id": template_id,
+                        "source": source,
+                        "rank": rank,
+                        "similarity": float(sim),
+                        "template_release_date": release_date,
+                        "target_temporal_cutoff": cutoff,
+                    }
+                )
+            targets_written.add(tid)
+            if len(buffer) >= chunk_size:
+                _flush()
+                assert_memory_budget(stage="RETRIEVAL", location=location, budget_mb=memory_budget_mb)
+
+        _flush()
+        if writer is not None:
+            writer.close()
+            writer = None
+        assert_memory_budget(stage="RETRIEVAL", location=location, budget_mb=memory_budget_mb)
+
+        if no_candidates_count > 0:
+            raise_error(
+                "RETRIEVAL",
+                location,
+                "sem candidatos apos filtro temporal",
+                impact=str(no_candidates_count),
+                examples=no_candidates_examples,
+            )
+        if rows_written == 0:
+            raise_error("RETRIEVAL", location, "nenhum candidato gerado", impact="0", examples=[])
+        if out_path.exists():
+            out_path.unlink()
+        tmp_out_path.replace(out_path)
+        finalized = True
+    finally:
+        if writer is not None:
+            writer.close()
+        if not finalized and tmp_out_path.exists():
+            tmp_out_path.unlink()
 
     manifest = {
         "created_utc": _utc_now(),
@@ -170,7 +263,7 @@ def retrieve_template_candidates(
             "candidates": _rel(out_path, repo_root),
         },
         "params": {"top_k": top_k, "kmer_size": kmer_size},
-        "stats": {"n_rows": int(out_df.height), "n_targets": int(out_df.get_column("target_id").n_unique())},
+        "stats": {"n_rows": int(rows_written), "n_targets": int(len(targets_written)), "chunk_size": int(chunk_size)},
         "sha256": {"candidates.parquet": sha256_file(out_path)},
     }
     manifest_path = out_path.parent / "retrieval_manifest.json"

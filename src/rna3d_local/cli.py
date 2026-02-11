@@ -6,6 +6,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+import polars as pl
+
+from .bigdata import DEFAULT_MAX_ROWS_IN_MEMORY, DEFAULT_MEMORY_BUDGET_MB, TableReadConfig, collect_streaming, scan_table
 from .contracts import validate_submission_against_sample
 from .datasets import (
     build_public_validation_dataset,
@@ -13,6 +16,7 @@ from .datasets import (
     build_train_cv_fold_dataset,
     export_train_solution_for_targets,
     make_sample_submission_for_targets,
+    prepare_train_labels_parquet,
 )
 from .download import download_competition_files
 from .ensemble import blend_predictions
@@ -49,6 +53,26 @@ def _rel_or_abs(path: Path, repo: Path) -> str:
         return str(path.relative_to(repo))
     except ValueError:
         return str(path)
+
+
+def _target_ids_for_fold(*, targets_path: Path, fold_id: int, stage: str, location: str) -> list[str]:
+    lf = scan_table(
+        config=TableReadConfig(
+            path=targets_path,
+            stage=stage,
+            location=location,
+            columns=("target_id", "fold_id"),
+        )
+    )
+    out = collect_streaming(
+        lf=lf.filter(pl.col("fold_id") == int(fold_id)).select(pl.col("target_id").cast(pl.Utf8)),
+        stage=stage,
+        location=location,
+    )
+    target_ids = out.get_column("target_id").to_list()
+    if not target_ids:
+        raise_error(stage, location, "fold sem targets", impact="0", examples=[str(fold_id)])
+    return target_ids
 
 
 def _cmd_download(args: argparse.Namespace) -> int:
@@ -92,11 +116,27 @@ def _cmd_build_dataset(args: argparse.Namespace) -> int:
             k=args.k,
             n_hashes=args.n_hashes,
             bands=args.bands,
+            memory_budget_mb=int(args.memory_budget_mb),
+            max_rows_in_memory=int(args.max_rows_in_memory),
         )
         print(str(manifest))
         return 0
     raise_error("CLI", "src/rna3d_local/cli.py:_cmd_build_dataset", "tipo de dataset desconhecido", impact="1", examples=[args.type])
     raise AssertionError("unreachable")
+
+
+def _cmd_prepare_labels_parquet(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    manifest = prepare_train_labels_parquet(
+        repo_root=repo,
+        train_labels_csv=(repo / args.train_labels_csv).resolve(),
+        out_dir=(repo / args.out_dir).resolve(),
+        rows_per_file=int(args.rows_per_file),
+        compression=str(args.compression),
+        memory_budget_mb=int(args.memory_budget_mb),
+    )
+    print(str(manifest))
+    return 0
 
 
 def _cmd_build_train_fold(args: argparse.Namespace) -> int:
@@ -110,6 +150,8 @@ def _cmd_build_train_fold(args: argparse.Namespace) -> int:
         targets_parquet=targets_parquet,
         fold_id=int(args.fold),
         out_dir=out_dir,
+        train_labels_parquet_dir=(repo / args.train_labels_parquet_dir).resolve(),
+        memory_budget_mb=int(args.memory_budget_mb),
     )
     print(str(manifest))
     return 0
@@ -117,20 +159,22 @@ def _cmd_build_train_fold(args: argparse.Namespace) -> int:
 
 def _cmd_export_train_solution(args: argparse.Namespace) -> int:
     repo = _find_repo_root(Path.cwd())
-    input_dir = (repo / args.input).resolve()
     targets_path = (repo / args.targets).resolve()
     if not targets_path.exists():
         raise_error("DATA", "src/rna3d_local/cli.py:_cmd_export_train_solution", "targets.parquet nao encontrado", impact="1", examples=[str(targets_path)])
-    import polars as pl
-
-    df = pl.read_parquet(targets_path)
-    if "target_id" not in df.columns or "fold_id" not in df.columns:
-        raise_error("DATA", "src/rna3d_local/cli.py:_cmd_export_train_solution", "targets.parquet sem colunas esperadas", impact="1", examples=df.columns[:8])
-    target_ids = df.filter(pl.col("fold_id") == int(args.fold)).get_column("target_id").cast(pl.Utf8).to_list()
-    if not target_ids:
-        raise_error("DATA", "src/rna3d_local/cli.py:_cmd_export_train_solution", "fold sem targets", impact="0", examples=[str(args.fold)])
+    target_ids = _target_ids_for_fold(
+        targets_path=targets_path,
+        fold_id=int(args.fold),
+        stage="DATA",
+        location="src/rna3d_local/cli.py:_cmd_export_train_solution",
+    )
     out_path = (repo / args.out).resolve()
-    out = export_train_solution_for_targets(repo_root=repo, input_dir=input_dir, out_path=out_path, target_ids=target_ids)
+    out = export_train_solution_for_targets(
+        out_path=out_path,
+        target_ids=target_ids,
+        train_labels_parquet_dir=(repo / args.train_labels_parquet_dir).resolve(),
+        memory_budget_mb=int(args.memory_budget_mb),
+    )
     print(str(out))
     return 0
 
@@ -141,16 +185,19 @@ def _cmd_make_sample(args: argparse.Namespace) -> int:
     sequences_csv = (repo / args.sequences).resolve()
     if not targets_path.exists():
         raise_error("DATA", "src/rna3d_local/cli.py:_cmd_make_sample", "targets.parquet nao encontrado", impact="1", examples=[str(targets_path)])
-    import polars as pl
-
-    df = pl.read_parquet(targets_path)
-    if "target_id" not in df.columns or "fold_id" not in df.columns:
-        raise_error("DATA", "src/rna3d_local/cli.py:_cmd_make_sample", "targets.parquet sem colunas esperadas", impact="1", examples=df.columns[:8])
-    target_ids = df.filter(pl.col("fold_id") == int(args.fold)).get_column("target_id").cast(pl.Utf8).to_list()
-    if not target_ids:
-        raise_error("DATA", "src/rna3d_local/cli.py:_cmd_make_sample", "fold sem targets", impact="0", examples=[str(args.fold)])
+    target_ids = _target_ids_for_fold(
+        targets_path=targets_path,
+        fold_id=int(args.fold),
+        stage="DATA",
+        location="src/rna3d_local/cli.py:_cmd_make_sample",
+    )
     out_path = (repo / args.out).resolve()
-    out = make_sample_submission_for_targets(sequences_csv=sequences_csv, out_path=out_path, target_ids=target_ids)
+    out = make_sample_submission_for_targets(
+        sequences_csv=sequences_csv,
+        out_path=out_path,
+        target_ids=target_ids,
+        memory_budget_mb=int(args.memory_budget_mb),
+    )
     print(str(out))
     return 0
 
@@ -198,6 +245,9 @@ def _cmd_score(args: argparse.Namespace) -> int:
         usalign_bin=usalign_bin,
         per_target=bool(args.per_target),
         keep_tmp=bool(args.keep_tmp),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
+        chunk_size=int(args.chunk_size),
     )
 
     out_dir = (repo / args.out_dir).resolve()
@@ -214,10 +264,12 @@ def _cmd_build_template_db(args: argparse.Namespace) -> int:
     res = build_template_db(
         repo_root=repo,
         train_sequences_path=(repo / args.train_sequences).resolve(),
-        train_labels_path=(repo / args.train_labels).resolve(),
+        train_labels_parquet_dir=(repo / args.train_labels_parquet_dir).resolve(),
         external_templates_path=(repo / args.external_templates).resolve(),
         out_dir=(repo / args.out_dir).resolve(),
         max_train_templates=args.max_train_templates,
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(
         json.dumps(
@@ -242,6 +294,9 @@ def _cmd_retrieve_templates(args: argparse.Namespace) -> int:
         out_path=(repo / args.out).resolve(),
         top_k=int(args.top_k),
         kmer_size=int(args.kmer_size),
+        chunk_size=int(args.chunk_size),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(
         json.dumps(
@@ -266,6 +321,9 @@ def _cmd_predict_tbm(args: argparse.Namespace) -> int:
         out_path=(repo / args.out).resolve(),
         n_models=int(args.n_models),
         min_coverage=float(args.min_coverage),
+        chunk_size=int(args.chunk_size),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(
         json.dumps(
@@ -295,9 +353,11 @@ def _cmd_train_rnapro(args: argparse.Namespace) -> int:
     model_path = train_rnapro(
         repo_root=repo,
         train_sequences_path=(repo / args.train_sequences).resolve(),
-        train_labels_path=(repo / args.train_labels).resolve(),
+        train_labels_parquet_dir=(repo / args.train_labels_parquet_dir).resolve(),
         out_dir=out_dir,
         config=cfg,
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(json.dumps({"model": _rel_or_abs(model_path, repo)}, indent=2, sort_keys=True))
     return 0
@@ -312,6 +372,9 @@ def _cmd_predict_rnapro(args: argparse.Namespace) -> int:
         out_path=(repo / args.out).resolve(),
         n_models=None if args.n_models is None else int(args.n_models),
         min_coverage=None if args.min_coverage is None else float(args.min_coverage),
+        chunk_size=int(args.chunk_size),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(json.dumps({"predictions": _rel_or_abs(out, repo)}, indent=2, sort_keys=True))
     return 0
@@ -325,6 +388,8 @@ def _cmd_ensemble_predict(args: argparse.Namespace) -> int:
         out_path=(repo / args.out).resolve(),
         tbm_weight=float(args.tbm_weight),
         rnapro_weight=float(args.rnapro_weight),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(json.dumps({"predictions": _rel_or_abs(out, repo)}, indent=2, sort_keys=True))
     return 0
@@ -336,6 +401,8 @@ def _cmd_export_submission(args: argparse.Namespace) -> int:
         sample_submission_path=(repo / args.sample).resolve(),
         predictions_long_path=(repo / args.predictions).resolve(),
         out_submission_path=(repo / args.out).resolve(),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(json.dumps({"submission": _rel_or_abs(out, repo)}, indent=2, sort_keys=True))
     return 0
@@ -397,20 +464,33 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--k", type=int, default=5)
     b.add_argument("--n-hashes", type=int, default=32)
     b.add_argument("--bands", type=int, default=8)
+    b.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    b.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     b.set_defaults(fn=_cmd_build_dataset)
 
-    bf = sp.add_parser("build-train-fold", help="Build a scoring dataset for one CV fold (sample + solution + manifest)")
+    lp = sp.add_parser("prepare-labels-parquet", help="Convert train_labels.csv to canonical partitioned parquet")
+    lp.add_argument("--train-labels-csv", default="input/stanford-rna-3d-folding-2/train_labels.csv")
+    lp.add_argument("--out-dir", default="data/derived/train_labels_parquet")
+    lp.add_argument("--rows-per-file", type=int, default=2_000_000)
+    lp.add_argument("--compression", choices=["zstd", "snappy", "gzip", "brotli", "lz4", "none"], default="zstd")
+    lp.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    lp.set_defaults(fn=_cmd_prepare_labels_parquet)
+
+    bf = sp.add_parser("build-train-fold", help="Build a scoring dataset for one CV fold (sample + solution + manifest + target_sequences)")
     bf.add_argument("--input", default="input/stanford-rna-3d-folding-2")
     bf.add_argument("--targets", required=True, help="Path to targets.parquet from train_cv_targets dataset")
     bf.add_argument("--fold", type=int, required=True)
     bf.add_argument("--out", required=True)
+    bf.add_argument("--train-labels-parquet-dir", required=True, help="Canonical labels parquet dir (part-*.parquet)")
+    bf.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     bf.set_defaults(fn=_cmd_build_train_fold)
 
     e = sp.add_parser("export-train-solution", help="Export train_labels subset as wide solution (parquet)")
-    e.add_argument("--input", default="input/stanford-rna-3d-folding-2")
     e.add_argument("--targets", required=True, help="Path to targets.parquet from train_cv_targets dataset")
     e.add_argument("--fold", type=int, required=True)
     e.add_argument("--out", required=True)
+    e.add_argument("--train-labels-parquet-dir", required=True, help="Canonical labels parquet dir (part-*.parquet)")
+    e.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     e.set_defaults(fn=_cmd_export_train_solution)
 
     m = sp.add_parser("make-sample", help="Create sample_submission template for a CV fold (CSV)")
@@ -418,6 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--fold", type=int, required=True)
     m.add_argument("--sequences", required=True, help="train_sequences.csv (or other sequences CSV)")
     m.add_argument("--out", required=True)
+    m.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     m.set_defaults(fn=_cmd_make_sample)
 
     c = sp.add_parser("check-submission", help="Strict contract validation vs sample_submission")
@@ -432,14 +513,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out-dir", default="runs/auto")
     s.add_argument("--per-target", action="store_true")
     s.add_argument("--keep-tmp", action="store_true")
+    s.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    s.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
+    s.add_argument("--chunk-size", type=int, default=100_000)
     s.set_defaults(fn=_cmd_score)
 
     tdb = sp.add_parser("build-template-db", help="Build template database (local train + external templates)")
     tdb.add_argument("--train-sequences", default="input/stanford-rna-3d-folding-2/train_sequences.csv")
-    tdb.add_argument("--train-labels", default="input/stanford-rna-3d-folding-2/train_labels.csv")
+    tdb.add_argument("--train-labels-parquet-dir", required=True, help="Canonical labels parquet dir (part-*.parquet)")
     tdb.add_argument("--external-templates", required=True, help="CSV/Parquet with template_id,sequence,release_date,resid,resname,x,y,z")
     tdb.add_argument("--out-dir", default="data/derived/template_db")
     tdb.add_argument("--max-train-templates", type=int, default=None)
+    tdb.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    tdb.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     tdb.set_defaults(fn=_cmd_build_template_db)
 
     rt = sp.add_parser("retrieve-templates", help="Retrieve temporal-valid template candidates per target")
@@ -448,6 +534,9 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--out", default="data/derived/template_db/retrieval_candidates.parquet")
     rt.add_argument("--top-k", type=int, default=20)
     rt.add_argument("--kmer-size", type=int, default=3)
+    rt.add_argument("--chunk-size", type=int, default=200_000)
+    rt.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    rt.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     rt.set_defaults(fn=_cmd_retrieve_templates)
 
     pt = sp.add_parser("predict-tbm", help="Generate TBM predictions in long format")
@@ -457,17 +546,22 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--out", required=True)
     pt.add_argument("--n-models", type=int, default=5)
     pt.add_argument("--min-coverage", type=float, default=0.35)
+    pt.add_argument("--chunk-size", type=int, default=200_000)
+    pt.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    pt.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     pt.set_defaults(fn=_cmd_predict_tbm)
 
     tr = sp.add_parser("train-rnapro", help="Train RNAPro proxy model locally")
     tr.add_argument("--train-sequences", default="input/stanford-rna-3d-folding-2/train_sequences.csv")
-    tr.add_argument("--train-labels", default="input/stanford-rna-3d-folding-2/train_labels.csv")
+    tr.add_argument("--train-labels-parquet-dir", required=True, help="Canonical labels parquet dir (part-*.parquet)")
     tr.add_argument("--out-dir", default="runs/auto_rnapro")
     tr.add_argument("--feature-dim", type=int, default=256)
     tr.add_argument("--kmer-size", type=int, default=4)
     tr.add_argument("--n-models", type=int, default=5)
     tr.add_argument("--seed", type=int, default=123)
     tr.add_argument("--min-coverage", type=float, default=0.30)
+    tr.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    tr.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     tr.set_defaults(fn=_cmd_train_rnapro)
 
     ir = sp.add_parser("predict-rnapro", help="Run RNAPro inference in long format")
@@ -476,6 +570,9 @@ def build_parser() -> argparse.ArgumentParser:
     ir.add_argument("--out", required=True)
     ir.add_argument("--n-models", type=int, default=None)
     ir.add_argument("--min-coverage", type=float, default=None)
+    ir.add_argument("--chunk-size", type=int, default=200_000)
+    ir.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    ir.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     ir.set_defaults(fn=_cmd_predict_rnapro)
 
     ep = sp.add_parser("ensemble-predict", help="Blend TBM and RNAPro predictions")
@@ -484,12 +581,16 @@ def build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--out", required=True)
     ep.add_argument("--tbm-weight", type=float, default=0.6)
     ep.add_argument("--rnapro-weight", type=float, default=0.4)
+    ep.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    ep.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     ep.set_defaults(fn=_cmd_ensemble_predict)
 
     ex = sp.add_parser("export-submission", help="Export strict Kaggle submission from long predictions")
     ex.add_argument("--sample", default="input/stanford-rna-3d-folding-2/sample_submission.csv")
     ex.add_argument("--predictions", required=True)
     ex.add_argument("--out", required=True)
+    ex.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    ex.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     ex.set_defaults(fn=_cmd_export_submission)
 
     sk = sp.add_parser("submit-kaggle", help="Submit to Kaggle after strict local gating")
