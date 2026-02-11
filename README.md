@@ -37,6 +37,47 @@ Notas:
 - Se a submissao divergir do `sample_submission` (colunas, chaves, duplicatas, nulos), o fluxo falha imediatamente com erro acionavel no padrao do `AGENTS.md`.
 - `data/`, `input/` e `runs/` sao ignorados pelo git (artefatos locais).
 
+### Fluxo recomendado para evitar pico de RAM (labels canonicos em Parquet)
+
+Para cargas maiores, converta `train_labels.csv` uma vez para Parquet particionado e reuse esse artefato no pipeline:
+
+```bash
+# 0) Converter labels para formato colunar particionado
+python -m rna3d_local prepare-labels-parquet \
+  --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv \
+  --out-dir data/derived/train_labels_parquet \
+  --rows-per-file 2000000 \
+  --compression zstd
+
+# 1) Consumir parquet canonico no template_db e no treino RNAPro
+python -m rna3d_local build-template-db \
+  --train-labels-parquet-dir data/derived/train_labels_parquet \
+  --external-templates external_templates.csv
+
+python -m rna3d_local train-rnapro \
+  --train-labels-parquet-dir data/derived/train_labels_parquet \
+  --out-dir runs/auto_rnapro
+```
+
+Regra de seguranca:
+- `--train-labels-parquet-dir` e obrigatorio nos comandos consumidores de labels; se estiver invalido (sem `part-*.parquet`), o processo falha imediatamente.
+
+Consumidores diretos do artefato `data/derived/train_labels_parquet/`:
+- `build-template-db --train-labels-parquet-dir ...`
+- `train-rnapro --train-labels-parquet-dir ...`
+- `export-train-solution --train-labels-parquet-dir ...`
+- `build-train-fold --train-labels-parquet-dir ...`
+
+### Modulo unico reutilizavel de Big Data
+
+As praticas de processamento de dados grandes foram centralizadas em `src/rna3d_local/bigdata.py`, incluindo:
+- leitura lazy com projection/predicate pushdown (`scan_table`, `scan_labels`);
+- coleta em streaming (`collect_streaming`);
+- materializacao particionada em parquet (`sink_partitioned_parquet`);
+- guardrails de memoria/linhas (`assert_memory_budget`, `assert_row_budget`).
+
+Esse modulo e a API canonica para novos experimentos/treinos. `data_access.py` e `memory.py` permanecem apenas como wrappers de compatibilidade.
+
 ## Benchmark e diagnostico (CASP16)
 
 O artigo **Assessment of nucleic acid structure prediction in CASP16** sera a nossa referencia oficial para **benchmark e diagnostico** (alem de um score unico).
@@ -49,7 +90,11 @@ Runbook e template: `benchmarks/CASP16.md`.
 
 ## Template-aware + RNAPro (implementado)
 
-O pipeline modular do artigo 1 (ver `PLANS.md` / `PLAN-002`) esta implementado e exposto na CLI:
+O **Artigo 1** e o nosso **baseline/benchmark operacional** (ver `PLANS.md` / `PLAN-002` e `PLAN-011`): um pipeline completo template-aware + RNAPro proxy + ensemble que gera uma submissao valida e e avaliado com score local identico ao Kaggle.
+
+Runbook do baseline (comandos + configuracao): `benchmarks/ARTICLE1_BASELINE.md`.
+
+O pipeline modular do artigo 1 esta implementado e exposto na CLI:
 - `build-template-db` -> `retrieve-templates` -> `predict-tbm`
 - `train-rnapro` -> `predict-rnapro` -> `ensemble-predict`
 - `export-submission` -> `check-submission` -> `submit-kaggle` (com gating estrito)
@@ -69,16 +114,25 @@ python -m rna3d_local build-dataset --type train_cv_targets \
   --out data/derived/train_cv_targets \
   --n-folds 5 --seed 123
 
-# 2) Montar dataset de score para um fold especifico (sample + solution + manifest)
+# 2) Montar dataset de score para um fold especifico (sample + solution + manifest + target_sequences)
 python -m rna3d_local build-train-fold \
   --input input/stanford-rna-3d-folding-2 \
   --targets data/derived/train_cv_targets/targets.parquet \
   --fold 0 \
-  --out data/derived/train_cv/fold0
+  --out data/derived/train_cv/fold0 \
+  --train-labels-parquet-dir data/derived/train_labels_parquet
 
 # 3) Score do fold (submissao deve conter apenas as chaves do sample do fold)
-python -m rna3d_local score --dataset-dir data/derived/train_cv/fold0 --submission submission_fold0.csv
+python -m rna3d_local score \
+  --dataset-dir data/derived/train_cv/fold0 \
+  --submission submission_fold0.csv \
+  --chunk-size 100000 \
+  --max-rows-in-memory 1000000
 ```
+
+No scorer em lotes:
+- `--chunk-size` controla quantas linhas sao lidas por lote (CSV/Parquet);
+- `--max-rows-in-memory` limita o tamanho maximo de um target em memoria (fail-fast se exceder).
 
 ## Objetivo do repositorio
 
