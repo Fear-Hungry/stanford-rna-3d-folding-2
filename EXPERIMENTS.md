@@ -66,3 +66,345 @@ Log append-only de experimentos executados (UTC).
 - Conclusao + proximos passos:
   - CLI novo funcional em cadeia E2E.
   - Proximo passo: repetir o mesmo fluxo com base externa real e avaliar score local oficial antes de submit.
+
+## 2026-02-10T20:17:27Z - marcusvinicius/Codex - PLAN-003
+
+- Objetivo/hipotese:
+  - Verificar se o protocolo `benchmarks/CASP16.md` ja esta operacional em `public_validation` e `train_cv`, e remover bloqueio de formato em `solution.parquet`.
+- Comandos executados + configuracao efetiva:
+  - `python -m rna3d_local score --dataset public_validation --submission data/derived/public_validation/sample_submission.csv --per-target`
+  - `python -m rna3d_local score --dataset-dir data/derived/train_cv/fold0 --submission data/derived/train_cv/fold0/sample_submission.csv --per-target`
+  - `python -m pytest -q`
+- Parametros/hiperparametros efetivos:
+  - `score`: `per_target=true`
+- Seeds usadas:
+  - N/A (avaliacao/score)
+- Versao de codigo e dados:
+  - Git commit base: `e6abd58`
+  - Dados locais: `data/derived/public_validation`, `data/derived/train_cv/fold0`
+- Artefatos gerados:
+  - `runs/20260210_195847_score/score.json`
+  - `runs/20260210_195847_score/per_target.csv`
+- Metricas/resultado/custo:
+  - Public validation baseline: score `0.05522357142857143` (28 targets).
+  - `train_cv/fold0 --per-target`: apos correcao de leitura Parquet, execucao iniciou normalmente; interrompida manualmente por alto custo computacional.
+  - Suite de testes: `10 passed`.
+- Conclusao + proximos passos:
+  - Benchmark esta utilizavel agora para `public_validation`.
+  - Benchmark `train_cv` esta funcional, mas demanda janela de execucao longa para finalizar por fold.
+
+## 2026-02-10T22:07:13Z - marcusvinicius/Codex - ADHOC
+
+- Objetivo/hipotese:
+  - Validar benchmark longo sem OOM no host local e confirmar uso pratico do fluxo `PLAN-005` (labels canonicos em parquet) para reduzir pico de RAM nas etapas de dataset.
+- Comandos executados + configuracao efetiva:
+  - Benchmark de score local (modo seguro):
+    - `export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1`
+    - `ulimit -Sv 24000000`
+    - `python -m rna3d_local score --dataset-dir data/derived/train_cv/fold{0,1,3,4} --submission data/derived/train_cv/fold{0,1,3,4}/sample_submission.csv --per-target --out-dir runs/20260210_204413_benchmark_safe_v2/fold{0,1,3,4}`
+    - `python -m rna3d_local score --dataset-dir data/derived/train_cv/fold2 --submission data/derived/train_cv/fold2/sample_submission.csv --per-target --out-dir runs/20260210_204413_benchmark_safe_v2/fold2` (execucao longa)
+  - Validacao do fluxo `PLAN-005` em dados reais:
+    - `python -m rna3d_local prepare-labels-parquet --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv --out-dir data/derived/train_labels_parquet --rows-per-file 2000000 --compression zstd --memory-budget-mb 22000`
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 1 --out data/derived/train_cv/fold1_parquet_test --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 0 --out data/derived/train_cv/fold0_invalid_parquet_test --train-labels-parquet-dir data/derived/does_not_exist --memory-budget-mb 22000`
+  - Validacao de testes:
+    - `python -m pytest -q tests/test_scoring.py tests/test_contracts.py`
+    - `python -m pytest -q tests/test_labels_parquet.py tests/test_memory_guardrails.py`
+    - `python -m pytest -q`
+- Parametros/hiperparametros efetivos:
+  - `memory_budget_mb=22000` nos comandos de conversao/geracao de folds.
+  - `rows_per_file=2000000`, `compression=zstd` na conversao de labels.
+  - `per_target=true` no score.
+- Seeds usadas:
+  - N/A (avaliacao e preparacao de dados; sem treino estocastico nesta rodada).
+- Versao de codigo e dados:
+  - Git commit em uso: workspace dirty (sem commit novo durante a execucao).
+  - Dados: `input/stanford-rna-3d-folding-2/*`, `data/derived/train_cv/*`, `data/derived/train_cv_targets/targets.parquet`.
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260210_204413_benchmark_safe_v2/public_validation/{score.json,per_target.csv}`
+  - `runs/20260210_204413_benchmark_safe_v2/fold0/{score.json,per_target.csv}`
+  - `runs/20260210_204413_benchmark_safe_v2/fold1/{score.json,per_target.csv}`
+  - `runs/20260210_204413_benchmark_safe_v2/fold3/{score.json,per_target.csv}`
+  - `runs/20260210_204413_benchmark_safe_v2/fold4/{score.json,per_target.csv}`
+  - `runs/20260210_204413_benchmark_safe_v2/fold2/{stderr.log,time.log}` (sem score final no momento deste registro)
+  - Labels canonicos: `data/derived/train_labels_parquet/{manifest.json,part-00000.parquet..part-00003.parquet}`
+- Metricas/score obtidos e custo:
+  - `public_validation`: `0.05522357142857143`
+  - `fold0`: `0.03559048286604361`
+  - `fold1`: `0.03688683709869203`
+  - `fold3`: `0.03567008183306056`
+  - `fold4`: `0.03596440559440559`
+  - `fold2` (em execucao): pico observado ~`14.5 GB` RSS no processo Python com limite virtual `24 GB`, sem OOM ate o momento.
+  - `build-train-fold` via parquet (`fold1_parquet_test`): `/usr/bin/time -v` max RSS `1313312 kB` (~`1.31 GB`), status 0.
+  - Fail-fast validado: caminho parquet invalido aborta com erro acionavel, sem fallback.
+- Conclusao + proximos passos:
+  - O fluxo `PLAN-005` esta funcional em dados reais e reduz risco de OOM nas etapas de dataset/labels.
+  - Benchmark local longo esta estavel em memoria nos folds concluidos; consolidar resultado final do `fold2` assim que terminar para fechar baseline completo.
+
+## 2026-02-10T22:16:58Z - marcusvinicius/Codex - ADHOC
+
+- Objetivo/hipotese:
+  - Testar os novos modulos de otimizacao de dados (`prepare-labels-parquet`, leitura de labels via parquet canonico) e medir se ajudam em RAM/tempo nos comandos de dataset.
+- Comandos executados + configuracao efetiva:
+  - Validacao de testes dos modulos novos:
+    - `python -m pytest -q tests/test_labels_parquet.py tests/test_memory_guardrails.py tests/test_data_access.py`
+  - Comparativos CSV vs Parquet canônico (`/usr/bin/time -v`, `memory_budget_mb=22000`):
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/train_cv/fold2_csv_optcmp --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv --memory-budget-mb 22000`
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/train_cv/fold2_parquet_optcmp --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+    - `python -m rna3d_local export-train-solution --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/optcmp_solution_fold2_csv.parquet --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv --memory-budget-mb 22000`
+    - `python -m rna3d_local export-train-solution --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/optcmp_solution_fold2_parquet.parquet --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 1 --out data/derived/train_cv/fold1_csv_optcmp2 --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv --memory-budget-mb 22000`
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 1 --out data/derived/train_cv/fold1_parquet_optcmp2 --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+    - `python -m rna3d_local export-train-solution --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 0 --out data/derived/optcmp_solution_fold0_csv.parquet --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv --memory-budget-mb 22000`
+    - `python -m rna3d_local export-train-solution --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 0 --out data/derived/optcmp_solution_fold0_parquet.parquet --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+  - Benchmark de conversao (one-shot):
+    - `python -m rna3d_local prepare-labels-parquet --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv --out-dir data/derived/train_labels_parquet_bench --rows-per-file 2000000 --compression zstd --memory-budget-mb 22000`
+- Parametros e hiperparametros efetivos:
+  - `memory_budget_mb=22000`
+  - `rows_per_file=2000000`
+  - `compression=zstd`
+- Seeds usadas:
+  - N/A (pipeline de dados / benchmark de I/O e memoria).
+- Versao do codigo e dados:
+  - Codigo: commit base `1c3d8c5` com workspace em estado dirty (23 paths alterados locais).
+  - Dados: `input/stanford-rna-3d-folding-2/*`, `data/derived/train_cv_targets/targets.parquet`.
+- Artefatos gerados em `runs/` + logs:
+  - Logs de medicao:
+    - `runs/optcmp_plan005/build_fold2_csv.time`
+    - `runs/optcmp_plan005/build_fold2_parquet.time`
+    - `runs/optcmp_plan005/export_fold2_csv.time`
+    - `runs/optcmp_plan005/export_fold2_parquet.time`
+    - `runs/optcmp_plan005/build_fold1_csv.time`
+    - `runs/optcmp_plan005/build_fold1_parquet.time`
+    - `runs/optcmp_plan005/export_fold0_csv.time`
+    - `runs/optcmp_plan005/export_fold0_parquet.time`
+    - `runs/optcmp_plan005/prepare_labels.time`
+  - Artefatos de dados:
+    - `data/derived/train_labels_parquet_bench/manifest.json` + `part-00000..00003.parquet`
+    - `data/derived/train_cv/fold2_csv_optcmp/*`
+    - `data/derived/train_cv/fold2_parquet_optcmp/*`
+    - `data/derived/train_cv/fold1_csv_optcmp2/*`
+    - `data/derived/train_cv/fold1_parquet_optcmp2/*`
+    - `data/derived/optcmp_solution_fold2_csv.parquet`
+    - `data/derived/optcmp_solution_fold2_parquet.parquet`
+    - `data/derived/optcmp_solution_fold0_csv.parquet`
+    - `data/derived/optcmp_solution_fold0_parquet.parquet`
+- Metricas/score obtidos e custo:
+  - Testes dos modulos novos: `10 passed`.
+  - `build-train-fold` fold2:
+    - CSV: max RSS `15.019 GB`, elapsed `19.31 s`
+    - Parquet: max RSS `15.104 GB`, elapsed `19.42 s`
+  - `export-train-solution` fold2:
+    - CSV: max RSS `14.986 GB`, elapsed `5.92 s`
+    - Parquet: max RSS `15.102 GB`, elapsed `5.63 s`
+  - `build-train-fold` fold1:
+    - CSV: max RSS `0.969 GB`, elapsed `0.83 s`
+    - Parquet: max RSS `1.267 GB`, elapsed `0.78 s`
+  - `export-train-solution` fold0:
+    - CSV: max RSS `0.914 GB`, elapsed `0.59 s`
+    - Parquet: max RSS `1.159 GB`, elapsed `0.56 s`
+  - `prepare-labels-parquet` (one-shot):
+    - max RSS `1.532 GB`, elapsed `2.62 s`, saida `4` part files (`149 MB` total).
+- Conclusao + proximos passos:
+  - Nos comandos testados (`build-train-fold` e `export-train-solution`), o caminho parquet canonico **nao reduziu pico de RAM**; desempenho ficou equivalente com leve ganho de tempo em alguns casos.
+  - O ganho pratico atual e operacional: artefato canonico reutilizavel, contrato estrito sem fallback e menor risco de erro de parsing/CSV em pipelines maiores.
+  - Proximo passo tecnico para reduzir RAM de forma consistente: evitar materializacao wide completa no `export_train_solution_for_targets` (streaming por blocos de target/model para escrita incremental em parquet).
+
+## 2026-02-10T22:24:47Z - marcusvinicius/Codex - PLAN-007
+
+- Objetivo/hipotese:
+  - Validar se trocar `collect(...).write_parquet(...)` por `sink_parquet(...)` no export de `solution.parquet` reduz pico de RAM no caso extremo (`fold2`), mantendo contrato e corretude.
+- Comandos executados + configuracao efetiva:
+  - Testes:
+    - `python -m pytest -q tests/test_labels_parquet.py tests/test_memory_guardrails.py tests/test_data_access.py tests/test_scoring.py tests/test_contracts.py`
+    - `python -m pytest -q`
+  - Medicao pos-mudanca (`memory_budget_mb=22000`):
+    - `python -m rna3d_local export-train-solution --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/optcmp_post_solution_fold2_csv.parquet --train-labels-csv input/stanford-rna-3d-folding-2/train_labels.csv --memory-budget-mb 22000`
+    - `python -m rna3d_local export-train-solution --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/optcmp_post_solution_fold2_parquet.parquet --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/train_cv/fold2_post_parquet_optcmp --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+  - Referencia pre-mudanca para comparacao:
+    - `runs/optcmp_plan005/export_fold2_csv.time`
+    - `runs/optcmp_plan005/export_fold2_parquet.time`
+- Parametros e hiperparametros efetivos:
+  - `memory_budget_mb=22000`
+  - `fold=2`
+  - Caminhos de labels comparados: CSV (`train_labels.csv`) vs parquet canonico (`data/derived/train_labels_parquet`).
+- Seeds usadas:
+  - N/A (pipeline de dados; sem treino estocastico).
+- Versao do codigo e dados:
+  - Codigo: base `1c3d8c5` + alteracoes locais de `PLAN-007`.
+  - Dados: `input/stanford-rna-3d-folding-2/*`, `data/derived/train_cv_targets/targets.parquet`.
+- Artefatos gerados em `runs/` + logs:
+  - Pos-mudanca:
+    - `runs/optcmp_plan005_post/export_fold2_csv.time`
+    - `runs/optcmp_plan005_post/export_fold2_parquet.time`
+    - `runs/optcmp_plan005_post/build_fold2_parquet.time`
+  - Artefatos de saida:
+    - `data/derived/optcmp_post_solution_fold2_csv.parquet`
+    - `data/derived/optcmp_post_solution_fold2_parquet.parquet`
+    - `data/derived/train_cv/fold2_post_parquet_optcmp/`
+- Metricas/score obtidos e custo:
+  - `export-train-solution` fold2 (CSV labels):
+    - **antes**: max RSS `15714204 kB` (~14.99 GB), elapsed `5.92 s`
+    - **depois**: max RSS `3862300 kB` (~3.68 GB), elapsed `3.03 s`
+  - `export-train-solution` fold2 (parquet labels):
+    - **antes**: max RSS `15836008 kB` (~15.10 GB), elapsed `5.63 s`
+    - **depois**: max RSS `4688564 kB` (~4.47 GB), elapsed `3.37 s`
+  - `build-train-fold` fold2 (parquet labels, pos-mudanca):
+    - max RSS `4871392 kB` (~4.65 GB), elapsed `16.68 s`, status `0`
+  - Corretude:
+    - Saidas fold2 pos-mudanca mantiveram `rows=7538904` para CSV/parquet.
+- Conclusao + proximos passos:
+  - A mudanca de escrita streaming no export reduziu fortemente o pico de RAM (de ~15 GB para ~3.7-4.7 GB) no caso critico.
+  - A otimização pode ser aplicada como baseline recomendada para preparar datasets antes do score local.
+  - Proximo passo: aplicar tecnica similar de streaming incremental no caminho de score (boundary pandas/metric) para reduzir pico na avaliacao de folds muito grandes.
+
+## 2026-02-10T22:35:02Z - marcusvinicius/Codex - PLAN-008
+
+- Objetivo/hipotese:
+  - Validar a remocao do legado CSV nos consumidores de labels e confirmar viabilidade operacional (RAM/tempo) por fold usando somente labels parquet canonicos.
+- Comandos executados + configuracao efetiva:
+  - Validacao de testes:
+    - `python -m pytest -q tests/test_data_access.py tests/test_labels_parquet.py tests/test_template_workflow.py`
+    - `python -m pytest -q`
+  - Validacao de contrato CLI (sem flags legadas):
+    - `python -m rna3d_local build-train-fold --help | rg -n "train-labels|train-labels-parquet-dir"`
+    - `python -m rna3d_local export-train-solution --help | rg -n "train-labels|input\\b"`
+  - Benchmark de memoria por fold (`/usr/bin/time -v`):
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold {0..4} --out data/derived/train_cv/plan008_fold{fold} --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+    - `python -m rna3d_local export-train-solution --targets data/derived/train_cv_targets/targets.parquet --fold 2 --out data/derived/plan008_solution_fold2.parquet --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 22000`
+- Parametros e hiperparametros efetivos:
+  - `memory_budget_mb=22000`
+  - `train_labels_parquet_dir=data/derived/train_labels_parquet`
+  - Folds avaliados: `0,1,2,3,4`
+- Seeds usadas:
+  - N/A (pipeline de dados e benchmark operacional sem treino estocastico).
+- Versao do codigo e dados:
+  - Codigo: `1c3d8c5` (workspace em estado dirty durante a execucao).
+  - Dados: `input/stanford-rna-3d-folding-2/*`, `data/derived/train_cv_targets/targets.parquet`, `data/derived/train_labels_parquet/part-*.parquet`.
+- Artefatos gerados em `runs/` + logs:
+  - `runs/plan008_foldram/fold0.time`
+  - `runs/plan008_foldram/fold1.time`
+  - `runs/plan008_foldram/fold2.time`
+  - `runs/plan008_foldram/fold3.time`
+  - `runs/plan008_foldram/fold4.time`
+  - `runs/plan008_foldram/export_fold2.time`
+  - `runs/plan008_foldram/fold{0..4}.stdout`
+  - `runs/plan008_foldram/export_fold2.stdout`
+- Metricas/score obtidos e custo:
+  - Testes: `24 passed`.
+  - `build-train-fold` (max RSS / elapsed):
+    - fold0: `1,045,636 kB` (~1.00 GB) / `0.72 s`
+    - fold1: `1,068,856 kB` (~1.02 GB) / `0.78 s`
+    - fold2: `4,641,608 kB` (~4.43 GB) / `16.73 s`
+    - fold3: `1,038,684 kB` (~0.99 GB) / `0.68 s`
+    - fold4: `1,064,896 kB` (~1.02 GB) / `0.74 s`
+  - `export-train-solution` fold2: `4,931,004 kB` (~4.70 GB) / `3.44 s`
+- Conclusao + proximos passos:
+  - Com labels parquet canonicos e export streaming, os folds de dataset ficaram dentro de ~1.0 a ~4.7 GB de pico de RAM, sem OOM neste benchmark.
+  - Para garantia adicional no host local, manter execucao de score de fold grande com limite operacional (`ulimit`) e/ou serializacao por fold devido ao boundary pandas/metric vendorizado.
+
+## 2026-02-10T22:41:39Z - marcusvinicius/Codex - PLAN-009
+
+- Objetivo/hipotese:
+  - Consolidar as boas praticas de big data em um modulo unico reutilizavel e validar que o pipeline inteiro consome apenas essa API central.
+- Comandos executados + configuracao efetiva:
+  - `python -m compileall src`
+  - `python -m pytest -q`
+  - `rg -n "from \\.data_access|from \\.memory|from \\.\\.data_access|from \\.\\.memory|from rna3d_local\\.data_access|from rna3d_local\\.memory" src tests`
+  - `rg -n "from \\.bigdata|from \\.\\.bigdata|from rna3d_local\\.bigdata" src tests`
+- Parametros e hiperparametros efetivos:
+  - N/A (refatoracao arquitetural; sem treino/inferencia).
+- Seeds usadas:
+  - N/A.
+- Versao do codigo e dados:
+  - Codigo: `1c3d8c5` (workspace em estado dirty durante a execucao).
+  - Dados: N/A (validacao estrutural + testes unitarios).
+- Artefatos gerados em `runs/` + logs:
+  - N/A (nenhum artefato de treino/score gerado nesta rodada).
+- Metricas/score obtidos e custo:
+  - `python -m pytest -q`: `24 passed`.
+  - Busca de imports legados: `0` ocorrencias.
+  - Busca de imports novos (`bigdata`): ocorrencias confirmadas nos consumidores do pipeline e testes.
+- Conclusao + proximos passos:
+  - O repositorio passou a ter um ponto unico reutilizavel para boas praticas de big data em `src/rna3d_local/bigdata.py`.
+  - Consumidores principais ja estao migrados; wrappers de compatibilidade podem ser removidos em uma limpeza futura.
+
+## 2026-02-11T00:59:21Z - marcusvinicius/Codex - PLAN-010
+
+- Objetivo/hipotese:
+  - Validar se score em lotes por `target_id` e ordenacao canonica da `solution.parquet` evitam picos de RAM/OOM em folds grandes, mantendo contrato estrito.
+- Comandos executados + configuracao efetiva:
+  - Testes:
+    - `pytest -q tests/test_contracts.py tests/test_scoring.py tests/test_data_access.py tests/test_labels_parquet.py tests/test_memory_guardrails.py`
+    - `pytest -q`
+  - Rebuild dos folds plan010 com labels canonicos parquet:
+    - `python -m rna3d_local build-train-fold --input input/stanford-rna-3d-folding-2 --targets data/derived/train_cv_targets/targets.parquet --fold {0,1,2,3,4} --out data/derived/train_cv/plan010_fold{f} --train-labels-parquet-dir data/derived/train_labels_parquet --memory-budget-mb 8192`
+  - Benchmark score (iniciado; execucao longa):
+    - `python -m rna3d_local score --dataset public_validation --submission data/derived/public_validation/sample_submission.csv --out-dir runs/20260211_005143_benchmark_plan010_full/public_validation --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+    - `python -m rna3d_local score --dataset-dir data/derived/train_cv/plan010_fold{0..4} --submission data/derived/train_cv/plan010_fold{f}/sample_submission.csv --out-dir runs/20260211_005143_benchmark_plan010_full/fold{f} --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+- Parametros e hiperparametros efetivos:
+  - Score: `memory_budget_mb=8192`, `max_rows_in_memory=500000`, `chunk_size=50000`
+  - Build-fold: `memory_budget_mb=8192`
+- Seeds usadas:
+  - N/A (pipeline de dados + score deterministico).
+- Versao do codigo e dados:
+  - Codigo: `1c3d8c5` + alteracoes locais PLAN-010.
+  - Dados: `input/stanford-rna-3d-folding-2/*`, `data/derived/train_labels_parquet/part-*.parquet`, `data/derived/train_cv_targets/targets.parquet`.
+- Artefatos gerados em `runs/` + logs:
+  - Benchmark parcial: `runs/20260211_005143_benchmark_plan010_full/`
+    - `public_validation/score.json`
+    - `public_validation.time`
+    - `fold0.time` (parcial, interrompido manualmente)
+  - Logs auxiliares de build:
+    - `/tmp/plan010_build_fold0.time`
+    - `/tmp/plan010_build_fold1.time`
+    - `/tmp/plan010_build_fold2.time`
+    - `/tmp/plan010_build_fold3.time`
+    - `/tmp/plan010_build_fold4.time`
+- Metricas/score obtidos e custo:
+  - Testes: `27 passed` (suite completa).
+  - Build-fold (max RSS / elapsed):
+    - fold0: `1095040 kB` / `0:00.92`
+    - fold1: `1141152 kB` / `0:00.98`
+    - fold2: `5951672 kB` / `0:18.30`
+    - fold3: `1091312 kB` / `0:01.09`
+    - fold4: `1128764 kB` / `0:01.11`
+  - Score `public_validation`:
+    - score=`0.05522357142857142`
+    - max RSS=`348048 kB`
+    - elapsed=`4:32.27`
+- Conclusao + proximos passos:
+  - A preparacao de folds com ordenacao canonica passou no budget de 8 GB inclusive no fold critico (`fold2`).
+  - O score em lotes reduziu significativamente RAM em relacao ao caminho anterior (observado: processo Python em centenas de MB no `public_validation`/`fold0`), mas benchmark completo por folds ainda requer runtime longo devido ao custo do `USalign`.
+  - Proximo passo: finalizar a execucao completa `fold0..4` no mesmo preset e consolidar os `score.json` de todos os folds como baseline oficial.
+
+## 2026-02-11T01:13:39Z - marcusvinicius/Codex - ADHOC
+
+- Objetivo/hipotese:
+  - Medir risco de OOM no score dos folds plan010 em janela curta (5 min) com os guardrails novos ativos.
+- Comandos executados + configuracao efetiva:
+  - `timeout 300 python -m rna3d_local score --dataset-dir data/derived/train_cv/plan010_fold0 --submission data/derived/train_cv/plan010_fold0/sample_submission.csv --out-dir /tmp/plan010_score_fold0_5m --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - `timeout 300 python -m rna3d_local score --dataset-dir data/derived/train_cv/plan010_fold2 --submission data/derived/train_cv/plan010_fold2/sample_submission.csv --out-dir /tmp/plan010_score_fold2_5m --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+- Parametros e hiperparametros efetivos:
+  - `memory_budget_mb=8192`
+  - `max_rows_in_memory=500000`
+  - `chunk_size=50000`
+  - `timeout=300s`
+- Seeds usadas:
+  - N/A.
+- Versao do codigo e dados:
+  - Codigo: `1c3d8c5` + alteracoes locais PLAN-010.
+  - Dados: `data/derived/train_cv/plan010_fold0` e `data/derived/train_cv/plan010_fold2`.
+- Artefatos gerados em `runs/` + logs:
+  - `/tmp/plan010_score_fold0_5m.time`
+  - `/tmp/plan010_score_fold2_5m.time`
+  - `/tmp/plan010_score_fold0_5m.stdout`
+  - `/tmp/plan010_score_fold2_5m.stdout`
+- Metricas/score obtidos e custo:
+  - fold0 (5 min): `Maximum resident set size = 444672 kB` (~0.42 GB), `Exit status=124` (timeout).
+  - fold2 (5 min): `Maximum resident set size = 7561052 kB` (~7.21 GB), `Exit status=124` (timeout).
+  - Em ambos os casos nao houve OOM nem swap forçada nos 300s observados.
+- Conclusao + proximos passos:
+  - O caso critico (`fold2`) ficou abaixo do budget de 8 GB durante 5 minutos, indicando que a otimizacao reduz fortemente o risco de travar o host.
+  - Ainda e necessario deixar rodar o benchmark completo (sem timeout) para consolidar baseline de score final por fold.

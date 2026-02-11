@@ -58,6 +58,7 @@ Exemplo:
 - Priorizar leitura colunar, filtros por `target_id` e processamento em lotes.
 - Evitar carregar dataset completo em memoria quando houver alternativa incremental.
 - Em risco de OOM, reduzir budget explicitamente e reportar o motivo da reducao.
+- Todo codigo implementado deve ser otimizado para a maquina atual, com foco em evitar OOM de RAM (uso de memoria deve ser controlado e previsivel).
 
 4. Padrao para treino longo
 - Executar smoke test apenas para validar integracao tecnica.
