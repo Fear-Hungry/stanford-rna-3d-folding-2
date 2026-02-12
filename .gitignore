@@ -16,3 +16,6 @@ __pycache__/
 # Vendored binaries (downloaded locally)
 /vendor/usalign/USalign
 /vendor/usalign/*.zip
+
+# Local artifacts (generated outside source tree)
+/external_templates.csv

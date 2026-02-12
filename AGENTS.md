@@ -67,8 +67,17 @@ Exemplo:
 
 5. Gating de submissao Kaggle
 - Submissao so pode ocorrer apos validacao local estrita passar.
+- Submeter no Kaggle apenas quando o `score` local do artefato candidato for estritamente maior que o melhor `score` local ja registrado no repositorio (baseline oficial em `EXPERIMENTS.md`).
 - Nao submeter quando o artefato for de smoke test, execucao parcial ou com metrica regressiva sem justificativa explicita.
 - Em falha de submissao (quota, notebook exception, scoring error), registrar causa exata e bloquear novas submissoes cegas.
+- Regras obrigatorias desta competicao (notebook-only):
+  - A competicao aceita apenas submissao via notebook (code competition). Submissao por arquivo local (`CreateSubmission`) deve ser considerada bloqueada por contrato.
+  - Fluxo obrigatorio de submit:
+    1) validar localmente com `python -m rna3d_local check-submission --sample <sample_submission.csv> --submission <submission.csv>`;
+    2) executar notebook Kaggle de submissao para gerar `submission.csv` em `/kaggle/working`;
+    3) submeter via referencia do notebook: `kaggle competitions submit -c <competicao> -k <owner/notebook> -f submission.csv -v <versao> -m <mensagem>`.
+  - O notebook de submissao deve estar com internet desativada (`enable_internet=false`), senao a API pode retornar `FAILED_PRECONDITION`.
+  - Em erro da API de submissao, registrar payload completo da resposta (status HTTP + body) e interromper novas tentativas cegas.
 
 6. Politica de treino e Kaggle (Obrigatoria)
 - Treinos (curtos ou longos) devem ser executados localmente com GPU.
@@ -88,6 +97,8 @@ Exemplo:
 - Nao executar acoes destrutivas em dados/artefatos sem necessidade explicita.
 - Nao sobrescrever artefatos criticos sem gerar versao rastreavel.
 - Em caso de interrupcao/abort, verificar estado parcial antes de retomar pipeline.
+- Proibido baixar, copiar ou incorporar solucoes completas de terceiros (repositorios, notebooks, submissions ou pipelines prontos) para uso direto no projeto.
+- E permitido apenas baixar modelos pre-treinados como insumo tecnico, desde que a origem/licenca seja registrada e o uso seja validado localmente.
 
 10. Transparencia com o usuario
 - Informar claramente o que foi executado, o que falhou e o que ficou pendente.
