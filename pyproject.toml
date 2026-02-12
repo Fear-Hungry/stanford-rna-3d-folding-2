@@ -8,6 +8,7 @@ dependencies = [
   "pandas>=2.0",
   "polars>=0.20",
   "pyarrow>=12",
+  "biopython>=1.86",
   "xxhash>=3.0",
 ]
 
@@ -25,4 +26,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

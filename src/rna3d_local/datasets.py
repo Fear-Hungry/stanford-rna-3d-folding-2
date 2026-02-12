@@ -141,6 +141,179 @@ def prepare_train_labels_parquet(
     return manifest_path
 
 
+def prepare_train_labels_clean(
+    *,
+    repo_root: Path,
+    train_labels_parquet_dir: Path,
+    out_dir: Path,
+    train_sequences_csv: Path,
+    rows_per_file: int = 2_000_000,
+    compression: str = "zstd",
+    require_complete_targets: bool = True,
+    memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
+) -> Path:
+    """
+    Build a cleaned parquet labels store by dropping rows with null xyz coordinates.
+    This is an explicit data-preparation step and never runs implicitly in the pipeline.
+    """
+    location = "src/rna3d_local/datasets.py:prepare_train_labels_clean"
+    assert_memory_budget(stage="DATA", location=location, budget_mb=memory_budget_mb)
+    if not train_sequences_csv.exists():
+        raise_error("DATA", location, "train_sequences.csv ausente", impact="1", examples=[str(train_sequences_csv)])
+
+    required = ("ID", "resname", "resid", "x_1", "y_1", "z_1", "chain", "copy")
+    labels_scan = scan_labels(
+        config=LabelStoreConfig(
+            labels_parquet_dir=train_labels_parquet_dir,
+            required_columns=required,
+            stage="DATA",
+            location=location,
+        )
+    )
+    rows_in = int(
+        collect_streaming(
+            lf=labels_scan.select(pl.len().alias("n")),
+            stage="DATA",
+            location=location,
+        ).get_column("n")[0]
+    )
+    if rows_in == 0:
+        raise_error("DATA", location, "labels parquet de entrada vazio", impact="0", examples=[str(train_labels_parquet_dir)])
+
+    cleaned_scan = (
+        labels_scan.filter(pl.col("x_1").is_not_null() & pl.col("y_1").is_not_null() & pl.col("z_1").is_not_null())
+        .select(
+            pl.col("ID").cast(pl.Utf8),
+            pl.col("resname").cast(pl.Utf8),
+            pl.col("resid").cast(pl.Int32),
+            pl.col("x_1").cast(pl.Float64),
+            pl.col("y_1").cast(pl.Float64),
+            pl.col("z_1").cast(pl.Float64),
+            pl.col("chain").cast(pl.Utf8),
+            pl.col("copy").cast(pl.Int32),
+        )
+    )
+    partition_info = sink_partitioned_parquet(
+        lf=cleaned_scan,
+        out_dir=out_dir,
+        rows_per_file=rows_per_file,
+        compression=compression,
+        stage="DATA",
+        location=location,
+    )
+    assert_memory_budget(stage="DATA", location=location, budget_mb=memory_budget_mb)
+
+    rows_out = int(partition_info["n_rows"])
+    rows_dropped = int(rows_in - rows_out)
+    if rows_out <= 0:
+        raise_error(
+            "DATA",
+            location,
+            "limpeza removeu todas as linhas de labels",
+            impact=str(rows_dropped),
+            examples=[str(train_labels_parquet_dir)],
+        )
+
+    cleaned_validation_scan = scan_labels(
+        config=LabelStoreConfig(
+            labels_parquet_dir=out_dir,
+            required_columns=required,
+            stage="DATA",
+            location=location,
+        )
+    )
+    null_stats = collect_streaming(
+        lf=cleaned_validation_scan.select(
+            pl.col("x_1").is_null().sum().alias("x_1"),
+            pl.col("y_1").is_null().sum().alias("y_1"),
+            pl.col("z_1").is_null().sum().alias("z_1"),
+        ),
+        stage="DATA",
+        location=location,
+    ).row(0, named=True)
+    bad_nulls = [f"{k}:{int(v)}" for k, v in null_stats.items() if int(v) > 0]
+    if bad_nulls:
+        raise_error(
+            "DATA",
+            location,
+            "labels limpos ainda contem coordenadas nulas",
+            impact=str(len(bad_nulls)),
+            examples=bad_nulls,
+        )
+
+    missing_targets_count = 0
+    missing_target_examples: list[str] = []
+    if require_complete_targets:
+        seq_targets = scan_table(
+            config=TableReadConfig(
+                path=train_sequences_csv,
+                stage="DATA",
+                location=location,
+                columns=("target_id",),
+            )
+        ).select(pl.col("target_id").cast(pl.Utf8)).unique()
+        labels_targets = (
+            cleaned_validation_scan.with_columns(pl.col("ID").cast(pl.Utf8).str.extract(r"^(.*)_[0-9]+$", 1).alias("target_id"))
+            .select(pl.col("target_id").cast(pl.Utf8))
+            .drop_nulls()
+            .unique()
+        )
+        missing_targets = seq_targets.join(labels_targets, on="target_id", how="anti")
+        missing_targets_count = int(
+            collect_streaming(
+                lf=missing_targets.select(pl.len().alias("n")),
+                stage="DATA",
+                location=location,
+            ).get_column("n")[0]
+        )
+        if missing_targets_count > 0:
+            missing_target_examples = (
+                collect_streaming(
+                    lf=missing_targets.select("target_id").sort("target_id").head(8),
+                    stage="DATA",
+                    location=location,
+                )
+                .get_column("target_id")
+                .to_list()
+            )
+            raise_error(
+                "DATA",
+                location,
+                "targets sem labels apos limpeza de coordenadas nulas",
+                impact=str(missing_targets_count),
+                examples=missing_target_examples,
+            )
+
+    part_paths: list[Path] = partition_info["parts"]
+    sha_parts = {p.name: sha256_file(p) for p in part_paths}
+    manifest = {
+        "dataset_type": "train_labels_clean_nonnull_xyz",
+        "created_utc": _utc_now(),
+        "paths": {
+            "source_labels_parquet_dir": _rel_or_abs(train_labels_parquet_dir, repo_root),
+            "source_train_sequences_csv": _rel_or_abs(train_sequences_csv, repo_root),
+            "parts": [_rel_or_abs(p, repo_root) for p in part_paths],
+        },
+        "params": {
+            "rows_per_file": int(rows_per_file),
+            "compression": compression,
+            "require_complete_targets": bool(require_complete_targets),
+        },
+        "stats": {
+            "rows_in": rows_in,
+            "rows_out": rows_out,
+            "rows_dropped_null_xyz": rows_dropped,
+            "n_files": int(partition_info["n_files"]),
+            "rows_per_file_actual": partition_info["rows_per_file_actual"],
+            "targets_missing_after_clean": int(missing_targets_count),
+        },
+        "sha256": sha_parts,
+    }
+    manifest_path = out_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest_path
+
+
 def build_public_validation_dataset(*, repo_root: Path, input_dir: Path, out_dir: Path) -> Path:
     """
     Builds a local dataset that reproduces Kaggle Public LB evaluation:
