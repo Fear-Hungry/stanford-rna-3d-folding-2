@@ -10,7 +10,6 @@ from .bigdata import (
     DEFAULT_MEMORY_BUDGET_MB,
     TableReadConfig,
     assert_memory_budget,
-    assert_row_budget,
     collect_streaming,
     scan_table,
 )
@@ -18,17 +17,13 @@ from .contracts import validate_submission_against_sample
 from .errors import raise_error
 
 
-def _read_frame(path: Path, *, location: str) -> pl.DataFrame:
-    return collect_streaming(
-        lf=scan_table(
-            config=TableReadConfig(
-                path=path,
-                stage="EXPORT",
-                location=location,
-            )
-        ),
-        stage="EXPORT",
-        location=location,
+def _count_rows(*, lf: pl.LazyFrame, location: str) -> int:
+    return int(
+        collect_streaming(
+            lf=lf.select(pl.len().alias("n")),
+            stage="EXPORT",
+            location=location,
+        ).get_column("n")[0]
     )
 
 
@@ -68,38 +63,36 @@ def export_submission_from_long(
     expected columns in long file: ID,resid,resname,model_id,x,y,z
     """
     location = "src/rna3d_local/export.py:export_submission_from_long"
+    if max_rows_in_memory <= 0:
+        raise_error("EXPORT", location, "max_rows_in_memory invalido (deve ser > 0)", impact="1", examples=[str(max_rows_in_memory)])
+
     assert_memory_budget(stage="EXPORT", location=location, budget_mb=memory_budget_mb)
-    sample = collect_streaming(
-        lf=scan_table(
-            config=TableReadConfig(
-                path=sample_submission_path,
-                stage="EXPORT",
-                location=location,
-            )
-        ),
-        stage="EXPORT",
-        location=location,
+
+    sample_lf = scan_table(
+        config=TableReadConfig(
+            path=sample_submission_path,
+            stage="EXPORT",
+            location=location,
+        )
     )
+    sample_cols = list(sample_lf.collect_schema().names())
+
     required_sample = ["ID", "resname", "resid"]
-    miss = [c for c in required_sample if c not in sample.columns]
+    miss = [c for c in required_sample if c not in sample_cols]
     if miss:
         raise_error("EXPORT", location, "sample_submission sem colunas obrigatorias", impact=str(len(miss)), examples=miss)
 
-    model_ids = _extract_model_ids(sample.columns, location=location)
-    preds = _read_frame(predictions_long_path, location=location)
-    assert_row_budget(
-        stage="EXPORT",
-        location=location,
-        rows=int(sample.height + preds.height),
-        max_rows_in_memory=max_rows_in_memory,
-        label="sample+predictions_long",
-    )
-    required_preds = ["ID", "resid", "resname", "model_id", "x", "y", "z"]
-    miss_preds = [c for c in required_preds if c not in preds.columns]
-    if miss_preds:
-        raise_error("EXPORT", location, "predictions_long sem coluna obrigatoria", impact=str(len(miss_preds)), examples=miss_preds)
+    model_ids = _extract_model_ids(sample_cols, location=location)
+    coord_cols = [f"{axis}_{mid}" for mid in model_ids for axis in ("x", "y", "z")]
 
-    preds = preds.select(
+    preds_lf = scan_table(
+        config=TableReadConfig(
+            path=predictions_long_path,
+            stage="EXPORT",
+            location=location,
+            columns=("ID", "resid", "resname", "model_id", "x", "y", "z"),
+        )
+    ).select(
         pl.col("ID").cast(pl.Utf8),
         pl.col("resid").cast(pl.Int32),
         pl.col("resname").cast(pl.Utf8),
@@ -109,12 +102,22 @@ def export_submission_from_long(
         pl.col("z").cast(pl.Float64),
     )
 
-    dup = preds.group_by(["ID", "model_id"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
-    if dup.height > 0:
-        ex = dup.select((pl.col("ID") + pl.lit(":") + pl.col("model_id").cast(pl.Utf8)).alias("k")).get_column("k")
-        raise_error("EXPORT", location, "predictions_long com chave duplicada", impact=str(dup.height), examples=ex.head(8).to_list())
+    dup_lf = preds_lf.group_by(["ID", "model_id"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
+    dup_n = _count_rows(lf=dup_lf, location=location)
+    if dup_n > 0:
+        examples = collect_streaming(
+            lf=dup_lf.select((pl.col("ID") + pl.lit(":") + pl.col("model_id").cast(pl.Utf8)).alias("k")).head(8),
+            stage="EXPORT",
+            location=location,
+        ).get_column("k").to_list()
+        raise_error("EXPORT", location, "predictions_long com chave duplicada", impact=str(dup_n), examples=examples)
 
-    found_models = sorted(set(preds.get_column("model_id").unique().to_list()))
+    found_models = collect_streaming(
+        lf=preds_lf.select(pl.col("model_id").unique().sort()),
+        stage="EXPORT",
+        location=location,
+    ).get_column("model_id").to_list()
+    found_models = [int(x) for x in found_models]
     if found_models != model_ids:
         raise_error(
             "EXPORT",
@@ -124,66 +127,116 @@ def export_submission_from_long(
             examples=[f"expected={model_ids}", f"found={found_models}"],
         )
 
-    sample_ids = sample.select(pl.col("ID").cast(pl.Utf8)).unique()
-    pred_ids = preds.select("ID").unique()
-    missing_id_df = sample_ids.join(pred_ids, on="ID", how="anti")
-    extra_id_df = pred_ids.join(sample_ids, on="ID", how="anti")
-    if missing_id_df.height > 0 or extra_id_df.height > 0:
-        examples = [f"missing_id:{r[0]}" for r in missing_id_df.head(4).iter_rows()] + [f"extra_id:{r[0]}" for r in extra_id_df.head(4).iter_rows()]
+    sample_ids_lf = sample_lf.select(pl.col("ID").cast(pl.Utf8)).unique()
+    pred_ids_lf = preds_lf.select("ID").unique()
+
+    missing_id_lf = sample_ids_lf.join(pred_ids_lf, on="ID", how="anti")
+    extra_id_lf = pred_ids_lf.join(sample_ids_lf, on="ID", how="anti")
+    missing_id_n = _count_rows(lf=missing_id_lf, location=location)
+    extra_id_n = _count_rows(lf=extra_id_lf, location=location)
+    if missing_id_n > 0 or extra_id_n > 0:
+        examples = [f"missing_id:{r[0]}" for r in collect_streaming(lf=missing_id_lf.head(4), stage="EXPORT", location=location).iter_rows()]
+        examples += [f"extra_id:{r[0]}" for r in collect_streaming(lf=extra_id_lf.head(4), stage="EXPORT", location=location).iter_rows()]
         raise_error(
             "EXPORT",
             location,
             "IDs da predicao nao batem com sample",
-            impact=f"missing={int(missing_id_df.height)} extra={int(extra_id_df.height)}",
+            impact=f"missing={missing_id_n} extra={extra_id_n}",
             examples=examples,
         )
-    # Per-model key validation with anti-joins avoids building huge cross-product sets in Python.
+
     for mid in model_ids:
-        pred_mid = preds.filter(pl.col("model_id") == mid).select("ID").unique()
-        missing_mid = sample_ids.join(pred_mid, on="ID", how="anti")
-        extra_mid = pred_mid.join(sample_ids, on="ID", how="anti")
-        if missing_mid.height > 0 or extra_mid.height > 0:
-            ex = [f"missing:{r[0]}:{mid}" for r in missing_mid.head(4).iter_rows()] + [f"extra:{r[0]}:{mid}" for r in extra_mid.head(4).iter_rows()]
+        pred_mid = preds_lf.filter(pl.col("model_id") == mid).select("ID").unique()
+        missing_mid_lf = sample_ids_lf.join(pred_mid, on="ID", how="anti")
+        extra_mid_lf = pred_mid.join(sample_ids_lf, on="ID", how="anti")
+        missing_mid_n = _count_rows(lf=missing_mid_lf, location=location)
+        extra_mid_n = _count_rows(lf=extra_mid_lf, location=location)
+        if missing_mid_n > 0 or extra_mid_n > 0:
+            examples = [f"missing:{r[0]}:{mid}" for r in collect_streaming(lf=missing_mid_lf.head(4), stage="EXPORT", location=location).iter_rows()]
+            examples += [f"extra:{r[0]}:{mid}" for r in collect_streaming(lf=extra_mid_lf.head(4), stage="EXPORT", location=location).iter_rows()]
             raise_error(
                 "EXPORT",
                 location,
                 "chaves da predicao nao batem com sample por modelo",
-                impact=f"missing={int(missing_mid.height)} extra={int(extra_mid.height)} model_id={mid}",
-                examples=ex,
+                impact=f"missing={missing_mid_n} extra={extra_mid_n} model_id={mid}",
+                examples=examples,
             )
 
-    sample_meta = sample.select(pl.col("ID").cast(pl.Utf8), pl.col("resname").cast(pl.Utf8), pl.col("resid").cast(pl.Int32))
-    merged = preds.join(sample_meta, on="ID", how="inner", suffix="_sample")
-    mismatch = merged.filter((pl.col("resname") != pl.col("resname_sample")) | (pl.col("resid") != pl.col("resid_sample")))
-    if mismatch.height > 0:
-        ex = mismatch.select("ID").get_column("ID").head(8).to_list()
+    sample_meta_lf = sample_lf.select(
+        pl.col("ID").cast(pl.Utf8),
+        pl.col("resname").cast(pl.Utf8),
+        pl.col("resid").cast(pl.Int32),
+    )
+    mismatch_lf = preds_lf.join(sample_meta_lf, on="ID", how="inner", suffix="_sample").filter(
+        (pl.col("resname") != pl.col("resname_sample")) | (pl.col("resid") != pl.col("resid_sample"))
+    )
+    mismatch_n = _count_rows(lf=mismatch_lf, location=location)
+    if mismatch_n > 0:
+        examples = collect_streaming(
+            lf=mismatch_lf.select("ID").head(8),
+            stage="EXPORT",
+            location=location,
+        ).get_column("ID").to_list()
         raise_error(
             "EXPORT",
             location,
             "resname/resid da predicao divergem do sample",
-            impact=str(mismatch.height),
-            examples=ex,
+            impact=str(mismatch_n),
+            examples=examples,
         )
 
-    xw = preds.pivot(values="x", index="ID", on="model_id").rename({str(i): f"x_{i}" for i in model_ids})
-    yw = preds.pivot(values="y", index="ID", on="model_id").rename({str(i): f"y_{i}" for i in model_ids})
-    zw = preds.pivot(values="z", index="ID", on="model_id").rename({str(i): f"z_{i}" for i in model_ids})
-    out = sample_meta.join(xw, on="ID", how="left").join(yw, on="ID", how="left").join(zw, on="ID", how="left")
+    agg_exprs: list[pl.Expr] = []
+    for mid in model_ids:
+        agg_exprs.append(pl.when(pl.col("model_id") == mid).then(pl.col("x")).otherwise(None).max().alias(f"x_{mid}"))
+        agg_exprs.append(pl.when(pl.col("model_id") == mid).then(pl.col("y")).otherwise(None).max().alias(f"y_{mid}"))
+        agg_exprs.append(pl.when(pl.col("model_id") == mid).then(pl.col("z")).otherwise(None).max().alias(f"z_{mid}"))
 
-    null_rows = out.select(pl.any_horizontal(pl.all().is_null()).alias("_has_null")).get_column("_has_null")
-    if int(null_rows.sum()) > 0:
-        bad = out.filter(null_rows).get_column("ID").head(8).to_list()
+    wide_lf = preds_lf.group_by("ID").agg(agg_exprs)
+
+    sample_meta_ordered_lf = sample_lf.select(
+        pl.col("ID").cast(pl.Utf8),
+        pl.col("resname").cast(pl.Utf8),
+        pl.col("resid").cast(pl.Int32),
+    ).with_row_index("_ord")
+
+    out_lf = (
+        sample_meta_ordered_lf.join(wide_lf, on="ID", how="left")
+        .sort("_ord")
+        .drop("_ord")
+        .select([pl.col(c) for c in sample_cols])
+    )
+
+    null_coord_n = int(
+        collect_streaming(
+            lf=out_lf.select(pl.any_horizontal([pl.col(c).is_null() for c in coord_cols]).sum().alias("n")),
+            stage="EXPORT",
+            location=location,
+        ).get_column("n")[0]
+    )
+    if null_coord_n > 0:
+        examples = collect_streaming(
+            lf=out_lf.filter(pl.any_horizontal([pl.col(c).is_null() for c in coord_cols])).select("ID").head(8),
+            stage="EXPORT",
+            location=location,
+        ).get_column("ID").to_list()
         raise_error(
             "EXPORT",
             location,
             "submissao exportada contem nulos",
-            impact=str(int(null_rows.sum())),
-            examples=bad,
+            impact=str(null_coord_n),
+            examples=examples,
         )
-    assert_memory_budget(stage="EXPORT", location=location, budget_mb=memory_budget_mb)
 
-    out = out.select(sample.columns)
     out_submission_path.parent.mkdir(parents=True, exist_ok=True)
-    out.write_csv(out_submission_path)
+    tmp_out_path = out_submission_path.with_suffix(out_submission_path.suffix + ".tmp")
+    if tmp_out_path.exists():
+        tmp_out_path.unlink()
+
+    out_lf.sink_csv(tmp_out_path)
+    if out_submission_path.exists():
+        out_submission_path.unlink()
+    tmp_out_path.replace(out_submission_path)
+
     validate_submission_against_sample(sample_path=sample_submission_path, submission_path=out_submission_path)
+    assert_memory_budget(stage="EXPORT", location=location, budget_mb=memory_budget_mb)
     return out_submission_path

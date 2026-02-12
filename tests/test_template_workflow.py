@@ -107,6 +107,10 @@ def test_tbm_rnapro_ensemble_export_and_gating(tmp_path: Path) -> None:
         external_templates_path=paths["external_templates"],
         out_dir=template_dir,
     )
+    templates_cols = set(pl.read_parquet(template_dir / "templates.parquet").columns)
+    index_cols = set(pl.read_parquet(template_dir / "template_index.parquet").columns)
+    assert "sequence" not in templates_cols
+    assert "sequence" in index_cols
     retrieval_path = tmp_path / "retrieval.parquet"
     retrieve_template_candidates(
         repo_root=repo,
