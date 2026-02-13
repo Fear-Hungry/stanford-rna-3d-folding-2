@@ -31,7 +31,22 @@ python -m rna3d_local build-dataset --type public_validation \
 
 # 4) Rodar score local (gera runs/<timestamp>_score/score.json)
 python -m rna3d_local score --dataset public_validation --submission submission.csv
+
+# 5) (Recomendado) Gate robusto + calibrado antes de promover para submit
+python -m rna3d_local evaluate-robust \
+  --score public_validation=runs/<run>/score/score.json \
+  --score cv:fold0=runs/<run>/cv_fold0/score.json \
+  --score cv:fold1=runs/<run>/cv_fold1/score.json \
+  --baseline-robust-score <best_local_robust> \
+  --baseline-public-score <best_public_lb> \
+  --calibration-method p10
 ```
+
+Comportamento padrao endurecido:
+- `evaluate-robust` exige `cv_count >= 2` por padrao;
+- candidatos sem CV (somente `public_validation`) sao bloqueados para promocao competitiva;
+- calibracao local->public bloqueia extrapolacao fora do range historico observado (por padrao);
+- `submit-kaggle` exige `--robust-report` por padrao.
 
 Notas:
 - Se a submissao divergir do `sample_submission` (colunas, chaves, duplicatas, nulos), o fluxo falha imediatamente com erro acionavel no padrao do `AGENTS.md`.
@@ -139,6 +154,38 @@ No scorer em lotes:
 - Consolidar um pipeline de treino/inferencia/export para RNA 3D com validacao local estrita.
 - Evitar regressao metodologica usando referencias cientificas atuais.
 - Traduzir literatura em decisoes de engenharia rastreaveis.
+
+## Research Harness (competicao Kaggle)
+
+Foi adicionado um harness leve para automatizar ciclos de experimento com gate estrito:
+- literatura -> experimento -> verificacao -> relatorio;
+- foco em competicao Kaggle com rastreabilidade e bloqueio de regressao.
+
+Comandos principais:
+
+```bash
+# 1) Coleta literatura + related_work (com download OA opcional)
+python -m rna3d_local research-sync-literature \
+  --topic "stanford rna 3d folding 2 template rerank"
+
+# 2) Executa experimento (comando unico reprodutivel por config)
+python -m rna3d_local research-run \
+  --config configs/research/problems/rna3d_kaggle_loop.yaml \
+  --run-id 20260212_exp001
+
+# 3) Gate estrito: solver + checks + reproducao + kaggle_gate
+python -m rna3d_local research-verify \
+  --run-dir runs/research/experiments/20260212_exp001
+
+# 4) Gera relatorio tecnico
+python -m rna3d_local research-report \
+  --run-dir runs/research/experiments/20260212_exp001
+```
+
+Arquivos de referencia:
+- `research/README.md`
+- `configs/research/default.yaml`
+- `configs/research/problems/rna3d_kaggle_loop.yaml`
 
 ## Como usar este guia cientifico
 
