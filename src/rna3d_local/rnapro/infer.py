@@ -13,6 +13,7 @@ import xxhash
 
 from ..alignment import compute_coverage, map_target_to_template_alignment, project_target_coordinates
 from ..bigdata import DEFAULT_MAX_ROWS_IN_MEMORY, DEFAULT_MEMORY_BUDGET_MB, assert_memory_budget, assert_row_budget
+from ..compute_backend import ComputeBackend, resolve_compute_backend
 from ..errors import raise_error
 from ..qa_gnn_ranker import (
     is_qa_gnn_model_file,
@@ -163,6 +164,9 @@ def infer_rnapro(
     qa_device: str = "cuda",
     qa_top_pool: int = 40,
     diversity_lambda: float = 0.15,
+    compute_backend: str = "auto",
+    gpu_memory_budget_mb: int = 12_288,
+    gpu_precision: str = "fp32",
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
     max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> Path:
@@ -217,6 +221,13 @@ def infer_rnapro(
         raise_error("RNAPRO_INFER", location, "qa_top_pool invalido (deve ser > 0)", impact="1", examples=[str(qa_top_pool)])
     if diversity_lambda < 0.0:
         raise_error("RNAPRO_INFER", location, "diversity_lambda invalido (>=0)", impact="1", examples=[str(diversity_lambda)])
+    backend = resolve_compute_backend(
+        requested=str(compute_backend),
+        precision=str(gpu_precision),
+        gpu_memory_budget_mb=int(gpu_memory_budget_mb),
+        stage="RNAPRO_INFER",
+        location=location,
+    )
 
     targets = _read_targets(target_sequences_path=target_sequences_path, location=location)
     qa_model_type = "heuristic"
@@ -260,6 +271,7 @@ def infer_rnapro(
             qa_device=str(qa_device),
             qa_top_pool=int(qa_top_pool),
             diversity_lambda=float(diversity_lambda),
+            backend=backend,
             memory_budget_mb=memory_budget_mb,
             max_rows_in_memory=max_rows_in_memory,
         )
@@ -286,6 +298,7 @@ def infer_rnapro(
         qa_device=str(qa_device),
         qa_top_pool=int(qa_top_pool),
         diversity_lambda=float(diversity_lambda),
+        backend=backend,
         memory_budget_mb=memory_budget_mb,
         max_rows_in_memory=max_rows_in_memory,
     )
@@ -311,6 +324,7 @@ def _infer_from_precomputed_templates(
     qa_device: str,
     qa_top_pool: int,
     diversity_lambda: float,
+    backend: ComputeBackend,
     memory_budget_mb: int,
     max_rows_in_memory: int,
 ) -> Path:
@@ -543,6 +557,7 @@ def _infer_from_precomputed_templates(
             "chunk_size": int(chunk_size),
             "selected_candidates": int(selected_candidates_total),
         },
+        "compute": backend.to_manifest_dict(),
         "sha256": {
             "predictions_long.parquet": sha256_file(out_path),
             "qa_model.json": None if qa_model_sha256 is None else str(qa_model_sha256),
@@ -577,6 +592,7 @@ def _infer_from_model_artifacts(
     qa_device: str,
     qa_top_pool: int,
     diversity_lambda: float,
+    backend: ComputeBackend,
     memory_budget_mb: int,
     max_rows_in_memory: int,
 ) -> Path:
@@ -642,6 +658,19 @@ def _infer_from_model_artifacts(
     train_matrix = features_df.select(feat_cols).to_numpy().astype(np.float32, copy=False)
     if train_matrix.shape[0] == 0:
         raise_error("RNAPRO_INFER", location, "matriz de treino vazia", impact="0", examples=[])
+    torch = None
+    train_matrix_t = None
+    device = None
+    gpu_dtype = None
+    if backend.backend == "cuda":
+        try:
+            import torch as _torch  # noqa: PLC0415
+        except Exception as e:  # noqa: BLE001
+            raise_error("RNAPRO_INFER", location, "falha ao importar torch para backend CUDA", impact="1", examples=[f"{type(e).__name__}:{e}"])
+        torch = _torch
+        device = torch.device("cuda")
+        gpu_dtype = torch.float16 if backend.precision == "fp16" else torch.float32
+        train_matrix_t = torch.tensor(train_matrix, dtype=gpu_dtype, device=device)
 
     seq_map: dict[str, str] = {}
     release_map: dict[str, object] = {}
@@ -708,27 +737,47 @@ def _infer_from_model_artifacts(
             if float(np.linalg.norm(feat)) == 0.0:
                 raise_error("RNAPRO_INFER", location, "feature nula para alvo", impact="1", examples=[tid])
 
-            sims = train_matrix @ feat
             pool_k = max(int(n_models) * int(rerank_pool_multiplier), int(n_models))
-            top_heap: list[tuple[float, str]] = []
-            valid_candidates = 0
-            for idx, (sid, rel) in enumerate(zip(train_ids, train_release_dates, strict=True)):
-                if rel > cutoff:
+            if backend.backend == "cuda":
+                assert torch is not None and train_matrix_t is not None and device is not None and gpu_dtype is not None
+                feat_t = torch.tensor(feat, dtype=gpu_dtype, device=device)
+                sims_t = torch.mv(train_matrix_t, feat_t)
+                valid_idx_np = np.asarray([int(i) for i, rel in enumerate(train_release_dates) if rel <= cutoff], dtype=np.int64)
+                valid_candidates = int(valid_idx_np.size)
+                if valid_candidates < int(n_models):
+                    no_candidates_count += 1
+                    if len(no_candidates_examples) < 8:
+                        no_candidates_examples.append(f"{tid}:{valid_candidates}")
                     continue
-                valid_candidates += 1
-                item = (float(sims[idx]), sid)
-                if len(top_heap) < pool_k:
-                    heapq.heappush(top_heap, item)
-                elif item > top_heap[0]:
-                    heapq.heapreplace(top_heap, item)
+                valid_idx_t = torch.tensor(valid_idx_np, dtype=torch.long, device=device)
+                valid_sims_t = sims_t[valid_idx_t]
+                topn = min(int(pool_k), int(valid_candidates))
+                vals_t, ord_t = torch.topk(valid_sims_t, k=int(topn), largest=True, sorted=True)
+                chosen_idx_t = valid_idx_t[ord_t]
+                chosen_idx = chosen_idx_t.detach().cpu().numpy().tolist()
+                chosen_vals = vals_t.detach().cpu().numpy().tolist()
+                ranked = [(float(sim), str(train_ids[int(i)])) for sim, i in zip(chosen_vals, chosen_idx, strict=True)]
+                ranked = sorted(ranked, key=lambda x: (-x[0], x[1]))
+            else:
+                sims = train_matrix @ feat
+                top_heap: list[tuple[float, str]] = []
+                valid_candidates = 0
+                for idx, (sid, rel) in enumerate(zip(train_ids, train_release_dates, strict=True)):
+                    if rel > cutoff:
+                        continue
+                    valid_candidates += 1
+                    item = (float(sims[idx]), sid)
+                    if len(top_heap) < pool_k:
+                        heapq.heappush(top_heap, item)
+                    elif item > top_heap[0]:
+                        heapq.heapreplace(top_heap, item)
 
-            if valid_candidates < int(n_models):
-                no_candidates_count += 1
-                if len(no_candidates_examples) < 8:
-                    no_candidates_examples.append(f"{tid}:{valid_candidates}")
-                continue
-
-            ranked = sorted(top_heap, key=lambda x: (-x[0], x[1]))
+                if valid_candidates < int(n_models):
+                    no_candidates_count += 1
+                    if len(no_candidates_examples) < 8:
+                        no_candidates_examples.append(f"{tid}:{valid_candidates}")
+                    continue
+                ranked = sorted(top_heap, key=lambda x: (-x[0], x[1]))
             target_len = len(seq)
             coverage_valid: list[dict] = []
             for sim, train_id in ranked:
@@ -918,6 +967,7 @@ def _infer_from_model_artifacts(
             if selected_candidates_total == 0
             else float(selected_chem_total) / float(selected_candidates_total),
         },
+        "compute": backend.to_manifest_dict(),
         "sha256": {
             "predictions_long.parquet": sha256_file(out_path),
             "qa_model.json": None if qa_model_sha256 is None else str(qa_model_sha256),

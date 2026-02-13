@@ -20,6 +20,7 @@ from .bigdata import (
     collect_streaming,
     scan_table,
 )
+from .compute_backend import resolve_compute_backend
 from .errors import raise_error
 from .qa_gnn_ranker import (
     is_qa_gnn_model_file,
@@ -179,6 +180,9 @@ def predict_tbm(
     qa_device: str = "cuda",
     qa_top_pool: int = 40,
     diversity_lambda: float = 0.15,
+    compute_backend: str = "auto",
+    gpu_memory_budget_mb: int = 12_288,
+    gpu_precision: str = "fp32",
     chunk_size: int = 200_000,
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
     max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
@@ -206,6 +210,13 @@ def predict_tbm(
         raise_error("TBM", location, "diversity_lambda invalido (>=0)", impact="1", examples=[str(diversity_lambda)])
     if chunk_size <= 0:
         raise_error("TBM", location, "chunk_size deve ser > 0", impact="1", examples=[str(chunk_size)])
+    backend = resolve_compute_backend(
+        requested=str(compute_backend),
+        precision=str(gpu_precision),
+        gpu_memory_budget_mb=int(gpu_memory_budget_mb),
+        stage="TBM",
+        location=location,
+    )
     align_profiles = _build_alignment_profiles(
         gap_open_scores=gap_open_scores,
         gap_extend_scores=gap_extend_scores,
@@ -580,6 +591,10 @@ def predict_tbm(
             "qa_model_path": None if qa_model_path is None else _rel(qa_model_path, repo_root),
             "qa_model_type": str(qa_model_type),
             "qa_device": str(qa_device),
+            "compute_backend": str(backend.backend),
+            "compute_backend_requested": str(backend.requested),
+            "gpu_precision": str(backend.precision),
+            "gpu_memory_budget_mb": int(backend.gpu_memory_budget_mb),
             "qa_model_weights_path": None
             if qa_gnn_runtime is None
             else _rel(qa_gnn_runtime.weights_path, repo_root),
@@ -598,6 +613,7 @@ def predict_tbm(
             if selected_candidates_total == 0
             else float(selected_chem_total) / float(selected_candidates_total),
         },
+        "compute": backend.to_manifest_dict(),
         "sha256": {
             "predictions_long.parquet": sha256_file(out_path),
             "qa_model.json": None if qa_model_sha256 is None else str(qa_model_sha256),

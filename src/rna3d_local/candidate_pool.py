@@ -15,6 +15,7 @@ from .bigdata import (
     collect_streaming,
     scan_table,
 )
+from .compute_backend import resolve_compute_backend
 from .errors import raise_error
 from .qa_ranker import candidate_geometry_features
 from .utils import sha256_file
@@ -197,11 +198,21 @@ def build_candidate_pool_from_predictions(
     repo_root: Path,
     prediction_entries: list[tuple[str | None, Path]],
     out_path: Path,
+    compute_backend: str = "auto",
+    gpu_memory_budget_mb: int = 12_288,
+    gpu_precision: str = "fp32",
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
     max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> tuple[Path, Path]:
     location = "src/rna3d_local/candidate_pool.py:build_candidate_pool_from_predictions"
     assert_memory_budget(stage="POOL", location=location, budget_mb=memory_budget_mb)
+    backend = resolve_compute_backend(
+        requested=str(compute_backend),
+        precision=str(gpu_precision),
+        gpu_memory_budget_mb=int(gpu_memory_budget_mb),
+        stage="POOL",
+        location=location,
+    )
 
     if len(prediction_entries) == 0:
         raise_error("POOL", location, "prediction_entries vazio", impact="0", examples=[])
@@ -404,6 +415,7 @@ def build_candidate_pool_from_predictions(
             "targets": int(out_df.select("target_id").n_unique()),
             "sources": int(out_df.select("source").n_unique()),
         },
+        "compute": backend.to_manifest_dict(),
         "feature_names": list(CANDIDATE_POOL_DEFAULT_FEATURE_NAMES),
         "sha256": {"candidate_pool.parquet": sha256_file(out_path)},
     }

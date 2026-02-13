@@ -16,6 +16,7 @@ from ..bigdata import (
     assert_row_budget,
     scan_labels,
 )
+from ..compute_backend import resolve_compute_backend
 from ..errors import raise_error
 from ..utils import sha256_file
 from .config import RnaProConfig
@@ -57,6 +58,9 @@ def train_rnapro(
     train_labels_parquet_dir: Path,
     out_dir: Path,
     config: RnaProConfig,
+    compute_backend: str = "auto",
+    gpu_memory_budget_mb: int = 12_288,
+    gpu_precision: str = "fp32",
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
     max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> Path:
@@ -74,6 +78,13 @@ def train_rnapro(
         config.validate()
     except ValueError as e:
         raise_error("RNAPRO_TRAIN", location, "config invalida", impact="1", examples=[str(e)])
+    backend = resolve_compute_backend(
+        requested=str(compute_backend),
+        precision=str(gpu_precision),
+        gpu_memory_budget_mb=int(gpu_memory_budget_mb),
+        stage="RNAPRO_TRAIN",
+        location=location,
+    )
 
     seq_df = pl.read_csv(train_sequences_path, infer_schema_length=1000)
     assert_row_budget(
@@ -200,6 +211,7 @@ def train_rnapro(
             "n_coordinate_rows": int(coords_df.height),
             "feature_dim": int(config.feature_dim),
         },
+        "compute": backend.to_manifest_dict(),
         "paths": {
             "target_features": _rel(features_path, repo_root),
             "sequence_lookup": _rel(seq_lookup_path, repo_root),
