@@ -197,6 +197,21 @@ def test_tbm_rnapro_ensemble_export_and_gating(tmp_path: Path) -> None:
             allow_regression=False,
         )
 
+    # Strict improvement gate: tie with baseline must be blocked.
+    tie_score_json = tmp_path / "score_tie.json"
+    tie_score_json.write_text(json.dumps({"score": 0.50}), encoding="utf-8")
+    with pytest.raises(PipelineError):
+        assert_submission_allowed(
+            sample_path=paths["sample"],
+            submission_path=submission,
+            report_path=tmp_path / "blocked_tie_report.json",
+            is_smoke=False,
+            is_partial=False,
+            score_json_path=tie_score_json,
+            baseline_score=0.50,
+            allow_regression=False,
+        )
+
 
 def test_retrieval_fails_when_temporal_filter_removes_all(tmp_path: Path) -> None:
     paths = _setup_small_dataset(tmp_path)

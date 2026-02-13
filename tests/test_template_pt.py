@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import pickle
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -152,3 +154,62 @@ def test_infer_precomputed_fails_when_template_file_missing(tmp_path: Path) -> N
             template_source="tbm",
         )
 
+
+def test_infer_precomputed_rerank_skips_incomplete_models(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    model_dir = tmp_path / "model"
+    template_dir = tmp_path / "template_pt"
+    pred_out = tmp_path / "pred.parquet"
+
+    seq = "ACGUACGUAC"
+    _write_csv(
+        targets,
+        [
+            {"target_id": "QX", "sequence": seq, "temporal_cutoff": "2022-01-01"},
+        ],
+    )
+    _write_model_json(model_dir)
+
+    n_res = len(seq)
+    coords = np.zeros((3, n_res, 3), dtype=np.float32)
+    mask = np.ones((3, n_res), dtype=bool)
+    for ridx in range(n_res):
+        coords[0, ridx, :] = [float(ridx), 0.0, 0.0]
+        coords[1, ridx, :] = [float(ridx), 0.0, 0.0]
+        coords[2, ridx, :] = [float(n_res - ridx), 0.0, 0.0]
+    mask[2, n_res - 1] = False
+
+    target_pt_dir = template_dir / "QX"
+    target_pt_dir.mkdir(parents=True, exist_ok=True)
+    with (target_pt_dir / "template_features.pt").open("wb") as f:
+        pickle.dump(
+            {
+                "target_id": "QX",
+                "sequence": seq,
+                "model_ids": [1, 2, 3],
+                "coordinates": coords,
+                "mask": mask,
+            },
+            f,
+            protocol=4,
+        )
+
+    infer_rnapro(
+        repo_root=tmp_path,
+        model_dir=model_dir,
+        target_sequences_path=targets,
+        out_path=pred_out,
+        n_models=2,
+        min_coverage=0.5,
+        use_template="ca_precomputed",
+        template_features_dir=template_dir,
+        template_source="tbm",
+        chunk_size=2,
+        qa_top_pool=3,
+        diversity_lambda=0.15,
+    )
+
+    df = pl.read_parquet(pred_out)
+    assert df.height == (2 * n_res)
+    assert sorted(df.get_column("model_id").unique().to_list()) == [1, 2]
+    assert df.get_column("coverage").min() == pytest.approx(1.0)
