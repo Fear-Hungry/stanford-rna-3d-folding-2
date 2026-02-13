@@ -25,18 +25,30 @@ def _base_payload() -> dict:
     }
 
 
-def test_hardening_requires_robust_report_by_default(tmp_path: Path) -> None:
+def test_hardening_requires_robust_report(tmp_path: Path) -> None:
     with pytest.raises(PipelineError):
         _enforce_submit_hardening(
             location="tests",
-            allow_regression=False,
-            require_robust_report=True,
             require_min_cv_count=2,
-            block_public_validation_without_cv=True,
-            block_target_patch=True,
-            allow_calibration_extrapolation=False,
             robust_report_path=None,
             robust_payload=None,
+            readiness_report_path=tmp_path / "readiness.json",
+            readiness_payload={"allowed": True},
+            submission_path=tmp_path / "submission.csv",
+            message="msg",
+        )
+
+
+def test_hardening_requires_readiness_report(tmp_path: Path) -> None:
+    payload = _base_payload()
+    with pytest.raises(PipelineError):
+        _enforce_submit_hardening(
+            location="tests",
+            require_min_cv_count=2,
+            robust_report_path=tmp_path / "robust_eval.json",
+            robust_payload=payload,
+            readiness_report_path=None,
+            readiness_payload=None,
             submission_path=tmp_path / "submission.csv",
             message="msg",
         )
@@ -49,72 +61,43 @@ def test_hardening_blocks_public_validation_without_cv(tmp_path: Path) -> None:
     with pytest.raises(PipelineError):
         _enforce_submit_hardening(
             location="tests",
-            allow_regression=False,
-            require_robust_report=True,
             require_min_cv_count=0,
-            block_public_validation_without_cv=True,
-            block_target_patch=False,
-            allow_calibration_extrapolation=False,
             robust_report_path=tmp_path / "robust_eval.json",
             robust_payload=payload,
+            readiness_report_path=tmp_path / "readiness.json",
+            readiness_payload={"allowed": True},
             submission_path=tmp_path / "submission.csv",
             message="msg",
         )
 
 
-def test_hardening_blocks_extrapolation_when_not_allowed(tmp_path: Path) -> None:
+def test_hardening_blocks_extrapolation(tmp_path: Path) -> None:
     payload = _base_payload()
     payload["alignment_decision"]["is_extrapolation"] = True
     with pytest.raises(PipelineError):
         _enforce_submit_hardening(
             location="tests",
-            allow_regression=False,
-            require_robust_report=True,
             require_min_cv_count=2,
-            block_public_validation_without_cv=False,
-            block_target_patch=False,
-            allow_calibration_extrapolation=False,
             robust_report_path=tmp_path / "robust_eval.json",
             robust_payload=payload,
+            readiness_report_path=tmp_path / "readiness.json",
+            readiness_payload={"allowed": True},
             submission_path=tmp_path / "submission.csv",
             message="msg",
         )
 
 
-def test_hardening_allows_when_all_requirements_pass(tmp_path: Path) -> None:
-    payload = _base_payload()
-    _enforce_submit_hardening(
-        location="tests",
-        allow_regression=False,
-        require_robust_report=True,
-        require_min_cv_count=2,
-        block_public_validation_without_cv=True,
-        block_target_patch=True,
-        allow_calibration_extrapolation=False,
-        robust_report_path=tmp_path / "robust_eval.json",
-        robust_payload=payload,
-        submission_path=tmp_path / "submission.csv",
-        message="generic_candidate",
-    )
-
-
-def test_hardening_requires_readiness_report_when_enabled(tmp_path: Path) -> None:
+def test_hardening_blocks_target_patch_pattern(tmp_path: Path) -> None:
     payload = _base_payload()
     with pytest.raises(PipelineError):
         _enforce_submit_hardening(
             location="tests",
-            allow_regression=False,
-            require_robust_report=False,
-            require_readiness_report=True,
-            require_min_cv_count=0,
-            block_public_validation_without_cv=False,
-            block_target_patch=False,
-            allow_calibration_extrapolation=False,
-            robust_report_path=None,
+            require_min_cv_count=2,
+            robust_report_path=tmp_path / "robust_eval.json",
             robust_payload=payload,
-            readiness_report_path=None,
-            readiness_payload=None,
-            submission_path=tmp_path / "submission.csv",
+            readiness_report_path=tmp_path / "readiness.json",
+            readiness_payload={"allowed": True},
+            submission_path=tmp_path / "submission_target_patch.csv",
             message="msg",
         )
 
@@ -125,17 +108,41 @@ def test_hardening_blocks_when_readiness_report_disallows(tmp_path: Path) -> Non
     with pytest.raises(PipelineError):
         _enforce_submit_hardening(
             location="tests",
-            allow_regression=False,
-            require_robust_report=False,
-            require_readiness_report=True,
-            require_min_cv_count=0,
-            block_public_validation_without_cv=False,
-            block_target_patch=False,
-            allow_calibration_extrapolation=False,
-            robust_report_path=None,
+            require_min_cv_count=2,
+            robust_report_path=tmp_path / "robust_eval.json",
             robust_payload=payload,
             readiness_report_path=tmp_path / "readiness.json",
             readiness_payload=readiness_payload,
             submission_path=tmp_path / "submission.csv",
             message="msg",
         )
+
+
+def test_hardening_blocks_when_robust_report_disallows(tmp_path: Path) -> None:
+    payload = _base_payload()
+    payload["allowed"] = False
+    with pytest.raises(PipelineError):
+        _enforce_submit_hardening(
+            location="tests",
+            require_min_cv_count=2,
+            robust_report_path=tmp_path / "robust_eval.json",
+            robust_payload=payload,
+            readiness_report_path=tmp_path / "readiness.json",
+            readiness_payload={"allowed": True},
+            submission_path=tmp_path / "submission.csv",
+            message="msg",
+        )
+
+
+def test_hardening_allows_when_all_requirements_pass(tmp_path: Path) -> None:
+    payload = _base_payload()
+    _enforce_submit_hardening(
+        location="tests",
+        require_min_cv_count=2,
+        robust_report_path=tmp_path / "robust_eval.json",
+        robust_payload=payload,
+        readiness_report_path=tmp_path / "readiness.json",
+        readiness_payload={"allowed": True},
+        submission_path=tmp_path / "submission.csv",
+        message="generic_candidate",
+    )

@@ -41,7 +41,6 @@ from .qa_rnrank import (
     select_top5_global_with_qa_rnrank,
     train_qa_rnrank,
 )
-from .research import generate_report, run_experiment, sync_literature, verify_run
 from .retrieval import retrieve_template_candidates
 from .robust_score import evaluate_robust_gate, read_score_json, write_robust_report
 from .rnapro import RnaProConfig, infer_rnapro, train_rnapro
@@ -163,13 +162,7 @@ def _looks_like_target_patch(*, text: str) -> bool:
 def _enforce_submit_hardening(
     *,
     location: str,
-    allow_regression: bool,
-    require_robust_report: bool,
     require_min_cv_count: int,
-    block_public_validation_without_cv: bool,
-    block_target_patch: bool,
-    allow_calibration_extrapolation: bool,
-    require_readiness_report: bool = False,
     robust_report_path: Path | None,
     robust_payload: dict | None,
     readiness_report_path: Path | None = None,
@@ -177,7 +170,7 @@ def _enforce_submit_hardening(
     submission_path: Path,
     message: str,
 ) -> None:
-    if bool(require_robust_report) and robust_payload is None and (not bool(allow_regression)):
+    if robust_payload is None:
         raise_error(
             "GATE",
             location,
@@ -185,20 +178,7 @@ def _enforce_submit_hardening(
             impact="1",
             examples=["--robust-report runs/<...>/robust_eval.json"],
         )
-    if robust_payload is None:
-        if bool(require_readiness_report) and readiness_payload is None and (not bool(allow_regression)):
-            raise_error(
-                "GATE",
-                location,
-                "submissao bloqueada: readiness_report obrigatorio para submit competitivo",
-                impact="1",
-                examples=["--readiness-report runs/<...>/submit_readiness.json"],
-            )
-        if readiness_payload is None:
-            return
-        # `robust_report` opcional nesse caminho: readiness aprovado e sem checks extras de robust.
-        return
-    if bool(require_readiness_report) and readiness_payload is None and (not bool(allow_regression)):
+    if readiness_payload is None:
         raise_error(
             "GATE",
             location,
@@ -206,19 +186,18 @@ def _enforce_submit_hardening(
             impact="1",
             examples=["--readiness-report runs/<...>/submit_readiness.json"],
         )
-    if readiness_payload is not None:
-        readiness_allowed = bool(readiness_payload.get("allowed", False))
-        if (not readiness_allowed) and (not bool(allow_regression)):
-            raise_error(
-                "GATE",
-                location,
-                "submissao bloqueada por readiness_report",
-                impact="1",
-                examples=[str(readiness_report_path) if readiness_report_path is not None else "-"],
-            )
+    readiness_allowed = bool(readiness_payload.get("allowed", False))
+    if not readiness_allowed:
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada por readiness_report",
+            impact="1",
+            examples=[str(readiness_report_path) if readiness_report_path is not None else "-"],
+        )
 
     robust_allowed = bool(robust_payload.get("allowed", False))
-    if (not robust_allowed) and (not bool(allow_regression)):
+    if not robust_allowed:
         raise_error(
             "GATE",
             location,
@@ -237,7 +216,7 @@ def _enforce_submit_hardening(
     if min_cv < 0:
         raise_error("GATE", location, "require_min_cv_count deve ser >= 0", impact="1", examples=[str(min_cv)])
     cv_count = int(summary.get("cv_count") or 0)
-    if cv_count < min_cv and (not bool(allow_regression)):
+    if cv_count < min_cv:
         raise_error(
             "GATE",
             location,
@@ -248,7 +227,7 @@ def _enforce_submit_hardening(
 
     risk_flags = [str(x) for x in (summary.get("risk_flags") or [])]
     public_score_name = str(summary.get("public_score_name") or "")
-    if bool(block_public_validation_without_cv) and cv_count <= 0 and public_score_name == "public_validation" and (not bool(allow_regression)):
+    if cv_count <= 0 and public_score_name == "public_validation":
         raise_error(
             "GATE",
             location,
@@ -256,7 +235,7 @@ def _enforce_submit_hardening(
             impact="1",
             examples=["public_score_name=public_validation", f"cv_count={cv_count}"],
         )
-    if bool(block_public_validation_without_cv) and ("public_validation_without_cv" in risk_flags) and (not bool(allow_regression)):
+    if "public_validation_without_cv" in risk_flags:
         raise_error(
             "GATE",
             location,
@@ -265,27 +244,26 @@ def _enforce_submit_hardening(
             examples=risk_flags[:8],
         )
 
-    if bool(block_target_patch) and (not bool(allow_regression)):
-        hints: list[str] = []
-        if _looks_like_target_patch(text=submission_path.name):
-            hints.append(f"submission={submission_path.name}")
-        if _looks_like_target_patch(text=message):
-            hints.append("message_hint=target_patch")
-        if robust_report_path is not None and _looks_like_target_patch(text=str(robust_report_path)):
-            hints.append("robust_report_hint=target_patch")
-        if hints:
-            raise_error(
-                "GATE",
-                location,
-                "submissao bloqueada: padrao target_patch proibido por gate",
-                impact=str(len(hints)),
-                examples=hints[:8],
-            )
+    hints: list[str] = []
+    if _looks_like_target_patch(text=submission_path.name):
+        hints.append(f"submission={submission_path.name}")
+    if _looks_like_target_patch(text=message):
+        hints.append("message_hint=target_patch")
+    if robust_report_path is not None and _looks_like_target_patch(text=str(robust_report_path)):
+        hints.append("robust_report_hint=target_patch")
+    if hints:
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada: padrao target_patch proibido por gate",
+            impact=str(len(hints)),
+            examples=hints[:8],
+        )
 
     alignment = robust_payload.get("alignment_decision")
     if isinstance(alignment, dict):
         is_extrapolation = bool(alignment.get("is_extrapolation", False))
-        if is_extrapolation and (not bool(allow_calibration_extrapolation)) and (not bool(allow_regression)):
+        if is_extrapolation:
             raise_error(
                 "GATE",
                 location,
@@ -563,6 +541,10 @@ def _cmd_retrieve_templates(args: argparse.Namespace) -> int:
         refine_open_gap_score=float(args.refine_open_gap_score),
         refine_extend_gap_score=float(args.refine_extend_gap_score),
         chunk_size=int(args.chunk_size),
+        compute_backend=str(args.compute_backend),
+        gpu_memory_budget_mb=int(args.gpu_memory_budget_mb),
+        gpu_precision=str(args.gpu_precision),
+        gpu_hash_dim=int(args.gpu_hash_dim),
         memory_budget_mb=int(args.memory_budget_mb),
         max_rows_in_memory=int(args.max_rows_in_memory),
     )
@@ -603,6 +585,9 @@ def _cmd_predict_tbm(args: argparse.Namespace) -> int:
         qa_device=str(args.qa_device),
         qa_top_pool=int(args.qa_top_pool),
         diversity_lambda=float(args.diversity_lambda),
+        compute_backend=str(args.compute_backend),
+        gpu_memory_budget_mb=int(args.gpu_memory_budget_mb),
+        gpu_precision=str(args.gpu_precision),
         chunk_size=int(args.chunk_size),
         memory_budget_mb=int(args.memory_budget_mb),
         max_rows_in_memory=int(args.max_rows_in_memory),
@@ -672,6 +657,9 @@ def _cmd_train_rnapro(args: argparse.Namespace) -> int:
         train_labels_parquet_dir=(repo / args.train_labels_parquet_dir).resolve(),
         out_dir=out_dir,
         config=cfg,
+        compute_backend=str(args.compute_backend),
+        gpu_memory_budget_mb=int(args.gpu_memory_budget_mb),
+        gpu_precision=str(args.gpu_precision),
         memory_budget_mb=int(args.memory_budget_mb),
         max_rows_in_memory=int(args.max_rows_in_memory),
     )
@@ -699,6 +687,9 @@ def _cmd_predict_rnapro(args: argparse.Namespace) -> int:
         qa_device=str(args.qa_device),
         qa_top_pool=int(args.qa_top_pool),
         diversity_lambda=float(args.diversity_lambda),
+        compute_backend=str(args.compute_backend),
+        gpu_memory_budget_mb=int(args.gpu_memory_budget_mb),
+        gpu_precision=str(args.gpu_precision),
         memory_budget_mb=int(args.memory_budget_mb),
         max_rows_in_memory=int(args.max_rows_in_memory),
     )
@@ -825,6 +816,9 @@ def _cmd_build_candidate_pool(args: argparse.Namespace) -> int:
         repo_root=repo,
         prediction_entries=entries,
         out_path=(repo / args.out).resolve(),
+        compute_backend=str(args.compute_backend),
+        gpu_memory_budget_mb=int(args.gpu_memory_budget_mb),
+        gpu_precision=str(args.gpu_precision),
         memory_budget_mb=int(args.memory_budget_mb),
         max_rows_in_memory=int(args.max_rows_in_memory),
     )
@@ -1007,18 +1001,12 @@ def _cmd_submit_kaggle(args: argparse.Namespace) -> int:
         score_json_path=score_json_path,
         baseline_score=None if args.baseline_score is None else float(args.baseline_score),
         min_improvement=float(args.min_improvement),
-        allow_regression=bool(args.allow_regression),
+        allow_regression=False,
     )
 
     _enforce_submit_hardening(
         location=location,
-        allow_regression=bool(args.allow_regression),
-        require_robust_report=bool(args.require_robust_report),
-        require_readiness_report=bool(args.require_readiness_report),
         require_min_cv_count=int(args.require_min_cv_count),
-        block_public_validation_without_cv=bool(args.block_public_validation_without_cv),
-        block_target_patch=bool(args.block_target_patch),
-        allow_calibration_extrapolation=bool(args.allow_calibration_extrapolation),
         robust_report_path=robust_report,
         robust_payload=robust_payload,
         readiness_report_path=readiness_report,
@@ -1054,11 +1042,11 @@ def _cmd_submit_kaggle(args: argparse.Namespace) -> int:
             method=str(args.calibration_method),
             min_public_improvement=float(args.min_public_improvement),
             min_pairs=int(args.calibration_min_pairs),
-            allow_extrapolation=bool(args.allow_calibration_extrapolation),
+            allow_extrapolation=False,
         )
         calibration["alignment_decision"] = alignment_decision
         write_calibration_report(report=calibration, out_path=calibration_report_out)
-        if not bool(alignment_decision.get("allowed", False)) and not bool(args.allow_regression):
+        if not bool(alignment_decision.get("allowed", False)):
             raise_error(
                 "GATE",
                 location,
@@ -1155,7 +1143,7 @@ def _cmd_calibrate_kaggle_local(args: argparse.Namespace) -> int:
             method=str(args.method),
             min_public_improvement=float(args.min_public_improvement),
             min_pairs=int(args.min_pairs),
-            allow_extrapolation=bool(args.allow_calibration_extrapolation),
+            allow_extrapolation=False,
         )
         report["alignment_decision"] = decision
     write_calibration_report(report=report, out_path=out)
@@ -1184,8 +1172,8 @@ def _cmd_evaluate_robust(args: argparse.Namespace) -> int:
         calibration_min_pairs=int(args.calibration_min_pairs),
         min_public_improvement=float(args.min_public_improvement),
         min_cv_count=int(args.min_cv_count),
-        block_public_validation_without_cv=bool(args.block_public_validation_without_cv),
-        allow_calibration_extrapolation=bool(args.allow_calibration_extrapolation),
+        block_public_validation_without_cv=True,
+        allow_calibration_extrapolation=False,
     )
     out_path = (repo / args.out).resolve()
     if args.out == "runs/auto":
@@ -1224,8 +1212,8 @@ def _cmd_evaluate_submit_readiness(args: argparse.Namespace) -> int:
         candidate_scores=candidate_scores,
         baseline_scores=baseline_scores,
         public_score_name=str(args.public_score_name),
-        require_baseline=bool(args.require_baseline),
-        require_public_score=bool(args.require_public_score),
+        require_baseline=True,
+        require_public_score=True,
         min_cv_count=int(args.min_cv_count),
         min_cv_improvement_count=int(args.min_cv_improvement_count),
         min_fold_improvement=float(args.min_fold_improvement),
@@ -1240,10 +1228,10 @@ def _cmd_evaluate_submit_readiness(args: argparse.Namespace) -> int:
         calibration_page_size=int(args.calibration_page_size),
         calibration_min_pairs=int(args.calibration_min_pairs),
         min_public_improvement=float(args.min_public_improvement),
-        allow_calibration_extrapolation=bool(args.allow_calibration_extrapolation),
+        allow_calibration_extrapolation=False,
         min_calibration_pearson=float(args.min_calibration_pearson),
         min_calibration_spearman=float(args.min_calibration_spearman),
-        block_public_validation_without_cv=bool(args.block_public_validation_without_cv),
+        block_public_validation_without_cv=True,
     )
     out_path = (repo / args.out).resolve()
     if args.out == "runs/auto":
@@ -1300,101 +1288,6 @@ def _cmd_evaluate_train_gate(args: argparse.Namespace) -> int:
             sort_keys=True,
         )
     )
-    return 0
-
-
-def _cmd_research_sync_literature(args: argparse.Namespace) -> int:
-    repo = _find_repo_root(Path.cwd())
-    out_dir = (repo / args.out_dir).resolve()
-    if args.out_dir == "runs/research/literature/auto":
-        topic_slug = str(args.topic_slug or "topic").strip().lower()
-        topic_slug = "".join([ch if ch.isalnum() else "-" for ch in topic_slug]).strip("-")
-        if topic_slug in {"", "topic"}:
-            raw = str(args.topic).strip().lower()
-            topic_slug = "".join([ch if ch.isalnum() else "-" for ch in raw]).strip("-")
-        while "--" in topic_slug:
-            topic_slug = topic_slug.replace("--", "-")
-        if not topic_slug:
-            topic_slug = "topic"
-        out_dir = repo / "runs" / "research" / "literature" / f"{_utc_now_compact()}_{topic_slug}"
-    res = sync_literature(
-        topic=str(args.topic),
-        out_dir=out_dir,
-        limit_per_source=int(args.limit_per_source),
-        timeout_s=int(args.timeout_s),
-        download_pdfs=bool(args.download_pdfs),
-        strict_pdf_download=bool(args.strict_pdf_download),
-        max_pdf_mb=int(args.max_pdf_mb),
-        strict_sources=bool(args.strict_sources),
-    )
-    print(
-        json.dumps(
-            {
-                "out_dir": _rel_or_abs(res.out_dir, repo),
-                "papers": _rel_or_abs(res.papers_path, repo),
-                "manifest": _rel_or_abs(res.manifest_path, repo),
-                "related_work": _rel_or_abs(res.related_work_path, repo),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _cmd_research_run(args: argparse.Namespace) -> int:
-    repo = _find_repo_root(Path.cwd())
-    out_base_dir = (repo / args.out_base_dir).resolve()
-    res = run_experiment(
-        repo_root=repo,
-        config_path=(repo / args.config).resolve(),
-        run_id=str(args.run_id),
-        out_base_dir=out_base_dir,
-        allow_existing_run_dir=bool(args.allow_existing_run_dir),
-    )
-    print(
-        json.dumps(
-            {
-                "run_dir": _rel_or_abs(res.run_dir, repo),
-                "manifest": _rel_or_abs(res.manifest_path, repo),
-                "results": _rel_or_abs(res.results_path, repo),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _cmd_research_verify(args: argparse.Namespace) -> int:
-    repo = _find_repo_root(Path.cwd())
-    allowed_statuses = tuple([s.strip() for s in str(args.allowed_statuses).split(",") if s.strip()])
-    res = verify_run(
-        repo_root=repo,
-        run_dir=(repo / args.run_dir).resolve(),
-        allowed_statuses=allowed_statuses,
-    )
-    print(
-        json.dumps(
-            {
-                "accepted": bool(res.accepted),
-                "verify_path": _rel_or_abs(res.verify_path, repo),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-    return 0
-
-
-def _cmd_research_report(args: argparse.Namespace) -> int:
-    repo = _find_repo_root(Path.cwd())
-    run_dir = (repo / args.run_dir).resolve()
-    out_path = (repo / args.out).resolve()
-    if args.out == "runs/research/reports/auto.md":
-        out_path = repo / "runs" / "research" / "reports" / f"{run_dir.name}.md"
-    report_path = generate_report(run_dir=run_dir, out_path=out_path)
-    print(json.dumps({"report": _rel_or_abs(report_path, repo)}, indent=2, sort_keys=True))
     return 0
 
 
@@ -1521,6 +1414,10 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--refine-alignment-weight", type=float, default=0.25)
     rt.add_argument("--refine-open-gap-score", type=float, default=-5.0)
     rt.add_argument("--refine-extend-gap-score", type=float, default=-1.0)
+    rt.add_argument("--compute-backend", choices=["auto", "cpu", "cuda"], default="auto")
+    rt.add_argument("--gpu-memory-budget-mb", type=int, default=12288)
+    rt.add_argument("--gpu-precision", choices=["fp32", "fp16"], default="fp32")
+    rt.add_argument("--gpu-hash-dim", type=int, default=4096)
     rt.add_argument("--chunk-size", type=int, default=200_000)
     rt.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     rt.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
@@ -1544,6 +1441,9 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--qa-device", choices=["auto", "cpu", "cuda"], default="cuda")
     pt.add_argument("--qa-top-pool", type=int, default=40)
     pt.add_argument("--diversity-lambda", type=float, default=0.15)
+    pt.add_argument("--compute-backend", choices=["auto", "cpu", "cuda"], default="auto")
+    pt.add_argument("--gpu-memory-budget-mb", type=int, default=12288)
+    pt.add_argument("--gpu-precision", choices=["fp32", "fp16"], default="fp32")
     pt.add_argument("--chunk-size", type=int, default=200_000)
     pt.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     pt.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
@@ -1572,6 +1472,9 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--n-models", type=int, default=5)
     tr.add_argument("--seed", type=int, default=123)
     tr.add_argument("--min-coverage", type=float, default=0.30)
+    tr.add_argument("--compute-backend", choices=["auto", "cpu", "cuda"], default="auto")
+    tr.add_argument("--gpu-memory-budget-mb", type=int, default=12288)
+    tr.add_argument("--gpu-precision", choices=["fp32", "fp16"], default="fp32")
     tr.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     tr.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     tr.set_defaults(fn=_cmd_train_rnapro)
@@ -1606,6 +1509,9 @@ def build_parser() -> argparse.ArgumentParser:
     ir.add_argument("--qa-device", choices=["auto", "cpu", "cuda"], default="cuda")
     ir.add_argument("--qa-top-pool", type=int, default=40)
     ir.add_argument("--diversity-lambda", type=float, default=0.15)
+    ir.add_argument("--compute-backend", choices=["auto", "cpu", "cuda"], default="auto")
+    ir.add_argument("--gpu-memory-budget-mb", type=int, default=12288)
+    ir.add_argument("--gpu-precision", choices=["fp32", "fp16"], default="fp32")
     ir.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     ir.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     ir.set_defaults(fn=_cmd_predict_rnapro)
@@ -1678,6 +1584,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prediction input path or source=path (repeatable). Example: --predictions tbm=runs/tbm.parquet --predictions rnapro=runs/rnapro.parquet",
     )
     bcp.add_argument("--out", required=True, help="Output candidate pool parquet")
+    bcp.add_argument("--compute-backend", choices=["auto", "cpu", "cuda"], default="auto")
+    bcp.add_argument("--gpu-memory-budget-mb", type=int, default=12288)
+    bcp.add_argument("--gpu-precision", choices=["fp32", "fp16"], default="fp32")
     bcp.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     bcp.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     bcp.set_defaults(fn=_cmd_build_candidate_pool)
@@ -1766,11 +1675,11 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--message", required=True)
     sk.add_argument("--gating-report", default="runs/auto")
     sk.add_argument("--calibration-report", default="runs/auto")
-    sk.add_argument("--robust-report", default=None, help="Optional robust evaluation report path; if provided and allowed=false submit is blocked")
+    sk.add_argument("--robust-report", required=True, help="Robust evaluation report path (required)")
     sk.add_argument(
         "--readiness-report",
-        default=None,
-        help="Submit readiness report generated by evaluate-submit-readiness; if provided and allowed=false submit is blocked",
+        required=True,
+        help="Submit readiness report generated by evaluate-submit-readiness (required)",
     )
     sk.add_argument("--score-json", default=None)
     sk.add_argument("--baseline-score", type=float, default=None)
@@ -1785,17 +1694,7 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--calibration-method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
     sk.add_argument("--calibration-page-size", type=int, default=100)
     sk.add_argument("--calibration-min-pairs", type=int, default=3)
-    sk.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
-    sk.add_argument("--require-robust-report", action="store_true", default=True)
-    sk.add_argument("--allow-missing-robust-report", dest="require_robust_report", action="store_false")
-    sk.add_argument("--require-readiness-report", action="store_true", default=True)
-    sk.add_argument("--allow-missing-readiness-report", dest="require_readiness_report", action="store_false")
     sk.add_argument("--require-min-cv-count", type=int, default=2)
-    sk.add_argument("--block-public-validation-without-cv", action="store_true", default=True)
-    sk.add_argument("--allow-public-validation-without-cv", dest="block_public_validation_without_cv", action="store_false")
-    sk.add_argument("--block-target-patch", action="store_true", default=True)
-    sk.add_argument("--allow-target-patch", dest="block_target_patch", action="store_false")
-    sk.add_argument("--allow-regression", action="store_true")
     sk.add_argument("--is-smoke", action="store_true")
     sk.add_argument("--is-partial", action="store_true")
     sk.set_defaults(fn=_cmd_submit_kaggle)
@@ -1809,7 +1708,6 @@ def build_parser() -> argparse.ArgumentParser:
     kc.add_argument("--method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
     kc.add_argument("--min-public-improvement", type=float, default=0.0)
     kc.add_argument("--min-pairs", type=int, default=3)
-    kc.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
     kc.set_defaults(fn=_cmd_calibrate_kaggle_local)
 
     rb = sp.add_parser("evaluate-robust", help="Aggregate multiple local score.json files and apply robust + calibrated go/no-go gate")
@@ -1830,9 +1728,6 @@ def build_parser() -> argparse.ArgumentParser:
     rb.add_argument("--calibration-min-pairs", type=int, default=3)
     rb.add_argument("--min-public-improvement", type=float, default=0.0)
     rb.add_argument("--min-cv-count", type=int, default=2)
-    rb.add_argument("--block-public-validation-without-cv", action="store_true", default=True)
-    rb.add_argument("--allow-public-validation-without-cv", dest="block_public_validation_without_cv", action="store_false")
-    rb.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
     rb.set_defaults(fn=_cmd_evaluate_robust)
 
     sr = sp.add_parser(
@@ -1853,10 +1748,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sr.add_argument("--out", default="runs/auto")
     sr.add_argument("--public-score-name", default="public_validation")
-    sr.add_argument("--require-baseline", action="store_true", default=True)
-    sr.add_argument("--allow-missing-baseline", dest="require_baseline", action="store_false")
-    sr.add_argument("--require-public-score", action="store_true", default=True)
-    sr.add_argument("--allow-missing-public-score", dest="require_public_score", action="store_false")
     sr.add_argument("--min-cv-count", type=int, default=3)
     sr.add_argument("--min-cv-improvement-count", type=int, default=2)
     sr.add_argument("--min-fold-improvement", type=float, default=0.0)
@@ -1871,11 +1762,8 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--calibration-page-size", type=int, default=100)
     sr.add_argument("--calibration-min-pairs", type=int, default=3)
     sr.add_argument("--min-public-improvement", type=float, default=0.0)
-    sr.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
     sr.add_argument("--min-calibration-pearson", type=float, default=0.0)
     sr.add_argument("--min-calibration-spearman", type=float, default=0.0)
-    sr.add_argument("--block-public-validation-without-cv", action="store_true", default=True)
-    sr.add_argument("--allow-public-validation-without-cv", dest="block_public_validation_without_cv", action="store_false")
     sr.set_defaults(fn=_cmd_evaluate_submit_readiness)
 
     tg = sp.add_parser("evaluate-train-gate", help="Evaluate anti-overfitting gate from trained QA model JSON (train_metrics vs val_metrics)")
@@ -1889,38 +1777,6 @@ def build_parser() -> argparse.ArgumentParser:
     tg.add_argument("--max-pearson-drop", type=float, default=0.30)
     tg.add_argument("--allow-overfit-model", action="store_true", default=False)
     tg.set_defaults(fn=_cmd_evaluate_train_gate)
-
-    rsl = sp.add_parser("research-sync-literature", help="Search literature and optionally download OA PDFs")
-    rsl.add_argument("--topic", required=True)
-    rsl.add_argument("--topic-slug", default="topic")
-    rsl.add_argument("--out-dir", default="runs/research/literature/auto")
-    rsl.add_argument("--limit-per-source", type=int, default=5)
-    rsl.add_argument("--timeout-s", type=int, default=30)
-    rsl.add_argument("--max-pdf-mb", type=int, default=30)
-    rsl.add_argument("--download-pdfs", action="store_true", default=True)
-    rsl.add_argument("--no-download-pdfs", dest="download_pdfs", action="store_false")
-    rsl.add_argument("--strict-pdf-download", action="store_true", default=True)
-    rsl.add_argument("--allow-pdf-download-failures", dest="strict_pdf_download", action="store_false")
-    rsl.add_argument("--strict-sources", action="store_true", default=True)
-    rsl.add_argument("--allow-source-failures", dest="strict_sources", action="store_false")
-    rsl.set_defaults(fn=_cmd_research_sync_literature)
-
-    rr = sp.add_parser("research-run", help="Run experiment harness and persist structured artifacts")
-    rr.add_argument("--config", required=True, help="YAML/JSON config for the experiment")
-    rr.add_argument("--run-id", required=True)
-    rr.add_argument("--out-base-dir", default="runs/research/experiments")
-    rr.add_argument("--allow-existing-run-dir", action="store_true")
-    rr.set_defaults(fn=_cmd_research_run)
-
-    rv = sp.add_parser("research-verify", help="Run strict gate: solver + checks + reproducibility")
-    rv.add_argument("--run-dir", required=True, help="Experiment run directory")
-    rv.add_argument("--allowed-statuses", default="optimal,feasible,success,complete")
-    rv.set_defaults(fn=_cmd_research_verify)
-
-    rp = sp.add_parser("research-report", help="Generate markdown report from experiment artifacts")
-    rp.add_argument("--run-dir", required=True, help="Experiment run directory")
-    rp.add_argument("--out", default="runs/research/reports/auto.md")
-    rp.set_defaults(fn=_cmd_research_report)
 
     return p
 
