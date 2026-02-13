@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import polars as pl
 
-from .alignment import compute_coverage, map_target_to_template_positions, project_target_coordinates
+from .alignment import compute_coverage, map_target_to_template_alignment, project_target_coordinates
 from .bigdata import (
     DEFAULT_MAX_ROWS_IN_MEMORY,
     DEFAULT_MEMORY_BUDGET_MB,
@@ -21,6 +21,12 @@ from .bigdata import (
     scan_table,
 )
 from .errors import raise_error
+from .qa_gnn_ranker import (
+    is_qa_gnn_model_file,
+    load_qa_gnn_runtime,
+    score_candidate_feature_dicts_with_qa_gnn_runtime,
+)
+from .qa_ranker import build_candidate_feature_dict, load_qa_model, score_candidate_with_model, select_candidates_with_diversity
 from .utils import sha256_file
 
 
@@ -167,6 +173,12 @@ def predict_tbm(
     gap_extend_scores: tuple[float, ...] = (-1.0,),
     max_variants_per_template: int = 1,
     perturbation_scale: float = 0.0,
+    mapping_mode: str = "hybrid",
+    projection_mode: str = "template_warped",
+    qa_model_path: Path | None = None,
+    qa_device: str = "cuda",
+    qa_top_pool: int = 40,
+    diversity_lambda: float = 0.15,
     chunk_size: int = 200_000,
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
     max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
@@ -188,6 +200,10 @@ def predict_tbm(
         raise_error("TBM", location, "rerank_pool_size deve ser > 0", impact="1", examples=[str(rerank_pool_size)])
     if perturbation_scale < 0.0:
         raise_error("TBM", location, "perturbation_scale invalido (>=0)", impact="1", examples=[str(perturbation_scale)])
+    if qa_top_pool <= 0:
+        raise_error("TBM", location, "qa_top_pool deve ser > 0", impact="1", examples=[str(qa_top_pool)])
+    if diversity_lambda < 0.0:
+        raise_error("TBM", location, "diversity_lambda invalido (>=0)", impact="1", examples=[str(diversity_lambda)])
     if chunk_size <= 0:
         raise_error("TBM", location, "chunk_size deve ser > 0", impact="1", examples=[str(chunk_size)])
     align_profiles = _build_alignment_profiles(
@@ -305,6 +321,30 @@ def predict_tbm(
     missing_candidates_examples: list[str] = []
     insufficient_coverage_count = 0
     insufficient_coverage_examples: list[str] = []
+    selected_mapped_total = 0
+    selected_match_total = 0
+    selected_mismatch_total = 0
+    selected_chem_total = 0
+    selected_candidates_total = 0
+    qa_model_type = "heuristic"
+    qa_model = None
+    qa_gnn_runtime = None
+    qa_model_sha256 = None
+    qa_model_weights_sha256 = None
+    if qa_model_path is not None:
+        if is_qa_gnn_model_file(model_path=qa_model_path, location=location):
+            qa_gnn_runtime = load_qa_gnn_runtime(
+                model_path=qa_model_path,
+                weights_path=None,
+                device=str(qa_device),
+                location=location,
+            )
+            qa_model_type = "qa_gnn"
+            qa_model_weights_sha256 = sha256_file(qa_gnn_runtime.weights_path)
+        else:
+            qa_model = load_qa_model(model_path=qa_model_path, location=location)
+            qa_model_type = "linear"
+        qa_model_sha256 = sha256_file(qa_model_path)
 
     try:
         for tid, seq in targets.select("target_id", "sequence").iter_rows():
@@ -327,18 +367,31 @@ def predict_tbm(
                     raise_error("TBM", location, "template_uid sem dados de template", impact="1", examples=[uid])
 
                 for variant_id, (gap_open, gap_extend) in enumerate(align_profiles, start=1):
-                    mapping = map_target_to_template_positions(
+                    mapping_info = map_target_to_template_alignment(
                         target_sequence=seq,
                         template_sequence=tpl_seq,
                         location=location,
                         open_gap_score=float(gap_open),
                         extend_gap_score=float(gap_extend),
+                        mapping_mode=str(mapping_mode),
                     )
+                    match_count = 0
+                    mismatch_count = 0
+                    chem_compatible_count = 0
                     valid_mapped = {
                         tpos: spos
-                        for tpos, spos in mapping.items()
-                        if spos in tpl_coords
+                        for tpos, spos in mapping_info.target_to_template.items()
+                        if int(spos) in tpl_coords
                     }
+                    for tpos in valid_mapped.keys():
+                        ptype = mapping_info.pair_types.get(int(tpos), "mismatch")
+                        if ptype == "match":
+                            match_count += 1
+                        elif ptype == "chem_compatible_mismatch":
+                            mismatch_count += 1
+                            chem_compatible_count += 1
+                        else:
+                            mismatch_count += 1
                     cov = compute_coverage(mapped_positions=len(valid_mapped), target_length=target_length, location=location)
                     if cov < min_coverage:
                         continue
@@ -347,6 +400,7 @@ def predict_tbm(
                         mapping=valid_mapped,
                         template_coordinates=tpl_coords,
                         location=location,
+                        projection_mode=str(projection_mode),
                     )
                     if perturbation_scale > 0.0:
                         jittered: list[tuple[float, float, float]] = []
@@ -367,6 +421,10 @@ def predict_tbm(
                             "gap_open_score": float(gap_open),
                             "gap_extend_score": float(gap_extend),
                             "variant_id": int(variant_id),
+                            "mapped_count": int(len(valid_mapped)),
+                            "match_count": int(match_count),
+                            "mismatch_count": int(mismatch_count),
+                            "chem_compatible_count": int(chem_compatible_count),
                             "coords": coords_use,
                         }
                     )
@@ -377,22 +435,66 @@ def predict_tbm(
                     insufficient_coverage_examples.append(f"{tid}:{len(valid_candidates)}/{n_models}")
                 continue
 
-            selected = sorted(
+            features_batch: list[dict[str, float]] = []
+            for cand in valid_candidates:
+                features = build_candidate_feature_dict(candidate=cand, target_length=target_length, location=location)
+                cand["qa_features"] = features
+                features_batch.append(features)
+                if qa_model_type == "heuristic":
+                    cand["qa_score"] = float((0.7 * float(cand["coverage"])) + (0.3 * float(cand["similarity"])))
+                elif qa_model_type == "linear":
+                    if qa_model is None:
+                        raise_error("TBM", location, "qa_model linear nao carregado", impact="1", examples=[str(qa_model_path)])
+                    cand["qa_score"] = score_candidate_with_model(candidate_features=features, model=qa_model, location=location)
+                elif qa_model_type == "qa_gnn":
+                    # scored in batch below to preserve graph message passing across candidates
+                    cand["qa_score"] = 0.0
+                else:
+                    raise_error("TBM", location, "qa_model_type desconhecido", impact="1", examples=[str(qa_model_type)])
+
+            if qa_model_type == "qa_gnn":
+                if qa_gnn_runtime is None:
+                    raise_error("TBM", location, "qa_gnn_runtime nao carregado", impact="1", examples=[str(qa_model_path)])
+                gnn_scores = score_candidate_feature_dicts_with_qa_gnn_runtime(
+                    feature_dicts=features_batch,
+                    runtime=qa_gnn_runtime,
+                    location=location,
+                )
+                if len(gnn_scores) != len(valid_candidates):
+                    raise_error(
+                        "TBM",
+                        location,
+                        "quantidade de scores QA_GNN divergente dos candidatos",
+                        impact=f"scores={len(gnn_scores)} candidatos={len(valid_candidates)}",
+                        examples=[str(tid)],
+                    )
+                for cand, gscore in zip(valid_candidates, gnn_scores, strict=True):
+                    cand["qa_score"] = float(gscore)
+
+            qa_pool = sorted(
                 valid_candidates,
                 key=lambda c: (
-                    -c["coverage"],
-                    -c["similarity"],
-                    c["rank"],
-                    c["uid"],
-                    c["variant_id"],
-                    c["gap_open_score"],
-                    c["gap_extend_score"],
+                    -float(c["qa_score"]),
+                    -float(c["coverage"]),
+                    -float(c["similarity"]),
+                    int(c["rank"]),
                 ),
-            )[:n_models]
+            )[: max(int(qa_top_pool), int(n_models))]
+            selected = select_candidates_with_diversity(
+                candidates=qa_pool,
+                n_models=int(n_models),
+                diversity_lambda=float(diversity_lambda),
+                location=location,
+            )
             wrote_target = False
             model_id = 0
             for cand in selected:
                 model_id += 1
+                selected_mapped_total += int(cand.get("mapped_count", 0))
+                selected_match_total += int(cand.get("match_count", 0))
+                selected_mismatch_total += int(cand.get("mismatch_count", 0))
+                selected_chem_total += int(cand.get("chem_compatible_count", 0))
+                selected_candidates_total += 1
                 for resid, (base, xyz) in enumerate(zip(seq, cand["coords"], strict=True), start=1):
                     buffer.append(
                         {
@@ -412,6 +514,7 @@ def predict_tbm(
                             "gap_open_score": float(cand["gap_open_score"]),
                             "gap_extend_score": float(cand["gap_extend_score"]),
                             "variant_id": int(cand["variant_id"]),
+                            "qa_score": float(cand.get("qa_score", 0.0)),
                         }
                     )
                 wrote_target = True
@@ -472,9 +575,34 @@ def predict_tbm(
             "gap_extend_scores": [float(x) for x in gap_extend_scores],
             "max_variants_per_template": int(max_variants_per_template),
             "perturbation_scale": float(perturbation_scale),
+            "mapping_mode": str(mapping_mode),
+            "projection_mode": str(projection_mode),
+            "qa_model_path": None if qa_model_path is None else _rel(qa_model_path, repo_root),
+            "qa_model_type": str(qa_model_type),
+            "qa_device": str(qa_device),
+            "qa_model_weights_path": None
+            if qa_gnn_runtime is None
+            else _rel(qa_gnn_runtime.weights_path, repo_root),
+            "qa_top_pool": int(qa_top_pool),
+            "diversity_lambda": float(diversity_lambda),
         },
-        "stats": {"n_rows": int(rows_written), "n_targets": int(len(target_written)), "chunk_size": int(chunk_size)},
-        "sha256": {"predictions_long.parquet": sha256_file(out_path)},
+        "stats": {
+            "n_rows": int(rows_written),
+            "n_targets": int(len(target_written)),
+            "chunk_size": int(chunk_size),
+            "selected_candidates": int(selected_candidates_total),
+            "selected_avg_mapped": 0.0 if selected_candidates_total == 0 else float(selected_mapped_total) / float(selected_candidates_total),
+            "selected_avg_match": 0.0 if selected_candidates_total == 0 else float(selected_match_total) / float(selected_candidates_total),
+            "selected_avg_mismatch": 0.0 if selected_candidates_total == 0 else float(selected_mismatch_total) / float(selected_candidates_total),
+            "selected_avg_chem_compatible": 0.0
+            if selected_candidates_total == 0
+            else float(selected_chem_total) / float(selected_candidates_total),
+        },
+        "sha256": {
+            "predictions_long.parquet": sha256_file(out_path),
+            "qa_model.json": None if qa_model_sha256 is None else str(qa_model_sha256),
+            "qa_model_weights.pt": None if qa_model_weights_sha256 is None else str(qa_model_weights_sha256),
+        },
     }
     manifest_path = out_path.parent / "tbm_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +22,7 @@ def assert_submission_allowed(
     is_partial: bool = False,
     score_json_path: Path | None = None,
     baseline_score: float | None = None,
+    min_improvement: float = 0.0,
     allow_regression: bool = False,
 ) -> Path:
     """
@@ -34,6 +36,14 @@ def assert_submission_allowed(
 
     reasons: list[str] = []
     current_score: float | None = None
+
+    try:
+        min_improvement_value = float(min_improvement)
+    except Exception as e:  # noqa: BLE001
+        raise_error("GATE", location, "min_improvement invalido (nao numerico)", impact="1", examples=[f"{type(e).__name__}:{e}"])
+    if not math.isfinite(min_improvement_value) or min_improvement_value < 0.0:
+        raise_error("GATE", location, "min_improvement invalido (>=0 e finito)", impact="1", examples=[str(min_improvement)])
+
     if is_smoke:
         reasons.append("artefato de smoke test")
     if is_partial:
@@ -47,8 +57,10 @@ def assert_submission_allowed(
         except Exception as e:  # noqa: BLE001
             raise_error("GATE", location, "falha ao ler score_json", impact="1", examples=[f"{type(e).__name__}:{e}"])
     if baseline_score is not None and current_score is not None:
-        if current_score < baseline_score and not allow_regression:
-            reasons.append(f"score regressivo ({current_score:.6f} < {baseline_score:.6f})")
+        threshold = float(baseline_score) + float(min_improvement_value)
+        # Strict gate by default: candidate must be strictly greater than baseline (+ optional margin).
+        if current_score <= threshold and not allow_regression:
+            reasons.append(f"score sem melhora estrita ({current_score:.6f} <= {threshold:.6f})")
 
     report = {
         "created_utc": _utc_now(),
@@ -57,6 +69,7 @@ def assert_submission_allowed(
         "is_smoke": bool(is_smoke),
         "is_partial": bool(is_partial),
         "baseline_score": baseline_score,
+        "min_improvement": float(min_improvement_value),
         "current_score": current_score,
         "allow_regression": bool(allow_regression),
         "allowed": len(reasons) == 0,
@@ -74,4 +87,3 @@ def assert_submission_allowed(
             examples=reasons[:8],
         )
     return report_path
-

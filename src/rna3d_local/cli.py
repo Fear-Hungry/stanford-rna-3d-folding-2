@@ -9,6 +9,7 @@ from pathlib import Path
 import polars as pl
 
 from .bigdata import DEFAULT_MAX_ROWS_IN_MEMORY, DEFAULT_MEMORY_BUDGET_MB, TableReadConfig, collect_streaming, scan_table
+from .candidate_pool import build_candidate_pool_from_predictions, parse_prediction_entries
 from .contracts import validate_submission_against_sample
 from .datasets import (
     build_public_validation_dataset,
@@ -25,13 +26,31 @@ from .ensemble import blend_predictions
 from .errors import PipelineError, raise_error
 from .export import export_submission_from_long
 from .gating import assert_submission_allowed
+from .kaggle_calibration import (
+    build_alignment_decision,
+    build_kaggle_local_calibration,
+    estimate_public_from_local,
+    write_calibration_report,
+)
 from .kaggle_cli import run_kaggle
+from .qa_gnn_ranker import QA_GNN_DEFAULT_FEATURE_NAMES, score_candidates_with_qa_gnn, train_qa_gnn_ranker
+from .qa_ranker import QA_FEATURE_NAMES, train_qa_ranker
+from .qa_rnrank import (
+    QA_RNRANK_DEFAULT_FEATURE_NAMES,
+    score_candidates_with_qa_rnrank,
+    select_top5_global_with_qa_rnrank,
+    train_qa_rnrank,
+)
+from .research import generate_report, run_experiment, sync_literature, verify_run
 from .retrieval import retrieve_template_candidates
+from .robust_score import evaluate_robust_gate, read_score_json, write_robust_report
 from .rnapro import RnaProConfig, infer_rnapro, train_rnapro
 from .scoring import score_submission, write_score_artifacts
+from .submission_readiness import evaluate_submit_readiness, write_submit_readiness_report
 from .tbm_predictor import predict_tbm
 from .template_pt import convert_templates_to_pt_files
 from .template_db import build_template_db
+from .training_gate import evaluate_training_gate_from_model_json, write_training_gate_report
 from .vendor import DEFAULT_METRIC_KERNEL, vendor_all
 
 
@@ -69,6 +88,218 @@ def _parse_float_list_arg(*, raw: str, arg_name: str, location: str) -> tuple[fl
         except ValueError:
             raise_error("CLI", location, f"{arg_name} contem valor invalido", impact="1", examples=[tok])
     return tuple(out)
+
+
+def _parse_named_score_entries(*, raw_entries: list[str], repo: Path, location: str) -> dict[str, float]:
+    if not raw_entries:
+        raise_error("ROBUST", location, "nenhum --score informado", impact="0", examples=[])
+    named: dict[str, float] = {}
+    for raw in raw_entries:
+        tok = str(raw).strip()
+        if "=" not in tok:
+            raise_error(
+                "ROBUST",
+                location,
+                "formato invalido em --score (use nome=caminho_score_json)",
+                impact="1",
+                examples=[tok],
+            )
+        name, path_raw = tok.split("=", 1)
+        score_name = str(name).strip()
+        if not score_name:
+            raise_error("ROBUST", location, "nome vazio em --score", impact="1", examples=[tok])
+        score_path = Path(str(path_raw).strip())
+        if not score_path.is_absolute():
+            score_path = (repo / score_path).resolve()
+        if score_name in named:
+            raise_error("ROBUST", location, "nome duplicado em --score", impact="1", examples=[score_name])
+        named[score_name] = read_score_json(score_json_path=score_path)
+    return named
+
+
+def _read_robust_report(*, report_path: Path, location: str) -> dict:
+    if not report_path.exists():
+        raise_error("GATE", location, "robust_report nao encontrado", impact="1", examples=[str(report_path)])
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise_error("GATE", location, "falha ao ler robust_report", impact="1", examples=[f"{type(e).__name__}:{e}"])
+    if not isinstance(payload, dict):
+        raise_error("GATE", location, "robust_report invalido (esperado objeto JSON)", impact="1", examples=[str(report_path)])
+    allowed = payload.get("allowed")
+    if not isinstance(allowed, bool):
+        raise_error("GATE", location, "robust_report sem campo booleano allowed", impact="1", examples=[str(report_path)])
+    return payload
+
+
+def _read_readiness_report(*, report_path: Path, location: str) -> dict:
+    if not report_path.exists():
+        raise_error("GATE", location, "readiness_report nao encontrado", impact="1", examples=[str(report_path)])
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise_error("GATE", location, "falha ao ler readiness_report", impact="1", examples=[f"{type(e).__name__}:{e}"])
+    if not isinstance(payload, dict):
+        raise_error("GATE", location, "readiness_report invalido (esperado objeto JSON)", impact="1", examples=[str(report_path)])
+    allowed = payload.get("allowed")
+    if not isinstance(allowed, bool):
+        raise_error("GATE", location, "readiness_report sem campo booleano allowed", impact="1", examples=[str(report_path)])
+    return payload
+
+
+def _looks_like_target_patch(*, text: str) -> bool:
+    t = str(text or "").lower()
+    if not t:
+        return False
+    tokens = (
+        "target_patch",
+        "patch_por_alvo",
+        "oracle_local",
+        "per_target_patch",
+    )
+    return any(tok in t for tok in tokens)
+
+
+def _enforce_submit_hardening(
+    *,
+    location: str,
+    allow_regression: bool,
+    require_robust_report: bool,
+    require_min_cv_count: int,
+    block_public_validation_without_cv: bool,
+    block_target_patch: bool,
+    allow_calibration_extrapolation: bool,
+    require_readiness_report: bool = False,
+    robust_report_path: Path | None,
+    robust_payload: dict | None,
+    readiness_report_path: Path | None = None,
+    readiness_payload: dict | None = None,
+    submission_path: Path,
+    message: str,
+) -> None:
+    if bool(require_robust_report) and robust_payload is None and (not bool(allow_regression)):
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada: robust_report obrigatorio para submit competitivo",
+            impact="1",
+            examples=["--robust-report runs/<...>/robust_eval.json"],
+        )
+    if robust_payload is None:
+        if bool(require_readiness_report) and readiness_payload is None and (not bool(allow_regression)):
+            raise_error(
+                "GATE",
+                location,
+                "submissao bloqueada: readiness_report obrigatorio para submit competitivo",
+                impact="1",
+                examples=["--readiness-report runs/<...>/submit_readiness.json"],
+            )
+        if readiness_payload is None:
+            return
+        # `robust_report` opcional nesse caminho: readiness aprovado e sem checks extras de robust.
+        return
+    if bool(require_readiness_report) and readiness_payload is None and (not bool(allow_regression)):
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada: readiness_report obrigatorio para submit competitivo",
+            impact="1",
+            examples=["--readiness-report runs/<...>/submit_readiness.json"],
+        )
+    if readiness_payload is not None:
+        readiness_allowed = bool(readiness_payload.get("allowed", False))
+        if (not readiness_allowed) and (not bool(allow_regression)):
+            raise_error(
+                "GATE",
+                location,
+                "submissao bloqueada por readiness_report",
+                impact="1",
+                examples=[str(readiness_report_path) if readiness_report_path is not None else "-"],
+            )
+
+    robust_allowed = bool(robust_payload.get("allowed", False))
+    if (not robust_allowed) and (not bool(allow_regression)):
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada por robust_report",
+            impact="1",
+            examples=[str(robust_report_path) if robust_report_path is not None else "-"],
+        )
+
+    summary = robust_payload.get("summary")
+    if not isinstance(summary, dict):
+        raise_error("GATE", location, "robust_report sem bloco summary", impact="1", examples=[str(robust_report_path)])
+    try:
+        min_cv = int(require_min_cv_count)
+    except (TypeError, ValueError):
+        raise_error("GATE", location, "require_min_cv_count invalido", impact="1", examples=[str(require_min_cv_count)])
+    if min_cv < 0:
+        raise_error("GATE", location, "require_min_cv_count deve ser >= 0", impact="1", examples=[str(min_cv)])
+    cv_count = int(summary.get("cv_count") or 0)
+    if cv_count < min_cv and (not bool(allow_regression)):
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada: cv_count insuficiente",
+            impact=f"{cv_count}",
+            examples=[f"min_cv_count={min_cv}"],
+        )
+
+    risk_flags = [str(x) for x in (summary.get("risk_flags") or [])]
+    public_score_name = str(summary.get("public_score_name") or "")
+    if bool(block_public_validation_without_cv) and cv_count <= 0 and public_score_name == "public_validation" and (not bool(allow_regression)):
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada: candidato dependente de public_validation sem CV",
+            impact="1",
+            examples=["public_score_name=public_validation", f"cv_count={cv_count}"],
+        )
+    if bool(block_public_validation_without_cv) and ("public_validation_without_cv" in risk_flags) and (not bool(allow_regression)):
+        raise_error(
+            "GATE",
+            location,
+            "submissao bloqueada: risk_flag public_validation_without_cv",
+            impact="1",
+            examples=risk_flags[:8],
+        )
+
+    if bool(block_target_patch) and (not bool(allow_regression)):
+        hints: list[str] = []
+        if _looks_like_target_patch(text=submission_path.name):
+            hints.append(f"submission={submission_path.name}")
+        if _looks_like_target_patch(text=message):
+            hints.append("message_hint=target_patch")
+        if robust_report_path is not None and _looks_like_target_patch(text=str(robust_report_path)):
+            hints.append("robust_report_hint=target_patch")
+        if hints:
+            raise_error(
+                "GATE",
+                location,
+                "submissao bloqueada: padrao target_patch proibido por gate",
+                impact=str(len(hints)),
+                examples=hints[:8],
+            )
+
+    alignment = robust_payload.get("alignment_decision")
+    if isinstance(alignment, dict):
+        is_extrapolation = bool(alignment.get("is_extrapolation", False))
+        if is_extrapolation and (not bool(allow_calibration_extrapolation)) and (not bool(allow_regression)):
+            raise_error(
+                "GATE",
+                location,
+                "submissao bloqueada: calibracao em extrapolacao fora do range historico",
+                impact="1",
+                examples=[
+                    f"local_score={alignment.get('local_score')}",
+                    f"range=[{alignment.get('local_score_min_seen')},{alignment.get('local_score_max_seen')}]",
+                ],
+            )
+
+
+def _read_score_json(*, score_json_path: Path, location: str) -> float:
+    return read_score_json(score_json_path=score_json_path, stage="CLI", location=location)
 
 
 def _target_ids_for_fold(*, targets_path: Path, fold_id: int, stage: str, location: str) -> list[str]:
@@ -366,6 +597,12 @@ def _cmd_predict_tbm(args: argparse.Namespace) -> int:
         gap_extend_scores=gap_extend_scores,
         max_variants_per_template=int(args.max_variants_per_template),
         perturbation_scale=float(args.perturbation_scale),
+        mapping_mode=str(args.mapping_mode),
+        projection_mode=str(args.projection_mode),
+        qa_model_path=None if args.qa_model is None else (repo / args.qa_model).resolve(),
+        qa_device=str(args.qa_device),
+        qa_top_pool=int(args.qa_top_pool),
+        diversity_lambda=float(args.diversity_lambda),
         chunk_size=int(args.chunk_size),
         memory_budget_mb=int(args.memory_budget_mb),
         max_rows_in_memory=int(args.max_rows_in_memory),
@@ -456,10 +693,247 @@ def _cmd_predict_rnapro(args: argparse.Namespace) -> int:
         use_template=str(args.use_template),
         template_features_dir=None if args.template_features_dir is None else (repo / args.template_features_dir).resolve(),
         template_source=str(args.template_source),
+        mapping_mode=str(args.mapping_mode),
+        projection_mode=str(args.projection_mode),
+        qa_model_path=None if args.qa_model is None else (repo / args.qa_model).resolve(),
+        qa_device=str(args.qa_device),
+        qa_top_pool=int(args.qa_top_pool),
+        diversity_lambda=float(args.diversity_lambda),
         memory_budget_mb=int(args.memory_budget_mb),
         max_rows_in_memory=int(args.max_rows_in_memory),
     )
     print(json.dumps({"predictions": _rel_or_abs(out, repo)}, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_train_qa_ranker(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_train_qa_ranker"
+    repo = _find_repo_root(Path.cwd())
+    feature_names_raw = [v.strip() for v in str(args.feature_names).split(",") if v.strip()]
+    if not feature_names_raw:
+        feature_names = QA_FEATURE_NAMES
+    else:
+        feature_names = tuple(feature_names_raw)
+    out = train_qa_ranker(
+        candidates_path=(repo / args.candidates).resolve(),
+        out_model_path=(repo / args.out_model).resolve(),
+        label_col=str(args.label_col),
+        group_col=str(args.group_col),
+        feature_names=feature_names,
+        l2_lambda=float(args.l2_lambda),
+        val_fraction=float(args.val_fraction),
+        seed=int(args.seed),
+    )
+    model_path = Path(str(out["model_path"])).resolve()
+    train_gate_report = model_path.parent / "train_gate_report.json"
+    train_gate = evaluate_training_gate_from_model_json(
+        model_json_path=model_path,
+        min_val_samples=int(args.min_val_samples),
+        max_mae_gap_ratio=float(args.max_mae_gap_ratio),
+        max_rmse_gap_ratio=float(args.max_rmse_gap_ratio),
+        max_r2_drop=float(args.max_r2_drop),
+        max_spearman_drop=float(args.max_spearman_drop),
+        max_pearson_drop=float(args.max_pearson_drop),
+    )
+    write_training_gate_report(report=train_gate, out_path=train_gate_report)
+    out["train_gate_report"] = _rel_or_abs(train_gate_report, repo)
+    out["train_gate_allowed"] = bool(train_gate.get("allowed", False))
+    if (not bool(train_gate.get("allowed", False))) and (not bool(args.allow_overfit_model)):
+        raise_error(
+            "TRAIN_GATE",
+            location,
+            "modelo bloqueado por gate anti-overfitting",
+            impact=str(len(train_gate.get("reasons", []))),
+            examples=[str(x) for x in (train_gate.get("reasons") or [])][:8],
+        )
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_train_qa_gnn_ranker(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_train_qa_gnn_ranker"
+    repo = _find_repo_root(Path.cwd())
+    feature_names_raw = [v.strip() for v in str(args.feature_names).split(",") if v.strip()]
+    if not feature_names_raw:
+        feature_names = QA_GNN_DEFAULT_FEATURE_NAMES
+    else:
+        feature_names = tuple(feature_names_raw)
+    out_model = (repo / args.out_model).resolve()
+    out_weights = (repo / args.out_weights).resolve() if args.out_weights else out_model.with_suffix(".pt")
+    out = train_qa_gnn_ranker(
+        candidates_path=(repo / args.candidates).resolve(),
+        out_model_path=out_model,
+        out_weights_path=out_weights,
+        label_col=str(args.label_col),
+        group_col=str(args.group_col),
+        feature_names=feature_names,
+        hidden_dim=int(args.hidden_dim),
+        num_layers=int(args.num_layers),
+        dropout=float(args.dropout),
+        knn_k=int(args.knn_k),
+        epochs=int(args.epochs),
+        lr=float(args.lr),
+        weight_decay=float(args.weight_decay),
+        val_fraction=float(args.val_fraction),
+        seed=int(args.seed),
+        device=str(args.device),
+    )
+    model_path = Path(str(out["model_path"])).resolve()
+    train_gate_report = model_path.parent / "train_gate_report.json"
+    train_gate = evaluate_training_gate_from_model_json(
+        model_json_path=model_path,
+        min_val_samples=int(args.min_val_samples),
+        max_mae_gap_ratio=float(args.max_mae_gap_ratio),
+        max_rmse_gap_ratio=float(args.max_rmse_gap_ratio),
+        max_r2_drop=float(args.max_r2_drop),
+        max_spearman_drop=float(args.max_spearman_drop),
+        max_pearson_drop=float(args.max_pearson_drop),
+    )
+    write_training_gate_report(report=train_gate, out_path=train_gate_report)
+    out["train_gate_report"] = _rel_or_abs(train_gate_report, repo)
+    out["train_gate_allowed"] = bool(train_gate.get("allowed", False))
+    if (not bool(train_gate.get("allowed", False))) and (not bool(args.allow_overfit_model)):
+        raise_error(
+            "TRAIN_GATE",
+            location,
+            "modelo bloqueado por gate anti-overfitting",
+            impact=str(len(train_gate.get("reasons", []))),
+            examples=[str(x) for x in (train_gate.get("reasons") or [])][:8],
+        )
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_score_qa_gnn_ranker(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    out = score_candidates_with_qa_gnn(
+        candidates_path=(repo / args.candidates).resolve(),
+        model_path=(repo / args.model).resolve(),
+        out_scores_path=(repo / args.out).resolve(),
+        weights_path=None if args.weights is None else (repo / args.weights).resolve(),
+        device=str(args.device),
+    )
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_build_candidate_pool(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_build_candidate_pool"
+    repo = _find_repo_root(Path.cwd())
+    entries = parse_prediction_entries(raw_entries=list(args.predictions), repo_root=repo, location=location)
+    out_path, manifest_path = build_candidate_pool_from_predictions(
+        repo_root=repo,
+        prediction_entries=entries,
+        out_path=(repo / args.out).resolve(),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
+    )
+    print(
+        json.dumps(
+            {
+                "candidate_pool": _rel_or_abs(out_path, repo),
+                "manifest": _rel_or_abs(manifest_path, repo),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_train_qa_rnrank(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_train_qa_rnrank"
+    repo = _find_repo_root(Path.cwd())
+    feature_names_raw = [v.strip() for v in str(args.feature_names).split(",") if v.strip()]
+    if not feature_names_raw:
+        feature_names = QA_RNRANK_DEFAULT_FEATURE_NAMES
+    else:
+        feature_names = tuple(feature_names_raw)
+    out_model = (repo / args.out_model).resolve()
+    out_weights = (repo / args.out_weights).resolve() if args.out_weights else out_model.with_suffix(".pt")
+    out = train_qa_rnrank(
+        candidates_path=(repo / args.candidates).resolve(),
+        out_model_path=out_model,
+        out_weights_path=out_weights,
+        label_col=str(args.label_col),
+        group_col=str(args.group_col),
+        feature_names=feature_names,
+        hidden_dim=int(args.hidden_dim),
+        dropout=float(args.dropout),
+        epochs=int(args.epochs),
+        lr=float(args.lr),
+        weight_decay=float(args.weight_decay),
+        val_fraction=float(args.val_fraction),
+        rank_weight=float(args.rank_weight),
+        regression_weight=float(args.regression_weight),
+        combined_reg_weight=float(args.combined_reg_weight),
+        combined_rank_weight=float(args.combined_rank_weight),
+        seed=int(args.seed),
+        device=str(args.device),
+    )
+    model_path = Path(str(out["model_path"])).resolve()
+    train_gate_report = model_path.parent / "train_gate_report.json"
+    train_gate = evaluate_training_gate_from_model_json(
+        model_json_path=model_path,
+        min_val_samples=int(args.min_val_samples),
+        max_mae_gap_ratio=float(args.max_mae_gap_ratio),
+        max_rmse_gap_ratio=float(args.max_rmse_gap_ratio),
+        max_r2_drop=float(args.max_r2_drop),
+        max_spearman_drop=float(args.max_spearman_drop),
+        max_pearson_drop=float(args.max_pearson_drop),
+    )
+    write_training_gate_report(report=train_gate, out_path=train_gate_report)
+    out["train_gate_report"] = _rel_or_abs(train_gate_report, repo)
+    out["train_gate_allowed"] = bool(train_gate.get("allowed", False))
+    if (not bool(train_gate.get("allowed", False))) and (not bool(args.allow_overfit_model)):
+        raise_error(
+            "TRAIN_GATE",
+            location,
+            "modelo bloqueado por gate anti-overfitting",
+            impact=str(len(train_gate.get("reasons", []))),
+            examples=[str(x) for x in (train_gate.get("reasons") or [])][:8],
+        )
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_score_qa_rnrank(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    out = score_candidates_with_qa_rnrank(
+        candidates_path=(repo / args.candidates).resolve(),
+        model_path=(repo / args.model).resolve(),
+        out_scores_path=(repo / args.out).resolve(),
+        weights_path=None if args.weights is None else (repo / args.weights).resolve(),
+        device=str(args.device),
+    )
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_select_top5_global(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    out_path, manifest_path = select_top5_global_with_qa_rnrank(
+        candidates_path=(repo / args.candidates).resolve(),
+        model_path=(repo / args.model).resolve(),
+        out_predictions_path=(repo / args.out).resolve(),
+        n_models=int(args.n_models),
+        qa_top_pool=int(args.qa_top_pool),
+        diversity_lambda=float(args.diversity_lambda),
+        weights_path=None if args.weights is None else (repo / args.weights).resolve(),
+        device=str(args.device),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
+    )
+    print(
+        json.dumps(
+            {
+                "predictions": _rel_or_abs(out_path, repo),
+                "manifest": _rel_or_abs(manifest_path, repo),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -511,36 +985,416 @@ def _cmd_export_submission(args: argparse.Namespace) -> int:
 
 
 def _cmd_submit_kaggle(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_submit_kaggle"
     repo = _find_repo_root(Path.cwd())
     report = (repo / args.gating_report).resolve()
     if args.gating_report == "runs/auto":
         report = repo / "runs" / f"{_utc_now_compact()}_gating_report.json"
+    sample_path = (repo / args.sample).resolve()
+    submission_path = (repo / args.submission).resolve()
+    score_json_path = None if args.score_json is None else (repo / args.score_json).resolve()
+    robust_report = None if args.robust_report is None else (repo / args.robust_report).resolve()
+    robust_payload = None if robust_report is None else _read_robust_report(report_path=robust_report, location=location)
+    readiness_report = None if args.readiness_report is None else (repo / args.readiness_report).resolve()
+    readiness_payload = None if readiness_report is None else _read_readiness_report(report_path=readiness_report, location=location)
 
     assert_submission_allowed(
-        sample_path=(repo / args.sample).resolve(),
-        submission_path=(repo / args.submission).resolve(),
+        sample_path=sample_path,
+        submission_path=submission_path,
         report_path=report,
         is_smoke=bool(args.is_smoke),
         is_partial=bool(args.is_partial),
-        score_json_path=None if args.score_json is None else (repo / args.score_json).resolve(),
+        score_json_path=score_json_path,
         baseline_score=None if args.baseline_score is None else float(args.baseline_score),
+        min_improvement=float(args.min_improvement),
         allow_regression=bool(args.allow_regression),
     )
-    run_kaggle(
-        ["competitions", "submit", "-c", args.competition, "-f", str((repo / args.submission).resolve()), "-m", args.message],
-        cwd=None,
-        location="src/rna3d_local/cli.py:_cmd_submit_kaggle",
+
+    _enforce_submit_hardening(
+        location=location,
+        allow_regression=bool(args.allow_regression),
+        require_robust_report=bool(args.require_robust_report),
+        require_readiness_report=bool(args.require_readiness_report),
+        require_min_cv_count=int(args.require_min_cv_count),
+        block_public_validation_without_cv=bool(args.block_public_validation_without_cv),
+        block_target_patch=bool(args.block_target_patch),
+        allow_calibration_extrapolation=bool(args.allow_calibration_extrapolation),
+        robust_report_path=robust_report,
+        robust_payload=robust_payload,
+        readiness_report_path=readiness_report,
+        readiness_payload=readiness_payload,
+        submission_path=submission_path,
+        message=str(args.message),
     )
+
+    calibration_report_out: Path | None = None
+    alignment_decision: dict | None = None
+    if args.baseline_public_score is not None:
+        if score_json_path is None:
+            raise_error(
+                "GATE",
+                location,
+                "baseline_public_score requer --score-json para gate calibrado",
+                impact="1",
+                examples=["--score-json runs/<...>/score.json"],
+            )
+        calibration_report_out = (repo / args.calibration_report).resolve()
+        if args.calibration_report == "runs/auto":
+            calibration_report_out = repo / "runs" / f"{_utc_now_compact()}_kaggle_calibration_gate.json"
+
+        calibration = build_kaggle_local_calibration(
+            competition=str(args.competition),
+            page_size=int(args.calibration_page_size),
+        )
+        current_local_score = _read_score_json(score_json_path=score_json_path, location=location)
+        alignment_decision = build_alignment_decision(
+            local_score=float(current_local_score),
+            baseline_public_score=float(args.baseline_public_score),
+            calibration=calibration,
+            method=str(args.calibration_method),
+            min_public_improvement=float(args.min_public_improvement),
+            min_pairs=int(args.calibration_min_pairs),
+            allow_extrapolation=bool(args.allow_calibration_extrapolation),
+        )
+        calibration["alignment_decision"] = alignment_decision
+        write_calibration_report(report=calibration, out_path=calibration_report_out)
+        if not bool(alignment_decision.get("allowed", False)) and not bool(args.allow_regression):
+            raise_error(
+                "GATE",
+                location,
+                "submissao bloqueada por gate calibrado local->public",
+                impact="1",
+                examples=[
+                    f"expected={alignment_decision.get('expected_public_score')}",
+                    f"threshold={alignment_decision.get('required_threshold')}",
+                    f"method={alignment_decision.get('method')}",
+                ],
+            )
+
+    notebook_ref = str(args.notebook_ref or "").strip()
+    if not notebook_ref:
+        raise_error(
+            "SUBMIT",
+            location,
+            "competicao notebook-only: --notebook-ref obrigatorio",
+            impact="1",
+            examples=["owner/notebook-slug"],
+        )
+    if args.notebook_version is None:
+        raise_error(
+            "SUBMIT",
+            location,
+            "competicao notebook-only: --notebook-version obrigatorio",
+            impact="1",
+            examples=["--notebook-version 53"],
+        )
+    try:
+        notebook_version = int(args.notebook_version)
+    except (TypeError, ValueError):
+        raise_error("SUBMIT", location, "notebook_version invalido", impact="1", examples=[str(args.notebook_version)])
+    if notebook_version <= 0:
+        raise_error("SUBMIT", location, "notebook_version deve ser > 0", impact="1", examples=[str(notebook_version)])
+    notebook_file = str(args.notebook_file or submission_path.name).strip()
+    if not notebook_file:
+        raise_error("SUBMIT", location, "notebook_file invalido", impact="1", examples=[str(args.notebook_file)])
+
+    run_kaggle(
+        [
+            "competitions",
+            "submit",
+            "-c",
+            args.competition,
+            "-k",
+            notebook_ref,
+            "-f",
+            notebook_file,
+            "-v",
+            str(notebook_version),
+            "-m",
+            args.message,
+        ],
+        cwd=None,
+        location=location,
+    )
+    payload = {
+        "submitted_local_file_checked": _rel_or_abs(submission_path, repo),
+        "gating_report": _rel_or_abs(report, repo),
+        "notebook_ref": notebook_ref,
+        "notebook_version": notebook_version,
+        "notebook_file": notebook_file,
+    }
+    if calibration_report_out is not None:
+        payload["calibration_report"] = _rel_or_abs(calibration_report_out, repo)
+    if alignment_decision is not None:
+        payload["alignment_decision"] = alignment_decision
+    if robust_report is not None:
+        payload["robust_report"] = _rel_or_abs(robust_report, repo)
+    if readiness_report is not None:
+        payload["readiness_report"] = _rel_or_abs(readiness_report, repo)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_calibrate_kaggle_local(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    out = (repo / args.out).resolve()
+    report = build_kaggle_local_calibration(
+        competition=str(args.competition),
+        page_size=int(args.page_size),
+    )
+    estimate = None
+    decision = None
+    if args.local_score is not None:
+        estimate = estimate_public_from_local(local_score=float(args.local_score), calibration=report)
+        report["estimate_for_local_score"] = estimate
+    if args.local_score is not None and args.baseline_public_score is not None:
+        decision = build_alignment_decision(
+            local_score=float(args.local_score),
+            baseline_public_score=float(args.baseline_public_score),
+            calibration=report,
+            method=str(args.method),
+            min_public_improvement=float(args.min_public_improvement),
+            min_pairs=int(args.min_pairs),
+            allow_extrapolation=bool(args.allow_calibration_extrapolation),
+        )
+        report["alignment_decision"] = decision
+    write_calibration_report(report=report, out_path=out)
+    payload = {"report": _rel_or_abs(out, repo), "pairs": int(report.get("stats", {}).get("n_pairs") or 0)}
+    if estimate is not None:
+        payload["estimate"] = estimate
+    if decision is not None:
+        payload["alignment_decision"] = decision
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_evaluate_robust(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_evaluate_robust"
+    repo = _find_repo_root(Path.cwd())
+    named_scores = _parse_named_score_entries(raw_entries=list(args.score), repo=repo, location=location)
+    report = evaluate_robust_gate(
+        named_scores=named_scores,
+        public_score_name=str(args.public_score_name),
+        baseline_robust_score=None if args.baseline_robust_score is None else float(args.baseline_robust_score),
+        min_robust_improvement=float(args.min_robust_improvement),
+        competition=None if args.competition is None else str(args.competition),
+        baseline_public_score=None if args.baseline_public_score is None else float(args.baseline_public_score),
+        calibration_method=str(args.calibration_method),
+        calibration_page_size=int(args.calibration_page_size),
+        calibration_min_pairs=int(args.calibration_min_pairs),
+        min_public_improvement=float(args.min_public_improvement),
+        min_cv_count=int(args.min_cv_count),
+        block_public_validation_without_cv=bool(args.block_public_validation_without_cv),
+        allow_calibration_extrapolation=bool(args.allow_calibration_extrapolation),
+    )
+    out_path = (repo / args.out).resolve()
+    if args.out == "runs/auto":
+        out_path = repo / "runs" / f"{_utc_now_compact()}_robust_eval.json"
+    write_robust_report(report=report, out_path=out_path)
     print(
         json.dumps(
             {
-                "submitted": _rel_or_abs((repo / args.submission).resolve(), repo),
-                "gating_report": _rel_or_abs(report, repo),
+                "report": _rel_or_abs(out_path, repo),
+                "allowed": bool(report.get("allowed", False)),
+                "robust_score": float(report.get("summary", {}).get("robust_score", 0.0)),
             },
             indent=2,
             sort_keys=True,
         )
     )
+    return 0
+
+
+def _cmd_evaluate_submit_readiness(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_evaluate_submit_readiness"
+    repo = _find_repo_root(Path.cwd())
+    candidate_scores = _parse_named_score_entries(
+        raw_entries=list(args.candidate_score),
+        repo=repo,
+        location=location,
+    )
+    baseline_scores = None
+    if args.baseline_score:
+        baseline_scores = _parse_named_score_entries(
+            raw_entries=list(args.baseline_score),
+            repo=repo,
+            location=location,
+        )
+    report = evaluate_submit_readiness(
+        candidate_scores=candidate_scores,
+        baseline_scores=baseline_scores,
+        public_score_name=str(args.public_score_name),
+        require_baseline=bool(args.require_baseline),
+        require_public_score=bool(args.require_public_score),
+        min_cv_count=int(args.min_cv_count),
+        min_cv_improvement_count=int(args.min_cv_improvement_count),
+        min_fold_improvement=float(args.min_fold_improvement),
+        max_cv_regression=float(args.max_cv_regression),
+        min_robust_improvement=float(args.min_robust_improvement),
+        min_public_local_improvement=float(args.min_public_local_improvement),
+        max_cv_std=float(args.max_cv_std),
+        max_cv_gap=float(args.max_cv_gap),
+        competition=None if args.competition is None else str(args.competition),
+        baseline_public_score=None if args.baseline_public_score is None else float(args.baseline_public_score),
+        calibration_method=str(args.calibration_method),
+        calibration_page_size=int(args.calibration_page_size),
+        calibration_min_pairs=int(args.calibration_min_pairs),
+        min_public_improvement=float(args.min_public_improvement),
+        allow_calibration_extrapolation=bool(args.allow_calibration_extrapolation),
+        min_calibration_pearson=float(args.min_calibration_pearson),
+        min_calibration_spearman=float(args.min_calibration_spearman),
+        block_public_validation_without_cv=bool(args.block_public_validation_without_cv),
+    )
+    out_path = (repo / args.out).resolve()
+    if args.out == "runs/auto":
+        out_path = repo / "runs" / f"{_utc_now_compact()}_submit_readiness.json"
+    write_submit_readiness_report(report=report, out_path=out_path)
+    print(
+        json.dumps(
+            {
+                "report": _rel_or_abs(out_path, repo),
+                "allowed": bool(report.get("allowed", False)),
+                "reasons_count": len(report.get("reasons", [])),
+                "candidate_robust_score": float(report.get("candidate_summary", {}).get("robust_score", 0.0)),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_evaluate_train_gate(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_evaluate_train_gate"
+    repo = _find_repo_root(Path.cwd())
+    model_path = (repo / args.model).resolve()
+    out_path = (repo / args.out).resolve()
+    if args.out == "runs/auto":
+        out_path = repo / "runs" / f"{_utc_now_compact()}_train_gate_eval.json"
+    report = evaluate_training_gate_from_model_json(
+        model_json_path=model_path,
+        min_val_samples=int(args.min_val_samples),
+        max_mae_gap_ratio=float(args.max_mae_gap_ratio),
+        max_rmse_gap_ratio=float(args.max_rmse_gap_ratio),
+        max_r2_drop=float(args.max_r2_drop),
+        max_spearman_drop=float(args.max_spearman_drop),
+        max_pearson_drop=float(args.max_pearson_drop),
+    )
+    write_training_gate_report(report=report, out_path=out_path)
+    if (not bool(report.get("allowed", False))) and (not bool(args.allow_overfit_model)):
+        raise_error(
+            "TRAIN_GATE",
+            location,
+            "modelo bloqueado por gate anti-overfitting",
+            impact=str(len(report.get("reasons", []))),
+            examples=[str(x) for x in (report.get("reasons") or [])][:8],
+        )
+    print(
+        json.dumps(
+            {
+                "allowed": bool(report.get("allowed", False)),
+                "report": _rel_or_abs(out_path, repo),
+                "reasons": report.get("reasons", []),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_research_sync_literature(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    out_dir = (repo / args.out_dir).resolve()
+    if args.out_dir == "runs/research/literature/auto":
+        topic_slug = str(args.topic_slug or "topic").strip().lower()
+        topic_slug = "".join([ch if ch.isalnum() else "-" for ch in topic_slug]).strip("-")
+        if topic_slug in {"", "topic"}:
+            raw = str(args.topic).strip().lower()
+            topic_slug = "".join([ch if ch.isalnum() else "-" for ch in raw]).strip("-")
+        while "--" in topic_slug:
+            topic_slug = topic_slug.replace("--", "-")
+        if not topic_slug:
+            topic_slug = "topic"
+        out_dir = repo / "runs" / "research" / "literature" / f"{_utc_now_compact()}_{topic_slug}"
+    res = sync_literature(
+        topic=str(args.topic),
+        out_dir=out_dir,
+        limit_per_source=int(args.limit_per_source),
+        timeout_s=int(args.timeout_s),
+        download_pdfs=bool(args.download_pdfs),
+        strict_pdf_download=bool(args.strict_pdf_download),
+        max_pdf_mb=int(args.max_pdf_mb),
+        strict_sources=bool(args.strict_sources),
+    )
+    print(
+        json.dumps(
+            {
+                "out_dir": _rel_or_abs(res.out_dir, repo),
+                "papers": _rel_or_abs(res.papers_path, repo),
+                "manifest": _rel_or_abs(res.manifest_path, repo),
+                "related_work": _rel_or_abs(res.related_work_path, repo),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_research_run(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    out_base_dir = (repo / args.out_base_dir).resolve()
+    res = run_experiment(
+        repo_root=repo,
+        config_path=(repo / args.config).resolve(),
+        run_id=str(args.run_id),
+        out_base_dir=out_base_dir,
+        allow_existing_run_dir=bool(args.allow_existing_run_dir),
+    )
+    print(
+        json.dumps(
+            {
+                "run_dir": _rel_or_abs(res.run_dir, repo),
+                "manifest": _rel_or_abs(res.manifest_path, repo),
+                "results": _rel_or_abs(res.results_path, repo),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_research_verify(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    allowed_statuses = tuple([s.strip() for s in str(args.allowed_statuses).split(",") if s.strip()])
+    res = verify_run(
+        repo_root=repo,
+        run_dir=(repo / args.run_dir).resolve(),
+        allowed_statuses=allowed_statuses,
+    )
+    print(
+        json.dumps(
+            {
+                "accepted": bool(res.accepted),
+                "verify_path": _rel_or_abs(res.verify_path, repo),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _cmd_research_report(args: argparse.Namespace) -> int:
+    repo = _find_repo_root(Path.cwd())
+    run_dir = (repo / args.run_dir).resolve()
+    out_path = (repo / args.out).resolve()
+    if args.out == "runs/research/reports/auto.md":
+        out_path = repo / "runs" / "research" / "reports" / f"{run_dir.name}.md"
+    report_path = generate_report(run_dir=run_dir, out_path=out_path)
+    print(json.dumps({"report": _rel_or_abs(report_path, repo)}, indent=2, sort_keys=True))
     return 0
 
 
@@ -684,6 +1538,12 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--gap-extend-scores", type=str, default="-1.0")
     pt.add_argument("--max-variants-per-template", type=int, default=1)
     pt.add_argument("--perturbation-scale", type=float, default=0.0)
+    pt.add_argument("--mapping-mode", choices=["strict_match", "hybrid", "chemical_class"], default="hybrid")
+    pt.add_argument("--projection-mode", choices=["target_linear", "template_warped"], default="template_warped")
+    pt.add_argument("--qa-model", default=None, help="Optional qa_model.json path")
+    pt.add_argument("--qa-device", choices=["auto", "cpu", "cuda"], default="cuda")
+    pt.add_argument("--qa-top-pool", type=int, default=40)
+    pt.add_argument("--diversity-lambda", type=float, default=0.15)
     pt.add_argument("--chunk-size", type=int, default=200_000)
     pt.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     pt.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
@@ -740,9 +1600,140 @@ def build_parser() -> argparse.ArgumentParser:
     ir.add_argument("--use-template", choices=["none", "ca_precomputed"], default="none")
     ir.add_argument("--template-features-dir", default=None, help="Required when --use-template ca_precomputed")
     ir.add_argument("--template-source", choices=["tbm", "mmseqs2", "external"], default="tbm")
+    ir.add_argument("--mapping-mode", choices=["strict_match", "hybrid", "chemical_class"], default="hybrid")
+    ir.add_argument("--projection-mode", choices=["target_linear", "template_warped"], default="template_warped")
+    ir.add_argument("--qa-model", default=None, help="Optional qa_model.json path")
+    ir.add_argument("--qa-device", choices=["auto", "cpu", "cuda"], default="cuda")
+    ir.add_argument("--qa-top-pool", type=int, default=40)
+    ir.add_argument("--diversity-lambda", type=float, default=0.15)
     ir.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
     ir.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     ir.set_defaults(fn=_cmd_predict_rnapro)
+
+    qtr = sp.add_parser("train-qa-ranker", help="Train lightweight QA ranker from candidate feature table")
+    qtr.add_argument("--candidates", required=True, help="Parquet/CSV with feature columns and labels")
+    qtr.add_argument("--out-model", required=True, help="Output qa_model.json")
+    qtr.add_argument("--label-col", default="label")
+    qtr.add_argument("--group-col", default="target_id")
+    qtr.add_argument(
+        "--feature-names",
+        default=",".join(QA_FEATURE_NAMES),
+        help="Comma-separated feature names; empty keeps built-in defaults",
+    )
+    qtr.add_argument("--l2-lambda", type=float, default=1.0)
+    qtr.add_argument("--val-fraction", type=float, default=0.2)
+    qtr.add_argument("--seed", type=int, default=123)
+    qtr.add_argument("--min-val-samples", type=int, default=32)
+    qtr.add_argument("--max-mae-gap-ratio", type=float, default=0.40)
+    qtr.add_argument("--max-rmse-gap-ratio", type=float, default=0.40)
+    qtr.add_argument("--max-r2-drop", type=float, default=0.30)
+    qtr.add_argument("--max-spearman-drop", type=float, default=0.30)
+    qtr.add_argument("--max-pearson-drop", type=float, default=0.30)
+    qtr.add_argument("--allow-overfit-model", action="store_true", default=False)
+    qtr.set_defaults(fn=_cmd_train_qa_ranker)
+
+    qgnn = sp.add_parser("train-qa-gnn-ranker", help="Train graph QA ranker from candidate feature table")
+    qgnn.add_argument("--candidates", required=True, help="Parquet/CSV with feature columns and labels")
+    qgnn.add_argument("--out-model", required=True, help="Output qa_gnn_model.json")
+    qgnn.add_argument("--out-weights", default=None, help="Optional output .pt path (default: out-model with .pt)")
+    qgnn.add_argument("--label-col", default="label")
+    qgnn.add_argument("--group-col", default="target_id")
+    qgnn.add_argument(
+        "--feature-names",
+        default=",".join(QA_GNN_DEFAULT_FEATURE_NAMES),
+        help="Comma-separated feature names; empty keeps built-in defaults",
+    )
+    qgnn.add_argument("--hidden-dim", type=int, default=64)
+    qgnn.add_argument("--num-layers", type=int, default=2)
+    qgnn.add_argument("--dropout", type=float, default=0.1)
+    qgnn.add_argument("--knn-k", type=int, default=8)
+    qgnn.add_argument("--epochs", type=int, default=120)
+    qgnn.add_argument("--lr", type=float, default=1e-3)
+    qgnn.add_argument("--weight-decay", type=float, default=1e-4)
+    qgnn.add_argument("--val-fraction", type=float, default=0.2)
+    qgnn.add_argument("--seed", type=int, default=123)
+    qgnn.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cuda")
+    qgnn.add_argument("--min-val-samples", type=int, default=32)
+    qgnn.add_argument("--max-mae-gap-ratio", type=float, default=0.40)
+    qgnn.add_argument("--max-rmse-gap-ratio", type=float, default=0.40)
+    qgnn.add_argument("--max-r2-drop", type=float, default=0.30)
+    qgnn.add_argument("--max-spearman-drop", type=float, default=0.30)
+    qgnn.add_argument("--max-pearson-drop", type=float, default=0.30)
+    qgnn.add_argument("--allow-overfit-model", action="store_true", default=False)
+    qgnn.set_defaults(fn=_cmd_train_qa_gnn_ranker)
+
+    qgnn_sc = sp.add_parser("score-qa-gnn-ranker", help="Score candidate table with trained graph QA ranker")
+    qgnn_sc.add_argument("--candidates", required=True, help="Parquet/CSV with candidate features")
+    qgnn_sc.add_argument("--model", required=True, help="qa_gnn_model.json path")
+    qgnn_sc.add_argument("--weights", default=None, help="Optional .pt path (default from model json)")
+    qgnn_sc.add_argument("--out", required=True, help="Output scored table (parquet/csv)")
+    qgnn_sc.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cuda")
+    qgnn_sc.set_defaults(fn=_cmd_score_qa_gnn_ranker)
+
+    bcp = sp.add_parser("build-candidate-pool", help="Build global candidate pool from long prediction tables")
+    bcp.add_argument(
+        "--predictions",
+        action="append",
+        required=True,
+        help="Prediction input path or source=path (repeatable). Example: --predictions tbm=runs/tbm.parquet --predictions rnapro=runs/rnapro.parquet",
+    )
+    bcp.add_argument("--out", required=True, help="Output candidate pool parquet")
+    bcp.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    bcp.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
+    bcp.set_defaults(fn=_cmd_build_candidate_pool)
+
+    qrn = sp.add_parser("train-qa-rnrank", help="Train RNArank-style QA reranker (hybrid regression + ranking)")
+    qrn.add_argument("--candidates", required=True, help="Candidate pool table (parquet/csv) with labels")
+    qrn.add_argument("--out-model", required=True, help="Output qa_rnrank_model.json")
+    qrn.add_argument("--out-weights", default=None, help="Optional output .pt path (default: out-model with .pt)")
+    qrn.add_argument("--label-col", default="label")
+    qrn.add_argument("--group-col", default="target_id")
+    qrn.add_argument(
+        "--feature-names",
+        default=",".join(QA_RNRANK_DEFAULT_FEATURE_NAMES),
+        help="Comma-separated feature names; empty keeps built-in defaults",
+    )
+    qrn.add_argument("--hidden-dim", type=int, default=128)
+    qrn.add_argument("--dropout", type=float, default=0.10)
+    qrn.add_argument("--epochs", type=int, default=160)
+    qrn.add_argument("--lr", type=float, default=1e-3)
+    qrn.add_argument("--weight-decay", type=float, default=1e-4)
+    qrn.add_argument("--val-fraction", type=float, default=0.2)
+    qrn.add_argument("--rank-weight", type=float, default=0.4)
+    qrn.add_argument("--regression-weight", type=float, default=0.6)
+    qrn.add_argument("--combined-reg-weight", type=float, default=0.6)
+    qrn.add_argument("--combined-rank-weight", type=float, default=0.4)
+    qrn.add_argument("--seed", type=int, default=123)
+    qrn.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cuda")
+    qrn.add_argument("--min-val-samples", type=int, default=32)
+    qrn.add_argument("--max-mae-gap-ratio", type=float, default=0.40)
+    qrn.add_argument("--max-rmse-gap-ratio", type=float, default=0.40)
+    qrn.add_argument("--max-r2-drop", type=float, default=0.30)
+    qrn.add_argument("--max-spearman-drop", type=float, default=0.30)
+    qrn.add_argument("--max-pearson-drop", type=float, default=0.30)
+    qrn.add_argument("--allow-overfit-model", action="store_true", default=False)
+    qrn.set_defaults(fn=_cmd_train_qa_rnrank)
+
+    qrn_sc = sp.add_parser("score-qa-rnrank", help="Score candidate table with trained RNArank-style QA reranker")
+    qrn_sc.add_argument("--candidates", required=True, help="Candidate pool table (parquet/csv)")
+    qrn_sc.add_argument("--model", required=True, help="qa_rnrank_model.json path")
+    qrn_sc.add_argument("--weights", default=None, help="Optional .pt path (default from model json)")
+    qrn_sc.add_argument("--out", required=True, help="Output scored table (parquet/csv)")
+    qrn_sc.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cuda")
+    qrn_sc.set_defaults(fn=_cmd_score_qa_rnrank)
+
+    st5 = sp.add_parser("select-top5-global", help="Select final 5 candidates globally per target using QA RNArank + diversity")
+    st5.add_argument("--candidates", required=True, help="Candidate pool table (parquet/csv)")
+    st5.add_argument("--model", required=True, help="qa_rnrank_model.json path")
+    st5.add_argument("--weights", default=None, help="Optional .pt path (default from model json)")
+    st5.add_argument("--out", required=True, help="Output long predictions parquet")
+    st5.add_argument("--n-models", type=int, default=5)
+    st5.add_argument("--qa-top-pool", type=int, default=80)
+    st5.add_argument("--diversity-lambda", type=float, default=0.15)
+    st5.add_argument("--device", choices=["auto", "cpu", "cuda"], default="cuda")
+    st5.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    st5.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
+    st5.set_defaults(fn=_cmd_select_top5_global)
 
     ep = sp.add_parser("ensemble-predict", help="Blend TBM and RNAPro predictions")
     ep.add_argument("--tbm", required=True)
@@ -765,18 +1756,171 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     ex.set_defaults(fn=_cmd_export_submission)
 
-    sk = sp.add_parser("submit-kaggle", help="Submit to Kaggle after strict local gating")
+    sk = sp.add_parser("submit-kaggle", help="Notebook-only Kaggle submit after strict local + calibrated gating")
     sk.add_argument("--competition", default="stanford-rna-3d-folding-2")
     sk.add_argument("--sample", default="input/stanford-rna-3d-folding-2/sample_submission.csv")
-    sk.add_argument("--submission", required=True)
+    sk.add_argument("--submission", required=True, help="Local submission.csv used for strict validation/gating before submit")
+    sk.add_argument("--notebook-ref", required=True, help="Kaggle notebook ref owner/notebook-slug")
+    sk.add_argument("--notebook-version", type=int, required=True, help="Notebook version number to submit")
+    sk.add_argument("--notebook-file", default=None, help="File name generated inside notebook output (default: basename of --submission)")
     sk.add_argument("--message", required=True)
     sk.add_argument("--gating-report", default="runs/auto")
+    sk.add_argument("--calibration-report", default="runs/auto")
+    sk.add_argument("--robust-report", default=None, help="Optional robust evaluation report path; if provided and allowed=false submit is blocked")
+    sk.add_argument(
+        "--readiness-report",
+        default=None,
+        help="Submit readiness report generated by evaluate-submit-readiness; if provided and allowed=false submit is blocked",
+    )
     sk.add_argument("--score-json", default=None)
     sk.add_argument("--baseline-score", type=float, default=None)
+    sk.add_argument("--min-improvement", type=float, default=0.0, help="Minimum strict improvement required over baseline-score")
+    sk.add_argument(
+        "--baseline-public-score",
+        type=float,
+        default=None,
+        help="If provided, enables calibrated gate using Kaggle submission history (requires --score-json)",
+    )
+    sk.add_argument("--min-public-improvement", type=float, default=0.0)
+    sk.add_argument("--calibration-method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
+    sk.add_argument("--calibration-page-size", type=int, default=100)
+    sk.add_argument("--calibration-min-pairs", type=int, default=3)
+    sk.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
+    sk.add_argument("--require-robust-report", action="store_true", default=True)
+    sk.add_argument("--allow-missing-robust-report", dest="require_robust_report", action="store_false")
+    sk.add_argument("--require-readiness-report", action="store_true", default=True)
+    sk.add_argument("--allow-missing-readiness-report", dest="require_readiness_report", action="store_false")
+    sk.add_argument("--require-min-cv-count", type=int, default=2)
+    sk.add_argument("--block-public-validation-without-cv", action="store_true", default=True)
+    sk.add_argument("--allow-public-validation-without-cv", dest="block_public_validation_without_cv", action="store_false")
+    sk.add_argument("--block-target-patch", action="store_true", default=True)
+    sk.add_argument("--allow-target-patch", dest="block_target_patch", action="store_false")
     sk.add_argument("--allow-regression", action="store_true")
     sk.add_argument("--is-smoke", action="store_true")
     sk.add_argument("--is-partial", action="store_true")
     sk.set_defaults(fn=_cmd_submit_kaggle)
+
+    kc = sp.add_parser("calibrate-kaggle-local", help="Build local-vs-Kaggle public calibration report from submission history")
+    kc.add_argument("--competition", default="stanford-rna-3d-folding-2")
+    kc.add_argument("--out", default="runs/kaggle_calibration/latest.json")
+    kc.add_argument("--page-size", type=int, default=100)
+    kc.add_argument("--local-score", type=float, default=None, help="Optional candidate local score to estimate expected public range")
+    kc.add_argument("--baseline-public-score", type=float, default=None, help="Optional baseline public score for a strict calibrated go/no-go decision")
+    kc.add_argument("--method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
+    kc.add_argument("--min-public-improvement", type=float, default=0.0)
+    kc.add_argument("--min-pairs", type=int, default=3)
+    kc.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
+    kc.set_defaults(fn=_cmd_calibrate_kaggle_local)
+
+    rb = sp.add_parser("evaluate-robust", help="Aggregate multiple local score.json files and apply robust + calibrated go/no-go gate")
+    rb.add_argument(
+        "--score",
+        action="append",
+        required=True,
+        help="Named score entry in the format name=path/to/score.json. Use prefix cv: for CV splits (e.g., cv:fold0=...).",
+    )
+    rb.add_argument("--out", default="runs/auto")
+    rb.add_argument("--public-score-name", default="public_validation")
+    rb.add_argument("--baseline-robust-score", type=float, default=None)
+    rb.add_argument("--min-robust-improvement", type=float, default=0.0)
+    rb.add_argument("--competition", default="stanford-rna-3d-folding-2")
+    rb.add_argument("--baseline-public-score", type=float, default=None)
+    rb.add_argument("--calibration-method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
+    rb.add_argument("--calibration-page-size", type=int, default=100)
+    rb.add_argument("--calibration-min-pairs", type=int, default=3)
+    rb.add_argument("--min-public-improvement", type=float, default=0.0)
+    rb.add_argument("--min-cv-count", type=int, default=2)
+    rb.add_argument("--block-public-validation-without-cv", action="store_true", default=True)
+    rb.add_argument("--allow-public-validation-without-cv", dest="block_public_validation_without_cv", action="store_false")
+    rb.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
+    rb.set_defaults(fn=_cmd_evaluate_robust)
+
+    sr = sp.add_parser(
+        "evaluate-submit-readiness",
+        help="Evaluate complete pre-submit readiness (CV stability + strict improvements + local->Kaggle calibration)",
+    )
+    sr.add_argument(
+        "--candidate-score",
+        action="append",
+        required=True,
+        help="Candidate named score entry in the format name=path/to/score.json. Use prefix cv: for CV splits.",
+    )
+    sr.add_argument(
+        "--baseline-score",
+        action="append",
+        default=[],
+        help="Baseline named score entry in the format name=path/to/score.json. Must match candidate fold names for fold-level checks.",
+    )
+    sr.add_argument("--out", default="runs/auto")
+    sr.add_argument("--public-score-name", default="public_validation")
+    sr.add_argument("--require-baseline", action="store_true", default=True)
+    sr.add_argument("--allow-missing-baseline", dest="require_baseline", action="store_false")
+    sr.add_argument("--require-public-score", action="store_true", default=True)
+    sr.add_argument("--allow-missing-public-score", dest="require_public_score", action="store_false")
+    sr.add_argument("--min-cv-count", type=int, default=3)
+    sr.add_argument("--min-cv-improvement-count", type=int, default=2)
+    sr.add_argument("--min-fold-improvement", type=float, default=0.0)
+    sr.add_argument("--max-cv-regression", type=float, default=0.0)
+    sr.add_argument("--min-robust-improvement", type=float, default=0.0)
+    sr.add_argument("--min-public-local-improvement", type=float, default=0.0)
+    sr.add_argument("--max-cv-std", type=float, default=0.03)
+    sr.add_argument("--max-cv-gap", type=float, default=0.08)
+    sr.add_argument("--competition", default="stanford-rna-3d-folding-2")
+    sr.add_argument("--baseline-public-score", type=float, default=None)
+    sr.add_argument("--calibration-method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
+    sr.add_argument("--calibration-page-size", type=int, default=100)
+    sr.add_argument("--calibration-min-pairs", type=int, default=3)
+    sr.add_argument("--min-public-improvement", type=float, default=0.0)
+    sr.add_argument("--allow-calibration-extrapolation", action="store_true", default=False)
+    sr.add_argument("--min-calibration-pearson", type=float, default=0.0)
+    sr.add_argument("--min-calibration-spearman", type=float, default=0.0)
+    sr.add_argument("--block-public-validation-without-cv", action="store_true", default=True)
+    sr.add_argument("--allow-public-validation-without-cv", dest="block_public_validation_without_cv", action="store_false")
+    sr.set_defaults(fn=_cmd_evaluate_submit_readiness)
+
+    tg = sp.add_parser("evaluate-train-gate", help="Evaluate anti-overfitting gate from trained QA model JSON (train_metrics vs val_metrics)")
+    tg.add_argument("--model", required=True, help="qa_model.json or qa_gnn_model.json")
+    tg.add_argument("--out", default="runs/auto")
+    tg.add_argument("--min-val-samples", type=int, default=32)
+    tg.add_argument("--max-mae-gap-ratio", type=float, default=0.40)
+    tg.add_argument("--max-rmse-gap-ratio", type=float, default=0.40)
+    tg.add_argument("--max-r2-drop", type=float, default=0.30)
+    tg.add_argument("--max-spearman-drop", type=float, default=0.30)
+    tg.add_argument("--max-pearson-drop", type=float, default=0.30)
+    tg.add_argument("--allow-overfit-model", action="store_true", default=False)
+    tg.set_defaults(fn=_cmd_evaluate_train_gate)
+
+    rsl = sp.add_parser("research-sync-literature", help="Search literature and optionally download OA PDFs")
+    rsl.add_argument("--topic", required=True)
+    rsl.add_argument("--topic-slug", default="topic")
+    rsl.add_argument("--out-dir", default="runs/research/literature/auto")
+    rsl.add_argument("--limit-per-source", type=int, default=5)
+    rsl.add_argument("--timeout-s", type=int, default=30)
+    rsl.add_argument("--max-pdf-mb", type=int, default=30)
+    rsl.add_argument("--download-pdfs", action="store_true", default=True)
+    rsl.add_argument("--no-download-pdfs", dest="download_pdfs", action="store_false")
+    rsl.add_argument("--strict-pdf-download", action="store_true", default=True)
+    rsl.add_argument("--allow-pdf-download-failures", dest="strict_pdf_download", action="store_false")
+    rsl.add_argument("--strict-sources", action="store_true", default=True)
+    rsl.add_argument("--allow-source-failures", dest="strict_sources", action="store_false")
+    rsl.set_defaults(fn=_cmd_research_sync_literature)
+
+    rr = sp.add_parser("research-run", help="Run experiment harness and persist structured artifacts")
+    rr.add_argument("--config", required=True, help="YAML/JSON config for the experiment")
+    rr.add_argument("--run-id", required=True)
+    rr.add_argument("--out-base-dir", default="runs/research/experiments")
+    rr.add_argument("--allow-existing-run-dir", action="store_true")
+    rr.set_defaults(fn=_cmd_research_run)
+
+    rv = sp.add_parser("research-verify", help="Run strict gate: solver + checks + reproducibility")
+    rv.add_argument("--run-dir", required=True, help="Experiment run directory")
+    rv.add_argument("--allowed-statuses", default="optimal,feasible,success,complete")
+    rv.set_defaults(fn=_cmd_research_verify)
+
+    rp = sp.add_parser("research-report", help="Generate markdown report from experiment artifacts")
+    rp.add_argument("--run-dir", required=True, help="Experiment run directory")
+    rp.add_argument("--out", default="runs/research/reports/auto.md")
+    rp.set_defaults(fn=_cmd_research_report)
 
     return p
 

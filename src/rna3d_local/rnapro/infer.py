@@ -11,9 +11,15 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import xxhash
 
-from ..alignment import compute_coverage, map_target_to_template_positions, project_target_coordinates
+from ..alignment import compute_coverage, map_target_to_template_alignment, project_target_coordinates
 from ..bigdata import DEFAULT_MAX_ROWS_IN_MEMORY, DEFAULT_MEMORY_BUDGET_MB, assert_memory_budget, assert_row_budget
 from ..errors import raise_error
+from ..qa_gnn_ranker import (
+    is_qa_gnn_model_file,
+    load_qa_gnn_runtime,
+    score_candidate_feature_dicts_with_qa_gnn_runtime,
+)
+from ..qa_ranker import build_candidate_feature_dict, load_qa_model, score_candidate_with_model, select_candidates_with_diversity
 from ..template_pt import load_template_features_for_target
 from ..utils import sha256_file
 from .config import RnaProConfig
@@ -86,6 +92,58 @@ def _read_targets(*, target_sequences_path: Path, location: str) -> pl.DataFrame
     return targets.sort("target_id")
 
 
+def _assign_qa_scores(
+    *,
+    candidates: list[dict],
+    target_length: int,
+    qa_model_type: str,
+    qa_model,
+    qa_gnn_runtime,
+    location: str,
+    heuristic_mode: str,
+) -> None:
+    if heuristic_mode not in {"precomputed", "artifacts"}:
+        raise_error("RNAPRO_INFER", location, "heuristic_mode invalido", impact="1", examples=[str(heuristic_mode)])
+    features_batch: list[dict[str, float]] = []
+    for cand in candidates:
+        features = build_candidate_feature_dict(candidate=cand, target_length=target_length, location=location)
+        cand["qa_features"] = features
+        features_batch.append(features)
+        if qa_model_type == "heuristic":
+            if heuristic_mode == "precomputed":
+                cand["qa_score"] = float((0.8 * float(cand["coverage"])) + 0.2)
+            else:
+                cand["qa_score"] = float((0.7 * float(cand["coverage"])) + (0.3 * float(cand["similarity"])))
+        elif qa_model_type == "linear":
+            if qa_model is None:
+                raise_error("RNAPRO_INFER", location, "qa_model linear nao carregado", impact="1", examples=["qa_model=None"])
+            cand["qa_score"] = score_candidate_with_model(candidate_features=features, model=qa_model, location=location)
+        elif qa_model_type == "qa_gnn":
+            # assigned in batch below to preserve graph message passing between candidates
+            cand["qa_score"] = 0.0
+        else:
+            raise_error("RNAPRO_INFER", location, "qa_model_type desconhecido", impact="1", examples=[str(qa_model_type)])
+
+    if qa_model_type == "qa_gnn":
+        if qa_gnn_runtime is None:
+            raise_error("RNAPRO_INFER", location, "qa_gnn_runtime nao carregado", impact="1", examples=["qa_gnn_runtime=None"])
+        gnn_scores = score_candidate_feature_dicts_with_qa_gnn_runtime(
+            feature_dicts=features_batch,
+            runtime=qa_gnn_runtime,
+            location=location,
+        )
+        if len(gnn_scores) != len(candidates):
+            raise_error(
+                "RNAPRO_INFER",
+                location,
+                "quantidade de scores QA_GNN divergente dos candidatos",
+                impact=f"scores={len(gnn_scores)} candidatos={len(candidates)}",
+                examples=[],
+            )
+        for cand, gscore in zip(candidates, gnn_scores, strict=True):
+            cand["qa_score"] = float(gscore)
+
+
 def infer_rnapro(
     *,
     repo_root: Path,
@@ -99,6 +157,12 @@ def infer_rnapro(
     use_template: str = "none",
     template_features_dir: Path | None = None,
     template_source: str = "tbm",
+    mapping_mode: str = "hybrid",
+    projection_mode: str = "template_warped",
+    qa_model_path: Path | None = None,
+    qa_device: str = "cuda",
+    qa_top_pool: int = 40,
+    diversity_lambda: float = 0.15,
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
     max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> Path:
@@ -149,8 +213,31 @@ def infer_rnapro(
         )
     if chunk_size <= 0:
         raise_error("RNAPRO_INFER", location, "chunk_size invalido (deve ser > 0)", impact="1", examples=[str(chunk_size)])
+    if qa_top_pool <= 0:
+        raise_error("RNAPRO_INFER", location, "qa_top_pool invalido (deve ser > 0)", impact="1", examples=[str(qa_top_pool)])
+    if diversity_lambda < 0.0:
+        raise_error("RNAPRO_INFER", location, "diversity_lambda invalido (>=0)", impact="1", examples=[str(diversity_lambda)])
 
     targets = _read_targets(target_sequences_path=target_sequences_path, location=location)
+    qa_model_type = "heuristic"
+    qa_model = None
+    qa_gnn_runtime = None
+    qa_model_sha256 = None
+    qa_model_weights_sha256 = None
+    if qa_model_path is not None:
+        if is_qa_gnn_model_file(model_path=qa_model_path, location=location):
+            qa_gnn_runtime = load_qa_gnn_runtime(
+                model_path=qa_model_path,
+                weights_path=None,
+                device=str(qa_device),
+                location=location,
+            )
+            qa_model_type = "qa_gnn"
+            qa_model_weights_sha256 = sha256_file(qa_gnn_runtime.weights_path)
+        else:
+            qa_model = load_qa_model(model_path=qa_model_path, location=location)
+            qa_model_type = "linear"
+        qa_model_sha256 = sha256_file(qa_model_path)
 
     if use_template == "ca_precomputed":
         assert template_features_dir is not None
@@ -164,6 +251,15 @@ def infer_rnapro(
             chunk_size=chunk_size,
             template_features_dir=template_features_dir,
             template_source=template_source,
+            qa_model_type=str(qa_model_type),
+            qa_model=qa_model,
+            qa_gnn_runtime=qa_gnn_runtime,
+            qa_model_path=qa_model_path,
+            qa_model_sha256=qa_model_sha256,
+            qa_model_weights_sha256=qa_model_weights_sha256,
+            qa_device=str(qa_device),
+            qa_top_pool=int(qa_top_pool),
+            diversity_lambda=float(diversity_lambda),
             memory_budget_mb=memory_budget_mb,
             max_rows_in_memory=max_rows_in_memory,
         )
@@ -179,6 +275,17 @@ def infer_rnapro(
         min_coverage=use_min_coverage,
         rerank_pool_multiplier=rerank_pool_multiplier,
         chunk_size=chunk_size,
+        mapping_mode=str(mapping_mode),
+        projection_mode=str(projection_mode),
+        qa_model_type=str(qa_model_type),
+        qa_model=qa_model,
+        qa_gnn_runtime=qa_gnn_runtime,
+        qa_model_path=qa_model_path,
+        qa_model_sha256=qa_model_sha256,
+        qa_model_weights_sha256=qa_model_weights_sha256,
+        qa_device=str(qa_device),
+        qa_top_pool=int(qa_top_pool),
+        diversity_lambda=float(diversity_lambda),
         memory_budget_mb=memory_budget_mb,
         max_rows_in_memory=max_rows_in_memory,
     )
@@ -195,6 +302,15 @@ def _infer_from_precomputed_templates(
     chunk_size: int,
     template_features_dir: Path,
     template_source: str,
+    qa_model_type: str,
+    qa_model,
+    qa_gnn_runtime,
+    qa_model_path: Path | None,
+    qa_model_sha256: str | None,
+    qa_model_weights_sha256: str | None,
+    qa_device: str,
+    qa_top_pool: int,
+    diversity_lambda: float,
     memory_budget_mb: int,
     max_rows_in_memory: int,
 ) -> Path:
@@ -226,6 +342,7 @@ def _infer_from_precomputed_templates(
     finalized = False
     insufficient_coverage_count = 0
     insufficient_coverage_examples: list[str] = []
+    selected_candidates_total = 0
 
     def _flush() -> None:
         nonlocal writer, rows_written
@@ -276,21 +393,70 @@ def _infer_from_precomputed_templates(
                     examples=[str(payload["path"])],
                 )
 
-            selected: list[tuple[int, float]] = []
+            selected_candidates: list[dict] = []
             for i in range(len(model_ids)):
                 cov = float(mask[i].mean())
                 if cov >= float(min_coverage):
-                    selected.append((i, cov))
-            if len(selected) < int(n_models):
+                    is_complete = bool(mask[i].all())
+                    coords_i = [
+                        (float(coords[i, ridx, 0]), float(coords[i, ridx, 1]), float(coords[i, ridx, 2]))
+                        for ridx in range(int(len(seq)))
+                    ]
+                    selected_candidates.append(
+                        {
+                            "idx": int(i),
+                            "coverage": float(cov),
+                            "similarity": 1.0,
+                            "mapped_count": int(round(cov * len(seq))),
+                            "match_count": int(round(cov * len(seq))),
+                            "mismatch_count": 0,
+                            "chem_compatible_count": 0,
+                            "gap_open_score": 0.0,
+                            "gap_extend_score": 0.0,
+                            "coords": coords_i,
+                            "is_complete": bool(is_complete),
+                        }
+                    )
+            if len(selected_candidates) < int(n_models):
                 insufficient_coverage_count += 1
                 if len(insufficient_coverage_examples) < 8:
-                    insufficient_coverage_examples.append(f"{tid}:{len(selected)}/{n_models}")
+                    insufficient_coverage_examples.append(f"{tid}:{len(selected_candidates)}/{n_models}")
                 continue
 
-            selected = sorted(selected, key=lambda x: (-x[1], x[0]))[: int(n_models)]
+            complete_candidates = [cand for cand in selected_candidates if bool(cand.get("is_complete", False))]
+            if len(complete_candidates) < int(n_models):
+                insufficient_coverage_count += 1
+                if len(insufficient_coverage_examples) < 8:
+                    insufficient_coverage_examples.append(
+                        f"{tid}:complete={len(complete_candidates)}/{n_models};coverage={len(selected_candidates)}"
+                    )
+                continue
+
+            _assign_qa_scores(
+                candidates=complete_candidates,
+                target_length=len(seq),
+                qa_model_type=str(qa_model_type),
+                qa_model=qa_model,
+                qa_gnn_runtime=qa_gnn_runtime,
+                location=location,
+                heuristic_mode="precomputed",
+            )
+            qa_pool = sorted(
+                complete_candidates,
+                key=lambda c: (-float(c["qa_score"]), -float(c["coverage"]), int(c["idx"])),
+            )[: max(int(qa_top_pool), int(n_models))]
+            selected = select_candidates_with_diversity(
+                candidates=qa_pool,
+                n_models=int(n_models),
+                diversity_lambda=float(diversity_lambda),
+                location=location,
+            )
             model_id = 0
-            for i, cov in selected:
+            for cand in selected:
                 model_id += 1
+                i = int(cand["idx"])
+                cov = float(cand["coverage"])
+                selected_candidates_total += 1
                 for resid in range(1, len(seq) + 1):
                     idx = resid - 1
                     if not bool(mask[i, idx]):
@@ -316,6 +482,7 @@ def _infer_from_precomputed_templates(
                             "template_uid": f"{template_source}:{tid}:{model_id}",
                             "similarity": 1.0,
                             "coverage": float(cov),
+                            "qa_score": float(cand.get("qa_score", 0.0)),
                         }
                     )
                 if len(buffer) >= chunk_size:
@@ -333,7 +500,7 @@ def _infer_from_precomputed_templates(
             raise_error(
                 "RNAPRO_INFER",
                 location,
-                "alvos sem modelos suficientes apos filtro de cobertura",
+                "alvos sem modelos completos suficientes apos filtros de cobertura/completude",
                 impact=str(insufficient_coverage_count),
                 examples=insufficient_coverage_examples,
             )
@@ -361,9 +528,26 @@ def _infer_from_precomputed_templates(
             "min_coverage": float(min_coverage),
             "use_template": "ca_precomputed",
             "template_source": template_source,
+            "qa_model_path": None if qa_model_path is None else _rel(qa_model_path, repo_root),
+            "qa_model_type": str(qa_model_type),
+            "qa_device": str(qa_device),
+            "qa_model_weights_path": None
+            if qa_gnn_runtime is None
+            else _rel(qa_gnn_runtime.weights_path, repo_root),
+            "qa_top_pool": int(qa_top_pool),
+            "diversity_lambda": float(diversity_lambda),
         },
-        "stats": {"n_rows": int(rows_written), "n_targets": int(len(targets_written)), "chunk_size": int(chunk_size)},
-        "sha256": {"predictions_long.parquet": sha256_file(out_path)},
+        "stats": {
+            "n_rows": int(rows_written),
+            "n_targets": int(len(targets_written)),
+            "chunk_size": int(chunk_size),
+            "selected_candidates": int(selected_candidates_total),
+        },
+        "sha256": {
+            "predictions_long.parquet": sha256_file(out_path),
+            "qa_model.json": None if qa_model_sha256 is None else str(qa_model_sha256),
+            "qa_model_weights.pt": None if qa_model_weights_sha256 is None else str(qa_model_weights_sha256),
+        },
     }
     manifest_path = out_path.parent / "rnapro_infer_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -382,6 +566,17 @@ def _infer_from_model_artifacts(
     min_coverage: float,
     rerank_pool_multiplier: int,
     chunk_size: int,
+    mapping_mode: str,
+    projection_mode: str,
+    qa_model_type: str,
+    qa_model,
+    qa_gnn_runtime,
+    qa_model_path: Path | None,
+    qa_model_sha256: str | None,
+    qa_model_weights_sha256: str | None,
+    qa_device: str,
+    qa_top_pool: int,
+    diversity_lambda: float,
     memory_budget_mb: int,
     max_rows_in_memory: int,
 ) -> Path:
@@ -500,6 +695,11 @@ def _infer_from_model_artifacts(
     no_candidates_examples: list[str] = []
     insufficient_coverage_count = 0
     insufficient_coverage_examples: list[str] = []
+    selected_mapped_total = 0
+    selected_match_total = 0
+    selected_mismatch_total = 0
+    selected_chem_total = 0
+    selected_candidates_total = 0
     try:
         for tid, seq, cutoff in targets.select("target_id", "sequence", "temporal_cutoff").iter_rows():
             tid = str(tid)
@@ -542,12 +742,25 @@ def _infer_from_model_artifacts(
                         impact="1",
                         examples=[train_id],
                     )
-                mapping = map_target_to_template_positions(
+                mapping_info = map_target_to_template_alignment(
                     target_sequence=seq,
                     template_sequence=tpl_seq,
                     location=location,
+                    mapping_mode=str(mapping_mode),
                 )
-                valid_mapping = {t: s for t, s in mapping.items() if s in tpl_coords}
+                match_count = 0
+                mismatch_count = 0
+                chem_compatible_count = 0
+                valid_mapping = {t: s for t, s in mapping_info.target_to_template.items() if int(s) in tpl_coords}
+                for t in valid_mapping.keys():
+                    ptype = mapping_info.pair_types.get(int(t), "mismatch")
+                    if ptype == "match":
+                        match_count += 1
+                    elif ptype == "chem_compatible_mismatch":
+                        mismatch_count += 1
+                        chem_compatible_count += 1
+                    else:
+                        mismatch_count += 1
                 cov = compute_coverage(mapped_positions=len(valid_mapping), target_length=target_len, location=location)
                 if cov < float(min_coverage):
                     continue
@@ -556,12 +769,19 @@ def _infer_from_model_artifacts(
                     mapping=valid_mapping,
                     template_coordinates=tpl_coords,
                     location=location,
+                    projection_mode=str(projection_mode),
                 )
                 coverage_valid.append(
                     {
                         "train_id": str(train_id),
                         "similarity": float(sim),
                         "coverage": float(cov),
+                        "mapped_count": int(len(valid_mapping)),
+                        "match_count": int(match_count),
+                        "mismatch_count": int(mismatch_count),
+                        "chem_compatible_count": int(chem_compatible_count),
+                        "gap_open_score": 0.0,
+                        "gap_extend_score": 0.0,
                         "coords": coords,
                     }
                 )
@@ -572,15 +792,36 @@ def _infer_from_model_artifacts(
                     insufficient_coverage_examples.append(f"{tid}:{len(coverage_valid)}/{n_models}")
                 continue
 
-            selected = sorted(
+            _assign_qa_scores(
+                candidates=coverage_valid,
+                target_length=target_len,
+                qa_model_type=str(qa_model_type),
+                qa_model=qa_model,
+                qa_gnn_runtime=qa_gnn_runtime,
+                location=location,
+                heuristic_mode="artifacts",
+            )
+
+            qa_pool = sorted(
                 coverage_valid,
-                key=lambda c: (-c["coverage"], -c["similarity"], c["train_id"]),
-            )[: int(n_models)]
+                key=lambda c: (-float(c["qa_score"]), -float(c["coverage"]), -float(c["similarity"]), c["train_id"]),
+            )[: max(int(qa_top_pool), int(n_models))]
+            selected = select_candidates_with_diversity(
+                candidates=qa_pool,
+                n_models=int(n_models),
+                diversity_lambda=float(diversity_lambda),
+                location=location,
+            )
 
             wrote_target = False
             model_id = 0
             for cand in selected:
                 model_id += 1
+                selected_mapped_total += int(cand.get("mapped_count", 0))
+                selected_match_total += int(cand.get("match_count", 0))
+                selected_mismatch_total += int(cand.get("mismatch_count", 0))
+                selected_chem_total += int(cand.get("chem_compatible_count", 0))
+                selected_candidates_total += 1
                 for resid, (base, xyz) in enumerate(zip(seq, cand["coords"], strict=True), start=1):
                     buffer.append(
                         {
@@ -596,6 +837,7 @@ def _infer_from_model_artifacts(
                             "template_uid": f"rnapro_train:{cand['train_id']}",
                             "similarity": float(cand["similarity"]),
                             "coverage": float(cand["coverage"]),
+                            "qa_score": float(cand.get("qa_score", 0.0)),
                         }
                     )
                 wrote_target = True
@@ -653,11 +895,35 @@ def _infer_from_model_artifacts(
             "rerank_pool_multiplier": int(rerank_pool_multiplier),
             "use_template": "none",
             "template_source": "tbm",
+            "mapping_mode": str(mapping_mode),
+            "projection_mode": str(projection_mode),
+            "qa_model_path": None if qa_model_path is None else _rel(qa_model_path, repo_root),
+            "qa_model_type": str(qa_model_type),
+            "qa_device": str(qa_device),
+            "qa_model_weights_path": None
+            if qa_gnn_runtime is None
+            else _rel(qa_gnn_runtime.weights_path, repo_root),
+            "qa_top_pool": int(qa_top_pool),
+            "diversity_lambda": float(diversity_lambda),
         },
-        "stats": {"n_rows": int(rows_written), "n_targets": int(len(targets_written)), "chunk_size": int(chunk_size)},
-        "sha256": {"predictions_long.parquet": sha256_file(out_path)},
+        "stats": {
+            "n_rows": int(rows_written),
+            "n_targets": int(len(targets_written)),
+            "chunk_size": int(chunk_size),
+            "selected_candidates": int(selected_candidates_total),
+            "selected_avg_mapped": 0.0 if selected_candidates_total == 0 else float(selected_mapped_total) / float(selected_candidates_total),
+            "selected_avg_match": 0.0 if selected_candidates_total == 0 else float(selected_match_total) / float(selected_candidates_total),
+            "selected_avg_mismatch": 0.0 if selected_candidates_total == 0 else float(selected_mismatch_total) / float(selected_candidates_total),
+            "selected_avg_chem_compatible": 0.0
+            if selected_candidates_total == 0
+            else float(selected_chem_total) / float(selected_candidates_total),
+        },
+        "sha256": {
+            "predictions_long.parquet": sha256_file(out_path),
+            "qa_model.json": None if qa_model_sha256 is None else str(qa_model_sha256),
+            "qa_model_weights.pt": None if qa_model_weights_sha256 is None else str(qa_model_weights_sha256),
+        },
     }
     manifest_path = out_path.parent / "rnapro_infer_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out_path
-

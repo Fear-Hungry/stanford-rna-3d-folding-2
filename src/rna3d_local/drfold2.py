@@ -100,7 +100,7 @@ def extract_target_coordinates_from_pdb(*, pdb_path: Path, target_sequence: str,
     coords: list[tuple[float, float, float]] = []
     for r in residues:
         atom = None
-        for name in ("C4'", "P", "C1'", "O3'"):
+        for name in ("C1'", "C4'", "P", "O3'"):
             if r.has_id(name):
                 atom = r[name]
                 break
@@ -344,4 +344,3 @@ def predict_drfold2(
     manifest_path = out_path.parent / "drfold2_predict_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out_path, manifest_path
-
