@@ -1480,3 +1480,49 @@ Log append-only de mudancas implementadas (UTC).
 - Riscos/follow-ups:
   - O ganho atual e validado em CV3; ainda falta validar o mesmo peso no artefato competitivo completo de inferencia (regime de submit).
   - Submissao permanece dependente de readiness completo (`public_validation` + calibracao + gates) antes de notebook submit.
+
+## 2026-02-13 - marcusvinicius/Codex - PLAN-052 (wrapper operacional main GPU)
+
+- Resumo:
+  - Implementado wrapper GPU-first `scripts/rna3d_main_gpu.sh` para execucao da CLI com injecao automatica de flags CUDA em comandos GPU-capable.
+  - Integrada validacao fail-fast de CUDA (`torch.cuda.is_available()`) antes de comandos GPU-capable (exceto `--help`), sem fallback silencioso.
+  - Documentado fluxo operacional no `README.md` com matriz de comandos forçados para GPU e exemplos de uso.
+- Arquivos principais:
+  - `scripts/rna3d_main_gpu.sh`
+  - `README.md`
+- Validacao local executada:
+  - `bash -n scripts/rna3d_main_gpu.sh` (OK)
+  - `scripts/rna3d_main_gpu.sh retrieve-templates --help` (OK)
+  - `scripts/rna3d_main_gpu.sh predict-tbm --help` (OK)
+  - `scripts/rna3d_main_gpu.sh train-qa-rnrank --help` (OK)
+  - `scripts/rna3d_main_gpu.sh score --help` (OK)
+  - `CUDA_VISIBLE_DEVICES='' scripts/rna3d_main_gpu.sh predict-tbm` (falha esperada `EXIT=2` com erro fail-fast de CUDA indisponivel)
+  - `pytest -q tests/test_compute_backend.py tests/test_candidate_pool.py tests/test_template_workflow.py tests/test_template_pt.py tests/test_submission_readiness.py tests/test_submit_gate_hardening.py tests/test_robust_score.py tests/test_kaggle_calibration.py` (`33 passed`)
+- Riscos/follow-ups:
+  - O wrapper depende de `torch` instalado no ambiente para validar CUDA; em ambiente sem `torch`, comandos GPU-capable falham cedo por contrato.
+  - Ainda existe parte do pipeline com execucao CPU-bound (ex.: scoring/USalign e etapas nao GPU-capable na CLI); o wrapper preserva esses comandos sem forcar GPU.
+
+## 2026-02-13 - marcusvinicius/Codex - PLAN-053 (limpeza agressiva do core competitivo)
+
+- Resumo:
+  - Removidos caminhos permissivos da CLI competitiva (`submit-kaggle`, `evaluate-robust`, `evaluate-submit-readiness`, `calibrate-kaggle-local`), eliminando bypass por flags `allow-*`.
+  - `submit-kaggle` endurecido: `--robust-report` e `--readiness-report` agora sao obrigatorios por contrato.
+  - `submit-kaggle` passou a bloquear sempre regressao/calibracao extrapolada/padrao `target_patch` sem bypass operacional.
+  - Removidos comandos `research-*` da CLI principal para reduzir superficie fora do fluxo competitivo oficial.
+  - Removidos wrappers legados `src/rna3d_local/data_access.py` e `src/rna3d_local/memory.py`; `bigdata.py` permanece como API canonica unica.
+  - Atualizada documentacao no `README.md` para refletir a CLI estrita e a remocao de wrappers legados.
+- Arquivos principais:
+  - `PLANS.md` (novo `PLAN-053`)
+  - `src/rna3d_local/cli.py`
+  - `src/rna3d_local/data_access.py` (removido)
+  - `src/rna3d_local/memory.py` (removido)
+  - `tests/test_submit_gate_hardening.py`
+  - `tests/test_cli_strict_surface.py`
+  - `README.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_submit_gate_hardening.py tests/test_cli_strict_surface.py tests/test_gating.py tests/test_submission_readiness.py tests/test_robust_score.py tests/test_contracts.py tests/test_export_strict.py tests/test_compute_backend.py` (`36 passed`)
+  - `python -m rna3d_local --help` (OK; sem `research-*`)
+  - `python -m rna3d_local submit-kaggle --help` (OK; sem flags `allow-*` e com `--robust-report/--readiness-report` obrigatorios)
+- Riscos/follow-ups:
+  - Scripts antigos que dependiam de flags permissivas ou comandos `research-*` na CLI principal agora falham por contrato e precisam migrar para o fluxo estrito.
+  - O modulo `research` permanece no pacote, mas sem exposicao na CLI principal; se voltar ao escopo operacional, deve reentrar via plano dedicado com gates estritos.

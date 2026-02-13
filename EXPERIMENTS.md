@@ -2966,3 +2966,57 @@ Log append-only de experimentos executados (UTC).
 - Conclusao + proximos passos:
   - O peso vencedor em CV manteve ganho tambem no `public_validation` deste artefato base.
   - Proximo passo: promover `0.999/0.001` para o pipeline competitivo atual e reavaliar readiness completo antes de submit notebook-only.
+
+## PLAN-052
+
+### 2026-02-13T17:21:37Z - marcusvinicius/Codex (PLAN-052 wrapper operacional main GPU)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: operacionalizar execucao GPU-first padronizada para comandos elegiveis da CLI com fail-fast quando CUDA nao estiver disponivel.
+  - Comparacao: execucao direta da CLI (sem forca de backend/dispositivo) vs wrapper `scripts/rna3d_main_gpu.sh` com injecao automatica de flags GPU.
+
+- Comandos executados + configuracao efetiva:
+  - Validacao sintatica do wrapper:
+    - `bash -n scripts/rna3d_main_gpu.sh`
+  - Smoke de contrato `--help` (sem exigir CUDA):
+    - `scripts/rna3d_main_gpu.sh retrieve-templates --help`
+    - `scripts/rna3d_main_gpu.sh predict-tbm --help`
+    - `scripts/rna3d_main_gpu.sh train-qa-rnrank --help`
+    - `scripts/rna3d_main_gpu.sh score --help`
+  - Smoke de fail-fast CUDA indisponivel:
+    - `CUDA_VISIBLE_DEVICES='' scripts/rna3d_main_gpu.sh predict-tbm` (retorno esperado `EXIT=2`)
+  - Regressao de testes do pipeline apos patch:
+    - `pytest -q tests/test_compute_backend.py tests/test_candidate_pool.py tests/test_template_workflow.py tests/test_template_pt.py tests/test_submission_readiness.py tests/test_submit_gate_hardening.py tests/test_robust_score.py tests/test_kaggle_calibration.py`
+
+- Parametros e hiperparametros efetivos (com valores):
+  - Wrapper GPU-first:
+    - `retrieve-templates`, `train-rnapro`, `build-candidate-pool` -> `--compute-backend cuda`
+    - `predict-tbm`, `predict-rnapro` -> `--qa-device cuda --compute-backend cuda`
+    - `train-qa-rnrank`, `score-qa-rnrank`, `select-top5-global`, `train-qa-gnn-ranker`, `score-qa-gnn-ranker` -> `--device cuda`
+  - Fail-fast de CUDA:
+    - validacao por `torch.cuda.is_available()` em comandos GPU-capable (exceto `--help`).
+
+- Seeds usadas:
+  - N/A (mudanca operacional de execucao/CLI; sem treino estocastico nesta rodada).
+
+- Versao do codigo (git commit) e dados:
+  - Commit base: `2d66048` (workspace com alteracoes locais nao commitadas).
+  - Dados: N/A (validacao operacional + testes unitarios/integracao).
+
+- Artefatos gerados em `runs/` + logs:
+  - N/A para `runs/` (validacao foi de CLI/wrapper).
+  - Logs auxiliares de help:
+    - `/tmp/plan052_rt_help.txt`
+    - `/tmp/plan052_pt_help.txt`
+    - `/tmp/plan052_qa_help.txt`
+    - `/tmp/plan052_score_help.txt`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - `bash -n` e todos os smokes `--help`: `OK`.
+  - Smoke de fail-fast sem CUDA: `EXIT=2` com mensagem acionavel (`CUDA indisponivel`).
+  - Suite de regressao selecionada: `33 passed in 1.37s`.
+  - Score local Kaggle-like: N/A (rodada sem inferencia/scoring de candidato).
+
+- Conclusao + proximos passos:
+  - Wrapper `main GPU` implementado e validado para os criterios de aceite do plano (`bash -n` + `<cmd> --help`).
+  - Proximo passo: executar um ciclo real GPU-first (retrieve -> predict -> pool -> QA -> export -> check -> score) com artefatos em `runs/` para medir ganho de throughput/latencia por etapa.

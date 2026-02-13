@@ -35,6 +35,21 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Smoke local `research-run -> research-verify -> research-report` concluido sem erro.
   - Documentacao no `README.md` e `research/README.md` com runbook minimo.
 
+## PLAN-053 - Limpeza agressiva do core (sem legado/permissivo na CLI competitiva)
+
+- Objetivo: reduzir superficie operacional ao core competitivo estrito, removendo caminhos legados/permissivos e comandos fora do fluxo oficial de competicao.
+- Escopo:
+  - Remover wrappers legados `data_access.py` e `memory.py`.
+  - Endurecer `submit-kaggle`/`evaluate-robust`/`evaluate-submit-readiness`/`calibrate-kaggle-local` removendo flags `allow-*` e bypass de gate.
+  - Tornar `--robust-report` e `--readiness-report` obrigatorios no `submit-kaggle`.
+  - Remover comandos `research-*` da CLI principal.
+  - Atualizar README para refletir API canonica (`bigdata.py`) e CLI competitiva estrita.
+- Criterios de aceite:
+  - `python -m rna3d_local --help` nao exibe comandos `research-*`.
+  - `python -m rna3d_local submit-kaggle --help` nao exibe flags `allow-*`.
+  - `src/rna3d_local/data_access.py` e `src/rna3d_local/memory.py` inexistentes.
+  - Suite de testes de gate/CLI estrita verde.
+
 ## PLAN-002 - Implementar artigo 1 (template-aware) com pipeline modular completo
 
 - Objetivo: adicionar branch template-aware + branch RNAPro proxy com ensemble, export estrito e gating de submissao.

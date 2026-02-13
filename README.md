@@ -91,7 +91,7 @@ As praticas de processamento de dados grandes foram centralizadas em `src/rna3d_
 - materializacao particionada em parquet (`sink_partitioned_parquet`);
 - guardrails de memoria/linhas (`assert_memory_budget`, `assert_row_budget`).
 
-Esse modulo e a API canonica para novos experimentos/treinos. `data_access.py` e `memory.py` permanecem apenas como wrappers de compatibilidade.
+Esse modulo e a API canonica para novos experimentos/treinos.
 
 ## Benchmark e diagnostico (CASP16)
 
@@ -117,6 +117,41 @@ O pipeline modular do artigo 1 esta implementado e exposto na CLI:
 Observacoes:
 - Para rodar em dados reais, e necessario fornecer uma base externa de templates (entrada `--external-templates`) e respeitar cutoff temporal sem fallback.
 - A integracao tecnica esta coberta por testes sinteticos; qualidade/score deve ser validado via `benchmarks/CASP16.md` antes de qualquer submissao.
+
+### Wrapper operacional `main GPU` (GPU-first)
+
+Para executar o pipeline em modo GPU-first com fail-fast de CUDA:
+
+```bash
+scripts/rna3d_main_gpu.sh <comando> [args...]
+```
+
+Comportamento:
+- comandos GPU-capable recebem flags CUDA automaticamente:
+  - `retrieve-templates`, `train-rnapro`, `build-candidate-pool`: `--compute-backend cuda`
+  - `predict-tbm`, `predict-rnapro`: `--qa-device cuda --compute-backend cuda`
+  - `train-qa-rnrank`, `score-qa-rnrank`, `select-top5-global`, `train-qa-gnn-ranker`, `score-qa-gnn-ranker`: `--device cuda`
+- antes de executar comandos GPU-capable, o wrapper valida `torch.cuda.is_available()`; se CUDA estiver indisponivel, encerra com erro explicito.
+- comandos CPU-only (`score`, `check-submission`, `export-submission`, `ensemble-predict`, etc.) seguem sem injecao de flags GPU.
+
+Exemplos:
+
+```bash
+# ajuda do subcomando (sem exigir CUDA)
+scripts/rna3d_main_gpu.sh predict-tbm --help
+
+# inferencia TBM GPU-first
+scripts/rna3d_main_gpu.sh predict-tbm \
+  --templates runs/.../retrieved_templates.parquet \
+  --targets input/stanford-rna-3d-folding-2/test_sequences.csv \
+  --out runs/.../tbm_predictions.parquet
+
+# treino QA RNArank em CUDA
+scripts/rna3d_main_gpu.sh train-qa-rnrank \
+  --candidates runs/.../candidate_pool.parquet \
+  --out-model runs/.../qa_rnrank_model.json \
+  --out-weights runs/.../qa_rnrank_model.pt
+```
 
 ## (Opcional) CV em `train` (splits por cluster)
 
@@ -154,38 +189,6 @@ No scorer em lotes:
 - Consolidar um pipeline de treino/inferencia/export para RNA 3D com validacao local estrita.
 - Evitar regressao metodologica usando referencias cientificas atuais.
 - Traduzir literatura em decisoes de engenharia rastreaveis.
-
-## Research Harness (competicao Kaggle)
-
-Foi adicionado um harness leve para automatizar ciclos de experimento com gate estrito:
-- literatura -> experimento -> verificacao -> relatorio;
-- foco em competicao Kaggle com rastreabilidade e bloqueio de regressao.
-
-Comandos principais:
-
-```bash
-# 1) Coleta literatura + related_work (com download OA opcional)
-python -m rna3d_local research-sync-literature \
-  --topic "stanford rna 3d folding 2 template rerank"
-
-# 2) Executa experimento (comando unico reprodutivel por config)
-python -m rna3d_local research-run \
-  --config configs/research/problems/rna3d_kaggle_loop.yaml \
-  --run-id 20260212_exp001
-
-# 3) Gate estrito: solver + checks + reproducao + kaggle_gate
-python -m rna3d_local research-verify \
-  --run-dir runs/research/experiments/20260212_exp001
-
-# 4) Gera relatorio tecnico
-python -m rna3d_local research-report \
-  --run-dir runs/research/experiments/20260212_exp001
-```
-
-Arquivos de referencia:
-- `research/README.md`
-- `configs/research/default.yaml`
-- `configs/research/problems/rna3d_kaggle_loop.yaml`
 
 ## Como usar este guia cientifico
 
