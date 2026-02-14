@@ -837,3 +837,116 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Wrapper executa subcomandos existentes sem quebrar contrato de argumentos.
   - Comando GPU-capable falha cedo com mensagem clara se CUDA indisponivel.
   - `bash -n scripts/rna3d_main_gpu.sh` e `scripts/rna3d_main_gpu.sh <cmd> --help` funcionam localmente.
+
+## PLAN-054 - Seletor por alvo c02 vs c04 (CV-first) para recuperar generalizacao
+
+- Objetivo: explorar ganho real sem patch permissivo combinando `c02` (melhor CV) e `c04` (melhor public local) via seletor por alvo treinado em folds, com regra deterministica e auditavel.
+- Escopo:
+  - Medir teto de ganho (`oracle`) entre `c02` e `c04` no `public_validation` e em `fold3/fold4`.
+  - Construir dataset por alvo com features de sequencia (`len`, `gc_ratio`, `au_ratio`) e label de escolha (`c02` vs `c04`) a partir de `fold3/fold4`.
+  - Fazer sweep de regras deterministicas simples (thresholds) e selecionar regra por validacao cruzada entre folds.
+  - Aplicar regra vencedora no `public_validation`, gerar submissao blended por alvo, validar contrato estrito e calcular score local oficial.
+  - Comparar contra baselines `c02` e `c04` sem bypass.
+- Criterios de aceite:
+  - Artefatos em `runs/<plan054>/` contendo regras testadas, escolhas por alvo, submissao final e `score.json`.
+  - `check-submission` aprovado para submissao blended.
+  - Resultado comparativo registrado em `EXPERIMENTS.md` com conclusao objetiva (melhorou ou nao).
+
+## PLAN-055 - Seletor multi-config c01..c04 por confianca TBM (CV-first)
+
+- Objetivo: aumentar robustez de selecao por alvo sem patch permissivo escolhendo entre `c01..c04` via sinais de confianca TBM agregados por alvo.
+- Escopo:
+  - Construir features por alvo para cada config (`mean/std` de `similarity`, `coverage`, `qa_score`, `template_rank`, diversidade de templates/modelos).
+  - Avaliar seletores deterministas multi-config (`argmax` de sinais e combinacoes lineares) em `fold3/fold4`.
+  - Selecionar regra por `mean_cv` (com rastreio de `fold3` e `fold4`) e aplicar no `public_validation`.
+  - Gerar submissao blended por alvo entre `c01..c04`, validar em modo estrito e calcular score local oficial.
+- Criterios de aceite:
+  - Tabela de comparacao de seletores em `fold3/fold4` registrada em `runs/<plan055>/`.
+  - `check-submission` e `score` concluidos para a submissao selecionada.
+  - Registro append-only em `EXPERIMENTS.md` com decisao de promover ou bloquear.
+
+## PLAN-056 - Meta-reranker supervisionado por alvo/config (c01..c04)
+
+- Objetivo: substituir regras fixas por um meta-modelo supervisionado que aprende, por alvo, qual config (`c01..c04`) tende a maximizar score local.
+- Escopo:
+  - Montar dataset supervisionado por alvo/config em `fold3/fold4` com:
+    - features agregadas dos TBMs (`similarity`, `coverage`, `qa_score`, `template_rank`, diversidade),
+    - features de sequencia (`len`, `gc`, `au`),
+    - label real = score por alvo da config no fold.
+  - Treinar/avaliar meta-reranker com validação cruzada entre folds (`train fold3 -> eval fold4`, `train fold4 -> eval fold3`).
+  - Se CV superar baseline `c04` ou `c02` no critério definido, treinar modelo final em `fold3+fold4`, aplicar no `public_validation`, gerar submissao blended por alvo e medir score oficial.
+- Criterios de aceite:
+  - Artefatos de treino/score por fold em `runs/<plan056>/` com métricas e escolhas por alvo.
+  - Comparação explícita contra baselines `c02` e `c04`.
+  - `check-submission` + `score` concluídos para candidato final de `public_validation`.
+
+## PLAN-057 - Pool expandido + selector CV-first (TBM multi-fonte) com teto oracle
+
+- Objetivo: aumentar teto de seleção por alvo além de `c01..c04`, combinando fontes TBM adicionais já existentes no repositório e promovendo apenas se houver ganho robusto em CV.
+- Escopo:
+  - Consolidar candidatos por alvo de múltiplas fontes TBM já geradas (`c01..c06`, `strict/hybrid/chemical/hybrid_qa` quando disponíveis por fold).
+  - Medir teto oracle por fold/public (melhor fonte por `target_id`) para validar potencial real antes de novo treino.
+  - Treinar seletor supervisionado por alvo (modelo leve + regra determinística auditável) em `fold3/fold4` com validação cruzada.
+  - Aplicar seletor vencedor em `public_validation`, gerar submissão estrita e calcular score oficial local.
+  - Bloquear submit se não houver melhora local estrita sobre baseline oficial vigente em `EXPERIMENTS.md`.
+- Criterios de aceite:
+  - Tabela de oracle e baseline por fold/public registrada em `runs/<plan057>/`.
+  - `check-submission` + `score --per-target` concluídos para candidato final.
+  - Registro append-only em `EXPERIMENTS.md` com decisão objetiva de promoção/bloqueio.
+
+## PLAN-058 - Recalibracao por regime e gate de submit competitivo (CV2 comparavel)
+
+- Objetivo: reduzir bloqueios indevidos por calibracao global historica (mistura de regimes) e alinhar decisao de submit ao regime competitivo atual, preservando fail-fast e rastreabilidade.
+- Escopo:
+  - Construir relatorio de calibracao segmentado por regime de score local (ex.: `<0.30` vs `>=0.30`) e por janela temporal recente.
+  - Comparar correlacoes (`pearson/spearman`) e erro de estimativa por regime para justificar regra operacional de calibracao competitiva.
+  - Integrar avaliacao de readiness focada em folds comparaveis (`fold3/fold4`) com limiares explicitos de estabilidade CV2.
+  - Definir decisao final de submit notebook-only para o candidato `best+vA+vC+vD` usando:
+    - validacao local estrita ja concluida;
+    - robust/readiness aprovados no regime selecionado;
+    - registro explicito de risco residual.
+- Criterios de aceite:
+  - Artefato de calibracao segmentada em `runs/<plan058>/` com tabelas e conclusao objetiva.
+  - Relatorio readiness final (`allowed=true` ou `allowed=false`) com racional reproduzivel.
+  - Decisao de submit/bloqueio registrada em `EXPERIMENTS.md` sem tentativa cega.
+
+## PLAN-059 - Limpeza de calibracao por `submission ref` + rescore de submetidos
+
+- Objetivo: eliminar bloqueios indevidos no gate calibrado causados por `local_score` historico desatualizado no texto da submissao Kaggle.
+- Escopo:
+  - Recalcular localmente (scorer atual) os artefatos ja submetidos e consolidar tabela auditavel de `local_score` por submissao.
+  - Introduzir suporte a overrides de calibracao por `submission ref` (JSON) em todos os fluxos de gate:
+    - `calibrate-kaggle-local`
+    - `evaluate-robust`
+    - `evaluate-submit-readiness`
+    - `submit-kaggle`
+  - Permitir modo estrito `only_override_refs=true` para calibrar apenas com pares explicitamente recalculados.
+  - Gerar artefatos de comparacao (`full_history` vs `clean_submitted_only`) para quantificar impacto no gate.
+- Criterios de aceite:
+  - 5 submissões historicas recalculadas com `check-submission` + `score` sem OOM.
+  - Arquivo de overrides gerado em `runs/.../calibration_overrides*.json` com `by_ref` valido.
+  - Testes de unidade dos modulos alterados verdes.
+  - Resultado da calibracao limpa registrado em `EXPERIMENTS.md` com decisao operacional objetiva.
+
+## PLAN-060 - Pool hibrido + reranker Top-5 CV-first para submit competitivo
+
+- Objetivo: maximizar chance de novo melhor score Kaggle com estrategia de selecao forte (Top-5 por alvo) sobre pool hibrido, sem fallback permissivo e com gating estrito de promocao.
+- Escopo:
+  - Consolidar pool de candidatos por alvo com diversidade real de fontes ja disponiveis no repositorio:
+    - TBM multi-config (`c01..c06`, quando existir por fold);
+    - ao menos uma fonte nao-template/e2e ja integrada ao pipeline.
+  - Treinar/aplicar reranker QA supervisionado para selecionar Top-5 por alvo no pool combinado, com modo estrito por padrao (fail-fast em contrato invalido, faltantes, duplicatas ou inconsistencias de contiguidade).
+  - Validar de ponta a ponta em regime CV-first comparavel (`fold0`, `fold3`, `fold4`):
+    - `predict/build pool -> select Top-5 -> export-submission -> check-submission -> score --per-target`.
+  - Comparar explicitamente contra baseline oficial vigente em `EXPERIMENTS.md` e contra melhor candidato local atual antes de qualquer promocao.
+  - Rodar `evaluate-robust` e `evaluate-submit-readiness` com calibracao por `submission ref` recalculada; bloquear promocao quando `allowed=false`.
+  - Se (e somente se) houver melhora local estrita e gates aprovados, preparar fluxo de submissao notebook-only:
+    - validar localmente com `check-submission`;
+    - gerar `submission.csv` no notebook Kaggle (`/kaggle/working`);
+    - submeter por referencia de notebook (`kaggle competitions submit -k <owner/notebook> -f submission.csv ...`), sem internet no notebook.
+- Criterios de aceite:
+  - Artefatos completos e reproduziveis em `runs/<plan060>/` (pool, modelo de reranker, escolhas Top-5 por alvo, `submission.csv`, `score.json`, `per_target.csv`, relatorios de gate).
+  - `check-submission` estrito aprovado para todos os candidatos promovidos.
+  - Tabela comparativa com `fold0/fold3/fold4`, `mean_cv`, `min_cv`, `public_validation` e deltas vs baseline.
+  - `evaluate-robust` e `evaluate-submit-readiness` com resultado final registrado (`allowed=true/false`) e razoes acionaveis.
+  - Decisao final (promover/bloquear submit) registrada em `EXPERIMENTS.md` com comandos, configuracao efetiva, custos e riscos residuais.
