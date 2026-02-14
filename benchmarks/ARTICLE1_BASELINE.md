@@ -44,7 +44,7 @@ Para comparacoes, trate os defaults como baseline (registre overrides explicitam
 - Retrieval: `top_k=20`, `kmer_size=3`
 - TBM: `n_models=5`, `min_coverage=0.35`
 - RNAPro proxy: `feature_dim=256`, `kmer_size=4`, `n_models=5`, `seed=123`, `min_coverage=0.30`
-- Ensemble: `tbm_weight=0.6`, `rnapro_weight=0.4`
+- Selecao Top-5 global: `n_models=5`, `qa_top_pool=80`, `diversity_lambda=0.15`
 
 ## Runbook A: benchmark em `public_validation` (Kaggle Public LB)
 
@@ -54,6 +54,8 @@ Este modo produz uma submissao para `test_sequences.csv` e mede score contra `va
 RUN_ID="$(date -u +%Y%m%d_%H%M%S)_article1_baseline"
 OUT_DIR="runs/${RUN_ID}"
 mkdir -p "${OUT_DIR}"
+QA_MODEL_JSON="runs/<qa_train>/qa_rnrank_model.json"
+QA_MODEL_PT="runs/<qa_train>/qa_rnrank_model.pt"
 
 # 1) Template DB (train Kaggle + externos)
 python -m rna3d_local build-template-db \
@@ -84,16 +86,27 @@ python -m rna3d_local predict-rnapro \
   --targets input/stanford-rna-3d-folding-2/test_sequences.csv \
   --out "${OUT_DIR}/rnapro_predictions.parquet"
 
-# 5) Ensemble (long)
-python -m rna3d_local ensemble-predict \
-  --tbm "${OUT_DIR}/tbm_predictions.parquet" \
-  --rnapro "${OUT_DIR}/rnapro_predictions.parquet" \
-  --out "${OUT_DIR}/ensemble_predictions.parquet"
+# 5) Top-5 global (sem blend de coordenadas)
+# Requer QA RNArank previamente treinado (ex.: em fold CV)
+python -m rna3d_local build-candidate-pool \
+  --predictions "tbm=${OUT_DIR}/tbm_predictions.parquet" \
+  --predictions "rnapro=${OUT_DIR}/rnapro_predictions.parquet" \
+  --out "${OUT_DIR}/candidate_pool.parquet"
+
+python -m rna3d_local select-top5-global \
+  --candidates "${OUT_DIR}/candidate_pool.parquet" \
+  --model "${QA_MODEL_JSON}" \
+  --weights "${QA_MODEL_PT}" \
+  --out "${OUT_DIR}/top5_predictions.parquet" \
+  --n-models 5 \
+  --qa-top-pool 80 \
+  --diversity-lambda 0.15 \
+  --device cpu
 
 # 6) Export + valida contrato
 python -m rna3d_local export-submission \
   --sample input/stanford-rna-3d-folding-2/sample_submission.csv \
-  --predictions "${OUT_DIR}/ensemble_predictions.parquet" \
+  --predictions "${OUT_DIR}/top5_predictions.parquet" \
   --out "${OUT_DIR}/submission.csv"
 
 python -m rna3d_local check-submission \
@@ -165,14 +178,24 @@ python -m rna3d_local predict-rnapro \
   --targets data/derived/train_cv/fold0/target_sequences.csv \
   --out "${OUT_DIR}/rnapro_predictions.parquet"
 
-python -m rna3d_local ensemble-predict \
-  --tbm "${OUT_DIR}/tbm_predictions.parquet" \
-  --rnapro "${OUT_DIR}/rnapro_predictions.parquet" \
-  --out "${OUT_DIR}/ensemble_predictions.parquet"
+python -m rna3d_local build-candidate-pool \
+  --predictions "tbm=${OUT_DIR}/tbm_predictions.parquet" \
+  --predictions "rnapro=${OUT_DIR}/rnapro_predictions.parquet" \
+  --out "${OUT_DIR}/candidate_pool.parquet"
+
+python -m rna3d_local select-top5-global \
+  --candidates "${OUT_DIR}/candidate_pool.parquet" \
+  --model "${QA_MODEL_JSON}" \
+  --weights "${QA_MODEL_PT}" \
+  --out "${OUT_DIR}/top5_predictions.parquet" \
+  --n-models 5 \
+  --qa-top-pool 80 \
+  --diversity-lambda 0.15 \
+  --device cpu
 
 python -m rna3d_local export-submission \
   --sample data/derived/train_cv/fold0/sample_submission.csv \
-  --predictions "${OUT_DIR}/ensemble_predictions.parquet" \
+  --predictions "${OUT_DIR}/top5_predictions.parquet" \
   --out "${OUT_DIR}/submission_fold0.csv"
 
 python -m rna3d_local check-submission \

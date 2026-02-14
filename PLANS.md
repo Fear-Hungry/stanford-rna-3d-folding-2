@@ -950,3 +950,125 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Tabela comparativa com `fold0/fold3/fold4`, `mean_cv`, `min_cv`, `public_validation` e deltas vs baseline.
   - `evaluate-robust` e `evaluate-submit-readiness` com resultado final registrado (`allowed=true/false`) e razoes acionaveis.
   - Decisao final (promover/bloquear submit) registrada em `EXPERIMENTS.md` com comandos, configuracao efetiva, custos e riscos residuais.
+
+## PLAN-061 - Sprint CV-first: Top-5 hardening + template audit + retrieval reforcado
+
+- Objetivo: aumentar robustez do caminho competitivo `best-of-5` sem regressao CV, mantendo fail-fast estrito e bloqueio de submit sem evidencia robusta.
+- Escopo:
+  - Tratar migracao `blend -> Top-5 por uniao de candidatos` como concluida e reforcar hardening operacional (sem promover `branch=ensemble` no caminho competitivo).
+  - Adicionar auditoria automatica de templates externos (datas, coordenadas, consistencia estrutural) com bloqueio fail-fast.
+  - Fortalecer retrieval com pool/rerank global maior e cache deterministico de candidatos por hash de entradas+parametros.
+  - Evoluir rotulagem supervisionada do candidate pool para metodo alinhado ao objetivo competitivo (`TM-score/USalign`) com opcao explicita `RMSD+Kabsch` para ablacao.
+  - Adicionar modo seletivo no `predict-drfold2` para executar apenas subconjunto de `target_id` de baixa confianca.
+  - Endurecer gate de submit para exigir mais evidencia CV por padrao (`require_min_cv_count=3`).
+  - Atualizar documentacao operacional com defaults da sprint e caminho competitivo oficial.
+- Criterios de aceite:
+  - `build-template-db` falha cedo quando `external_templates` viola auditoria obrigatoria.
+  - `retrieve-templates` registra `cache_key/cache_hit` no manifest e reutiliza cache valido; cache inconsistente falha explicitamente.
+  - `add-labels-candidate-pool --label-method tm_score_usalign` gera labels finitos em `[0,1]` e manifesta metodo usado.
+  - `predict-drfold2 --target-ids-file <...>` filtra corretamente alvos e falha cedo em IDs invalidos/duplicados.
+  - `submit-kaggle --help` exibe `--require-min-cv-count` com default `3`.
+  - Suite de testes direcionados para auditoria/cache/labels/DRfold2 seletivo permanece verde.
+
+## PLAN-062 - Refatoracao de arquivos grandes (modularizacao sem mudar contrato)
+
+- Objetivo: reduzir acoplamento e facilitar manutencao separando arquivos grandes em modulos menores, preservando comportamento/CLI e validacao estrita.
+- Escopo:
+  - Extrair `src/rna3d_local/candidate_pool.py` em modulos organizados:
+    - build/agregacao de candidatos;
+    - rotulagem supervisionada (`tm_score_usalign` e `rmsd_kabsch`);
+    - fachada de compatibilidade para imports existentes.
+  - Extrair logica de cache de retrieval para modulo dedicado, mantendo contrato de `retrieve-templates` e manifest.
+  - Manter API publica e nomes de comandos intactos (sem modo permissivo novo, sem fallback silencioso).
+  - Atualizar testes/coverage para garantir equivalencia funcional.
+- Criterios de aceite:
+  - `pytest` direcionado dos modulos alterados permanece verde.
+  - `python -m rna3d_local --help` e subcomandos impactados seguem com mesma superficie publica.
+  - Nenhuma regressao de contrato estrito nos fluxos de build pool/labels/retrieval.
+
+## PLAN-063 - Modularizacao da CLI (parser + handlers) com compatibilidade total
+
+- Objetivo: reduzir acoplamento e tamanho de `src/rna3d_local/cli.py` separando parser e handlers em modulos dedicados, sem alterar contrato de comandos.
+- Escopo:
+  - Extrair handlers/utilitarios de comando para `src/rna3d_local/cli_commands.py`.
+  - Extrair construcao do parser para `src/rna3d_local/cli_parser.py`, com organizacao por grupos de comandos.
+  - Manter `src/rna3d_local/cli.py` como fachada de compatibilidade, preservando:
+    - `build_parser`;
+    - `main`;
+    - helpers importados por testes (`_enforce_non_ensemble_predictions`, `_enforce_submit_hardening`).
+  - Garantir ausencia de fallback permissivo e manter fail-fast nos fluxos ja existentes.
+- Criterios de aceite:
+  - `python -m rna3d_local --help` sem regressao de superficie.
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py` verde.
+  - `pytest` direcionado dos comandos tocados permanece verde.
+
+## PLAN-064 - Quebra de `cli_commands.py` por dominio (fase 2)
+
+- Objetivo: reduzir acoplamento operacional da camada de comandos, separando `cli_commands.py` em modulos menores por dominio sem alterar superficie do parser/CLI.
+- Escopo:
+  - Extrair helpers comuns para `cli_commands_common.py`.
+  - Extrair comandos em modulos dedicados:
+    - `cli_commands_data.py`;
+    - `cli_commands_templates.py`;
+    - `cli_commands_qa.py`;
+    - `cli_commands_gating.py`.
+  - Manter `cli_commands.py` como fachada de compatibilidade para imports existentes do parser e da fachada `cli.py`.
+  - Preservar fail-fast, mensagens de erro e contratos atuais de comandos/flags.
+- Criterios de aceite:
+  - `python -m rna3d_local --help` sem regressao de comandos e flags.
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py` verde.
+  - Testes direcionados de fluxos tocados (`candidate_pool`, `retrieval`, `template_workflow`) verdes.
+
+## PLAN-065 - Quebra de `cli_parser.py` por dominio (fase 3)
+
+- Objetivo: reduzir tamanho e churn do parser principal, separando o registro de subcomandos por domínio sem alterar interface pública da CLI.
+- Escopo:
+  - Extrair registradores de parser para módulos dedicados:
+    - `cli_parser_data.py`;
+    - `cli_parser_templates.py`;
+    - `cli_parser_qa.py`;
+    - `cli_parser_gating.py`.
+  - Manter `cli_parser.py` como fachada de montagem (`build_parser`) chamando registradores em ordem estável.
+  - Preservar todos os nomes de subcomandos, flags, defaults e handlers.
+  - Não alterar regras de fail-fast/strict já implementadas nos handlers.
+- Criterios de aceite:
+  - `python -m rna3d_local --help` sem regressão da superfície.
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py` verde.
+  - Testes direcionados de fluxos impactados (`candidate_pool`, `retrieval`, `template_workflow`, `kaggle_submissions`) verdes.
+
+## PLAN-066 - Factories de argumentos compartilhados no parser (fase 4)
+
+- Objetivo: reduzir duplicação em definição de argumentos de CLI sem alterar contratos (nomes, defaults, tipos, help e handlers).
+- Escopo:
+  - Introduzir `cli_parser_args.py` com helpers reutilizáveis para blocos recorrentes:
+    - memória (`memory-budget`/`max-rows`);
+    - backend de compute (`compute-backend`/GPU);
+    - calibração (`calibration-*` e overrides);
+    - guard anti-overfit de treino.
+  - Aplicar helpers em:
+    - `cli_parser_data.py`;
+    - `cli_parser_templates.py`;
+    - `cli_parser_qa.py`;
+    - `cli_parser_gating.py`.
+  - Manter ordem estável dos subcomandos e compatibilidade da superfície no `--help`.
+- Criterios de aceite:
+  - `python -m rna3d_local --help` sem regressão de comandos/opções.
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py` verde.
+  - Testes direcionados de pipeline tocado (`candidate_pool`, `retrieval`, `template_workflow`, `kaggle_submissions`) verdes.
+
+## PLAN-067 - Hardening Top-5 competitivo (sem blend + diversidade invariante + C1' estrito)
+
+- Objetivo: remover perda sistematica de score por blend de coordenadas e por diversidade dependente de frame, alinhando o pipeline ao contrato competitivo `best-of-5`.
+- Escopo:
+  - Bloquear `ensemble-predict` na CLI com erro fail-fast acionavel e orientacao para `build-candidate-pool` + `select-top5-global`.
+  - Substituir `_pair_similarity` em `qa_ranker.py` por similaridade invariante a rotacao/translacao:
+    - alinhamento rigido via Kabsch;
+    - `RMSD`;
+    - conversao para similaridade `exp(-rmsd/10.0)`.
+  - Endurecer parser DRfold2 para exigir atomo `C1'` em todos os residuos do alvo (sem fallback para outros atomos).
+  - Atualizar testes e documentacao operacional para o caminho competitivo sem blend.
+- Criterios de aceite:
+  - `python -m rna3d_local ensemble-predict ...` falha sempre com mensagem de bloqueio explicita.
+  - Testes de QA/diversidade validam invariancia a rotacao e penalizacao de duplicatas com a nova metrica.
+  - DRfold2 falha cedo quando `C1'` estiver ausente em qualquer residuo.
+  - `pytest` direcionado dos modulos impactados permanece verde.

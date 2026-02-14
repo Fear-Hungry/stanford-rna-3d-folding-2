@@ -1681,3 +1681,219 @@ Log append-only de mudancas implementadas (UTC).
 
 - Riscos/follow-ups:
   - Ainda pode haver limitação de correlação local↔public por tamanho amostral pequeno; a política de `method` (p10/worst_seen/etc.) e limiares (`baseline_public_score`) continuam fatores limitantes para unlock de submit.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-061 (Top-5 hardening + auditoria templates + retrieval/cache + labels QA)
+
+- Resumo:
+  - Implementada auditoria estrita de `external_templates` com fail-fast e integração automática em `build-template-db` (relatório e hash no manifest).
+  - Reforçado retrieval com cache determinístico por hash de entradas+parâmetros, com `cache_hit/cache_key` no manifest e bloqueio explícito para cache inconsistente.
+  - Evoluída rotulagem do candidate pool com `--label-method`:
+    - `tm_score_usalign` (default, alinhado ao objetivo competitivo);
+    - `rmsd_kabsch` (ablação).
+  - Adicionado modo seletivo no DRfold2 com `--target-ids-file` (subset explícito de `target_id`, com validação de duplicados/ausentes).
+  - Endurecido gate de submit: `submit-kaggle --require-min-cv-count` agora default `3`.
+  - Endurecido `kaggle-submissions` para falhar cedo em retorno inesperado da API (sem fallback silencioso).
+  - Atualizada documentação operacional (`README.md`) com defaults competitivos da sprint.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `README.md`
+  - `src/rna3d_local/template_audit.py`
+  - `src/rna3d_local/template_db.py`
+  - `src/rna3d_local/retrieval.py`
+  - `src/rna3d_local/candidate_pool.py`
+  - `src/rna3d_local/drfold2.py`
+  - `src/rna3d_local/cli.py`
+  - `src/rna3d_local/kaggle_submissions.py`
+  - `tests/test_template_audit.py`
+  - `tests/test_retrieval_rerank.py`
+  - `tests/test_candidate_pool.py`
+  - `tests/test_drfold2_parser.py`
+  - `tests/test_template_workflow.py`
+  - `tests/test_cli_strict_surface.py`
+  - `tests/test_kaggle_submissions.py`
+
+- Validacao local executada:
+  - `pytest -q tests/test_candidate_pool.py tests/test_drfold2_parser.py tests/test_retrieval_rerank.py tests/test_template_audit.py tests/test_template_workflow.py tests/test_cli_strict_surface.py tests/test_kaggle_submissions.py` (`32 passed`, `1 warning`)
+  - `pytest -q` (`125 passed`, `1 warning`)
+
+- Riscos/follow-ups:
+  - `tm_score_usalign` em `add-labels-candidate-pool` aumenta custo de rotulagem; para ciclos rápidos usar `--label-method rmsd_kabsch` em ablações.
+  - O cache de retrieval agora é estrito: artefatos parcialmente removidos (meta/candidates) passam a bloquear execução até saneamento explícito do diretório de cache.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-062 (modularizacao de arquivos grandes sem mudar contrato)
+
+- Resumo:
+  - Modularizado `candidate_pool` em fachada fina + modulos dedicados:
+    - `candidate_pool_build.py` (agregacao/build do pool);
+    - `candidate_pool_labels.py` (rotulagem supervisionada);
+    - `candidate_pool_common.py` (constantes/helpers compartilhados);
+    - `candidate_pool.py` mantido como fachada de compatibilidade da API publica.
+  - Extraida logica de cache de retrieval para `retrieval_cache.py`:
+    - preparacao/validacao de cache por hash deterministico;
+    - restauracao de candidatos a partir de cache;
+    - persistencia atomica de cache/meta.
+  - `retrieval.py` simplificado para focar no pipeline de retrieval/rerank, preservando contrato do comando e formato de manifest.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `src/rna3d_local/candidate_pool.py`
+  - `src/rna3d_local/candidate_pool_build.py`
+  - `src/rna3d_local/candidate_pool_common.py`
+  - `src/rna3d_local/candidate_pool_labels.py`
+  - `src/rna3d_local/retrieval.py`
+  - `src/rna3d_local/retrieval_cache.py`
+
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local/retrieval.py src/rna3d_local/retrieval_cache.py src/rna3d_local/candidate_pool.py src/rna3d_local/candidate_pool_build.py src/rna3d_local/candidate_pool_labels.py src/rna3d_local/candidate_pool_common.py` (OK)
+  - `python -m rna3d_local --help` (OK; superficie CLI carregada sem regressao de import)
+  - `pytest -q tests/test_candidate_pool.py` (`6 passed`)
+  - `pytest -q tests/test_candidate_pool.py tests/test_retrieval_rerank.py tests/test_cli_strict_surface.py` (`18 passed`)
+  - `pytest -q tests/test_template_workflow.py tests/test_select_top5_global.py` (`4 passed`)
+
+- Riscos/follow-ups:
+  - `retrieval.py` e `cli.py` permanecem arquivos grandes; proxima iteracao pode separar subparsers/handlers do CLI em modulos por comando.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-063 (modularizacao da CLI em parser + handlers)
+
+- Resumo:
+  - Separada a CLI monolitica em modulos dedicados, mantendo contrato e superficie publica:
+    - `src/rna3d_local/cli_commands.py`: utilitarios e handlers `_cmd_*`;
+    - `src/rna3d_local/cli_parser.py`: construcao de `argparse` e wiring dos subcomandos;
+    - `src/rna3d_local/cli.py`: fachada minima com `build_parser`, `main` e re-export dos helpers usados pelos testes.
+  - Preservado comportamento fail-fast e nomes de comandos/flags existentes.
+  - Reduzido tamanho do entrypoint principal (`cli.py`) para facilitar manutencao e revisao.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `src/rna3d_local/cli.py`
+  - `src/rna3d_local/cli_commands.py`
+  - `src/rna3d_local/cli_parser.py`
+
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local/cli.py src/rna3d_local/cli_commands.py src/rna3d_local/cli_parser.py` (OK)
+  - `python -m rna3d_local --help` (OK)
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py tests/test_candidate_pool.py tests/test_retrieval_rerank.py` (`26 passed`)
+  - `pytest -q tests/test_template_workflow.py tests/test_select_top5_global.py tests/test_kaggle_submissions.py` (`7 passed`)
+
+- Riscos/follow-ups:
+  - `cli_commands.py` ainda concentra muitos handlers; proxima etapa pode separar por dominio (`data`, `template`, `qa`, `gating`) sem mudar contratos.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-064 (quebra de `cli_commands.py` por dominio)
+
+- Resumo:
+  - Refatorada a camada de comandos em modulos menores por dominio, mantendo contrato de CLI:
+    - `src/rna3d_local/cli_commands_common.py` com helpers compartilhados e gates de hardening;
+    - `src/rna3d_local/cli_commands_data.py` para comandos de dados/score;
+    - `src/rna3d_local/cli_commands_templates.py` para template/retrieval/TBM/DRfold2/RNAPro/export;
+    - `src/rna3d_local/cli_commands_qa.py` para treino/score de QA e candidate pool;
+    - `src/rna3d_local/cli_commands_gating.py` para submit/calibracao/readiness/robust/train-gate.
+  - `src/rna3d_local/cli_commands.py` passou a ser fachada de compatibilidade (re-export dos handlers usados por `cli_parser.py` e por `cli.py`).
+  - Preservadas mensagens fail-fast, comandos e flags, sem introduzir fallback permissivo.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `src/rna3d_local/cli_commands.py`
+  - `src/rna3d_local/cli_commands_common.py`
+  - `src/rna3d_local/cli_commands_data.py`
+  - `src/rna3d_local/cli_commands_templates.py`
+  - `src/rna3d_local/cli_commands_qa.py`
+  - `src/rna3d_local/cli_commands_gating.py`
+
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local/cli.py src/rna3d_local/cli_parser.py src/rna3d_local/cli_commands.py src/rna3d_local/cli_commands_common.py src/rna3d_local/cli_commands_data.py src/rna3d_local/cli_commands_templates.py src/rna3d_local/cli_commands_qa.py src/rna3d_local/cli_commands_gating.py` (OK)
+  - `python -m rna3d_local --help` (OK; superficie de subcomandos preservada)
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py tests/test_candidate_pool.py tests/test_retrieval_rerank.py` (`26 passed`)
+  - `pytest -q tests/test_template_workflow.py tests/test_select_top5_global.py tests/test_kaggle_submissions.py` (`7 passed`)
+
+- Riscos/follow-ups:
+  - Ainda existe espaco para fase 3: modularizar `cli_parser.py` por grupos de parser para reduzir churn em mudancas futuras de argumentos.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-065 (quebra de `cli_parser.py` por dominio)
+
+- Resumo:
+  - Refatorada a definicao de argumentos da CLI em registradores por dominio, mantendo a mesma superficie de comandos/flags/defaults:
+    - `src/rna3d_local/cli_parser_data.py` (download/vendor/dataset/labels/fold/sample/score);
+    - `src/rna3d_local/cli_parser_templates.py` (template DB/retrieval/TBM/DRfold2/RNAPro e registrador pos-QA para `ensemble-predict` e `export-submission`);
+    - `src/rna3d_local/cli_parser_qa.py` (QA rankers e candidate pool);
+    - `src/rna3d_local/cli_parser_gating.py` (submit/calibracao/readiness/robust/train-gate).
+  - `src/rna3d_local/cli_parser.py` foi reduzido para fachada de montagem de parser, chamando registradores em ordem estavel para preservar output de help.
+  - Mantida compatibilidade com os handlers ja modularizados em `cli_commands*`.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli_parser_data.py`
+  - `src/rna3d_local/cli_parser_templates.py`
+  - `src/rna3d_local/cli_parser_qa.py`
+  - `src/rna3d_local/cli_parser_gating.py`
+
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local/cli_parser.py src/rna3d_local/cli_parser_data.py src/rna3d_local/cli_parser_templates.py src/rna3d_local/cli_parser_qa.py src/rna3d_local/cli_parser_gating.py` (OK)
+  - `python -m rna3d_local --help` (OK; ordem de subcomandos preservada)
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py tests/test_candidate_pool.py tests/test_retrieval_rerank.py` (`26 passed`)
+  - `pytest -q tests/test_template_workflow.py tests/test_select_top5_global.py tests/test_kaggle_submissions.py` (`7 passed`)
+
+- Riscos/follow-ups:
+  - Proxima etapa opcional: extrair blocos de argumentos repetitivos (budget/memory/calibration) para factories utilitarias, reduzindo duplicacao sem alterar contratos.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-066 (factories de argumentos compartilhados no parser)
+
+- Resumo:
+  - Introduzido modulo de factories de argumentos `src/rna3d_local/cli_parser_args.py` para reduzir duplicacao com contratos estaveis:
+    - memoria (`add_memory_budget_arg`, `add_memory_budget_and_rows_args`);
+    - backend de compute (`add_compute_backend_args`);
+    - calibracao (`add_calibration_history_gate_args`, `add_calibration_report_args`, `add_calibration_overrides_arg`);
+    - gate anti-overfit (`add_training_overfit_gate_args`).
+  - Aplicado uso das factories em:
+    - `src/rna3d_local/cli_parser_data.py`;
+    - `src/rna3d_local/cli_parser_templates.py`;
+    - `src/rna3d_local/cli_parser_qa.py`;
+    - `src/rna3d_local/cli_parser_gating.py`.
+  - Preservada ordem dos subcomandos no `--help` e mantidos nomes/defaults/tipos das flags.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `src/rna3d_local/cli_parser_args.py`
+  - `src/rna3d_local/cli_parser_data.py`
+  - `src/rna3d_local/cli_parser_templates.py`
+  - `src/rna3d_local/cli_parser_qa.py`
+  - `src/rna3d_local/cli_parser_gating.py`
+
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local/cli_parser.py src/rna3d_local/cli_parser_args.py src/rna3d_local/cli_parser_data.py src/rna3d_local/cli_parser_templates.py src/rna3d_local/cli_parser_qa.py src/rna3d_local/cli_parser_gating.py` (OK)
+  - `python -m rna3d_local --help` (OK; superficie de comandos preservada)
+  - `pytest -q tests/test_cli_strict_surface.py tests/test_submit_gate_hardening.py tests/test_candidate_pool.py tests/test_retrieval_rerank.py` (`26 passed`)
+  - `pytest -q tests/test_template_workflow.py tests/test_select_top5_global.py tests/test_kaggle_submissions.py` (`7 passed`)
+
+- Riscos/follow-ups:
+  - Ainda ha duplicacao residual em blocos muito especificos de argumentos (ex.: grupos de score/candidate-score); pode ser reduzida em fase futura com helper dedicado sem alterar contratos.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-067 (hardening Top-5 competitivo sem blend)
+
+- Resumo:
+  - `ensemble-predict` passou a falhar cedo por contrato competitivo, bloqueando blend de coordenadas na CLI e orientando uso de `build-candidate-pool` + `select-top5-global`.
+  - A diversidade estrutural de QA foi corrigida para ser invariante a rotacao/translacao: `_pair_similarity` agora usa alinhamento de Kabsch + `RMSD` e converte para similaridade `exp(-rmsd/10.0)`.
+  - O parser DRfold2 foi endurecido para exigir atomo `C1'` em todos os residuos, removendo fallback para outros atomos.
+  - Atualizados testes e documentacao para refletir o caminho competitivo sem blend.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `README.md`
+  - `benchmarks/ARTICLE1_BASELINE.md`
+  - `src/rna3d_local/cli_commands_templates.py`
+  - `src/rna3d_local/cli_parser_templates.py`
+  - `src/rna3d_local/qa_ranker.py`
+  - `src/rna3d_local/drfold2.py`
+  - `tests/test_qa_ranker.py`
+  - `tests/test_drfold2_parser.py`
+  - `tests/test_cli_strict_surface.py`
+
+- Validacao local executada:
+  - `pytest -q tests/test_qa_ranker.py tests/test_drfold2_parser.py tests/test_cli_strict_surface.py tests/test_select_top5_global.py tests/test_template_workflow.py tests/test_ensemble_dynamic.py` (`25 passed`)
+  - `python -m rna3d_local ensemble-predict --tbm runs/tbm.parquet --rnapro runs/rnapro.parquet --out runs/ensemble.parquet` (falha esperada com bloqueio explicito)
+  - `python -m rna3d_local --help` (OK; superficie CLI preservada, com help do `ensemble-predict` indicando bloqueio)
+
+- Riscos/follow-ups:
+  - `blend_predictions` permanece no modulo `ensemble.py` para uso tecnico interno; se o objetivo for eliminacao completa do caminho legado, remover API e testes associados em plano dedicado.
+  - A nova similaridade usa `sigma=10.0` fixo; pode ser calibrado por ablacao supervisionada em folds CV se necessario.

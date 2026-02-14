@@ -46,7 +46,7 @@ Comportamento padrao endurecido:
 - `evaluate-robust` exige `cv_count >= 2` por padrao;
 - candidatos sem CV (somente `public_validation`) sao bloqueados para promocao competitiva;
 - calibracao local->public bloqueia extrapolacao fora do range historico observado (por padrao);
-- `submit-kaggle` exige `--robust-report` por padrao.
+- `submit-kaggle` exige `--robust-report` por padrao e `--require-min-cv-count=3`.
 
 Notas:
 - Se a submissao divergir do `sample_submission` (colunas, chaves, duplicatas, nulos), o fluxo falha imediatamente com erro acionavel no padrao do `AGENTS.md`.
@@ -105,18 +105,26 @@ Runbook e template: `benchmarks/CASP16.md`.
 
 ## Template-aware + RNAPro (implementado)
 
-O **Artigo 1** e o nosso **baseline/benchmark operacional** (ver `PLANS.md` / `PLAN-002` e `PLAN-011`): um pipeline completo template-aware + RNAPro proxy + ensemble que gera uma submissao valida e e avaliado com score local identico ao Kaggle.
+O **Artigo 1** e o nosso **baseline/benchmark operacional** (ver `PLANS.md` / `PLAN-002` e `PLAN-011`): um pipeline completo template-aware + RNAPro proxy que gera submissao valida e e avaliado com score local identico ao Kaggle.
 
 Runbook do baseline (comandos + configuracao): `benchmarks/ARTICLE1_BASELINE.md`.
 
 O pipeline modular do artigo 1 esta implementado e exposto na CLI:
 - `build-template-db` -> `retrieve-templates` -> `predict-tbm`
-- `train-rnapro` -> `predict-rnapro` -> `ensemble-predict`
+- `train-rnapro` -> `predict-rnapro` -> `build-candidate-pool` -> `train-qa-rnrank` -> `select-top5-global`
 - `export-submission` -> `check-submission` -> `submit-kaggle` (com gating estrito)
 
 Observacoes:
 - Para rodar em dados reais, e necessario fornecer uma base externa de templates (entrada `--external-templates`) e respeitar cutoff temporal sem fallback.
 - A integracao tecnica esta coberta por testes sinteticos; qualidade/score deve ser validado via `benchmarks/CASP16.md` antes de qualquer submissao.
+- `ensemble-predict` esta bloqueado por contrato competitivo (blend de coordenadas desativado); use `build-candidate-pool` + `select-top5-global`.
+
+### Defaults competitivos (PLAN-061)
+
+- `build-template-db` audita `external_templates` automaticamente (`external_templates_audit.json`) e bloqueia em inconsistencias (datas futuras, resids nao contiguos, coordenadas invalidas).
+- `retrieve-templates` usa pool/rerank reforcado por padrao (`top_k=64`, `refine_pool_size=192`, `refine_alignment_weight=0.35`) com cache deterministico em `runs/cache/retrieval` (`--no-cache` desativa).
+- `add-labels-candidate-pool` usa `--label-method tm_score_usalign` por padrao (com `metric.py` + `USalign`); `--label-method rmsd_kabsch` fica disponivel para ablacao.
+- `predict-drfold2` aceita `--target-ids-file` para rodar apenas subconjunto de `target_id` de baixa confianca.
 
 ### Wrapper operacional `main GPU` (GPU-first)
 
@@ -132,7 +140,7 @@ Comportamento:
   - `predict-tbm`, `predict-rnapro`: `--qa-device cuda --compute-backend cuda`
   - `train-qa-rnrank`, `score-qa-rnrank`, `select-top5-global`, `train-qa-gnn-ranker`, `score-qa-gnn-ranker`: `--device cuda`
 - antes de executar comandos GPU-capable, o wrapper valida `torch.cuda.is_available()`; se CUDA estiver indisponivel, encerra com erro explicito.
-- comandos CPU-only (`score`, `check-submission`, `export-submission`, `ensemble-predict`, etc.) seguem sem injecao de flags GPU.
+- comandos CPU-only (`score`, `check-submission`, `export-submission`, etc.) seguem sem injecao de flags GPU.
 
 Exemplos:
 
