@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 
 from .cli_commands_common import (
+    _assert_regime_bundle_matches,
     _enforce_non_ensemble_predictions,
+    _prepare_competitive_scores,
     _enforce_submit_hardening,
     _find_repo_root,
     _parse_named_score_entries,
@@ -247,7 +249,13 @@ def _cmd_evaluate_robust(args: argparse.Namespace) -> int:
             stage="ROBUST",
             location=location,
         )
-    named_scores = _parse_named_score_entries(raw_entries=list(args.score), repo=repo, location=location)
+    named_artifacts = _parse_named_score_entries(raw_entries=list(args.score), repo=repo, location=location)
+    named_scores, bundle = _prepare_competitive_scores(
+        named_artifacts=named_artifacts,
+        public_score_name=str(args.public_score_name),
+        stage="ROBUST",
+        location=location,
+    )
     report = evaluate_robust_gate(
         named_scores=named_scores,
         public_score_name=str(args.public_score_name),
@@ -264,6 +272,7 @@ def _cmd_evaluate_robust(args: argparse.Namespace) -> int:
         block_public_validation_without_cv=True,
         allow_calibration_extrapolation=False,
     )
+    report.update(bundle)
     if strategy_gate is not None:
         report["strategy_gate"] = strategy_gate
     out_path = (repo / args.out).resolve()
@@ -294,16 +303,36 @@ def _cmd_evaluate_submit_readiness(args: argparse.Namespace) -> int:
             stage="READINESS",
             location=location,
         )
-    candidate_scores = _parse_named_score_entries(
+    candidate_artifacts = _parse_named_score_entries(
         raw_entries=list(args.candidate_score),
         repo=repo,
         location=location,
     )
+    candidate_scores, candidate_bundle = _prepare_competitive_scores(
+        named_artifacts=candidate_artifacts,
+        public_score_name=str(args.public_score_name),
+        stage="READINESS",
+        location=location,
+    )
     baseline_scores = None
+    baseline_bundle = None
     if args.baseline_score:
-        baseline_scores = _parse_named_score_entries(
+        baseline_artifacts = _parse_named_score_entries(
             raw_entries=list(args.baseline_score),
             repo=repo,
+            location=location,
+        )
+        baseline_scores, baseline_bundle = _prepare_competitive_scores(
+            named_artifacts=baseline_artifacts,
+            public_score_name=str(args.public_score_name),
+            stage="READINESS",
+            location=location,
+            forced_regime_id=str(candidate_bundle["regime_summary"]["competitive_regime_id"]),
+        )
+        _assert_regime_bundle_matches(
+            left=candidate_bundle,
+            right=baseline_bundle,
+            stage="READINESS",
             location=location,
         )
     report = evaluate_submit_readiness(
@@ -332,6 +361,16 @@ def _cmd_evaluate_submit_readiness(args: argparse.Namespace) -> int:
         min_calibration_spearman=float(args.min_calibration_spearman),
         block_public_validation_without_cv=True,
     )
+    report["compatibility_checks"] = {
+        "allowed": True,
+        "candidate": candidate_bundle["compatibility_checks"],
+        "baseline": None if baseline_bundle is None else baseline_bundle["compatibility_checks"],
+    }
+    report["regime_summary"] = {
+        "competitive_regime_id": candidate_bundle["regime_summary"]["competitive_regime_id"],
+        "candidate": candidate_bundle["regime_summary"],
+        "baseline": None if baseline_bundle is None else baseline_bundle["regime_summary"],
+    }
     if strategy_gate is not None:
         report["strategy_gate"] = strategy_gate
     out_path = (repo / args.out).resolve()
@@ -389,4 +428,3 @@ def _cmd_evaluate_train_gate(args: argparse.Namespace) -> int:
         )
     )
     return 0
-

@@ -86,3 +86,34 @@ def test_read_score_json_fail_fast(tmp_path: Path) -> None:
     bad.write_text(json.dumps({"foo": 1}), encoding="utf-8")
     with pytest.raises(PipelineError):
         rs.read_score_json(score_json_path=bad)
+
+
+def test_read_score_json_requires_metadata_when_competitive(tmp_path: Path) -> None:
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps({"score": 0.123, "meta": {"dataset_dir": "x"}}), encoding="utf-8")
+    with pytest.raises(PipelineError):
+        rs.read_score_json(score_json_path=legacy, require_metadata=True)
+
+
+def test_read_score_artifact_with_required_metadata_ok(tmp_path: Path) -> None:
+    good = tmp_path / "good.json"
+    good.write_text(
+        json.dumps(
+            {
+                "score": 0.321,
+                "meta": {
+                    "dataset_type": "public_validation",
+                    "sample_columns": ["ID", "resname", "resid", "x_1", "y_1", "z_1"],
+                    "sample_schema_sha": "abc123",
+                    "n_models": 1,
+                    "metric_sha256": "m123",
+                    "usalign_sha256": "u123",
+                    "regime_id": "kaggle_official_5model",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    art = rs.read_score_artifact(score_json_path=good, require_metadata=True)
+    assert float(art["score"]) == pytest.approx(0.321)
+    assert art["meta"]["regime_id"] == "kaggle_official_5model"

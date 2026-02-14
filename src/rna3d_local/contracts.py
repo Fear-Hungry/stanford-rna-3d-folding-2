@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import polars as pl
 
-from .errors import raise_error
+from .errors import PipelineError, raise_error
 
 
 KEY_COL = "ID"
@@ -171,6 +172,76 @@ def _validate_no_null_rows(*, table_path: Path, columns: list[str], location: st
     )
 
 
+def _coordinate_columns(*, columns: list[str]) -> list[str]:
+    out: list[str] = []
+    for col in columns:
+        if re.match(r"^[xyz]_\d+$", str(col)) is not None:
+            out.append(str(col))
+    return out
+
+
+def _validate_coordinate_values(*, table_path: Path, coord_columns: list[str], location: str) -> None:
+    if not coord_columns:
+        return
+    lf = _scan_table(table_path, location=location)
+    select_exprs: list[pl.Expr] = [pl.col(KEY_COL).cast(pl.Utf8).alias(KEY_COL)]
+    for col in coord_columns:
+        select_exprs.append(pl.col(col).cast(pl.Float64, strict=False).alias(f"__f_{col}"))
+    casted = lf.select(*select_exprs)
+
+    non_numeric_mask = pl.any_horizontal([pl.col(f"__f_{c}").is_null() for c in coord_columns]).alias("__bad_numeric")
+    non_finite_mask = pl.any_horizontal([~pl.col(f"__f_{c}").is_finite() for c in coord_columns]).alias("__bad_finite")
+    out_of_range_mask = pl.any_horizontal([pl.col(f"__f_{c}").abs() > 1e6 for c in coord_columns]).alias("__bad_range")
+
+    try:
+        bad_numeric_n = int(casted.select(non_numeric_mask.sum().cast(pl.Int64).alias("_n")).collect().item(0, 0))
+        if bad_numeric_n > 0:
+            examples = (
+                casted.filter(non_numeric_mask).select(pl.col(KEY_COL)).limit(8).collect().get_column(KEY_COL).to_list()
+            )
+            raise_error(
+                "VALIDATE",
+                location,
+                "coordenadas com valor nao numerico",
+                impact=str(bad_numeric_n),
+                examples=[str(x) for x in examples],
+            )
+        bad_finite_n = int(casted.select(non_finite_mask.sum().cast(pl.Int64).alias("_n")).collect().item(0, 0))
+        if bad_finite_n > 0:
+            examples = (
+                casted.filter(non_finite_mask).select(pl.col(KEY_COL)).limit(8).collect().get_column(KEY_COL).to_list()
+            )
+            raise_error(
+                "VALIDATE",
+                location,
+                "coordenadas com valor nao-finito (NaN/Inf)",
+                impact=str(bad_finite_n),
+                examples=[str(x) for x in examples],
+            )
+        bad_range_n = int(casted.select(out_of_range_mask.sum().cast(pl.Int64).alias("_n")).collect().item(0, 0))
+        if bad_range_n > 0:
+            examples = (
+                casted.filter(out_of_range_mask).select(pl.col(KEY_COL)).limit(8).collect().get_column(KEY_COL).to_list()
+            )
+            raise_error(
+                "VALIDATE",
+                location,
+                "coordenadas fora da faixa plausivel (abs>1e6)",
+                impact=str(bad_range_n),
+                examples=[str(x) for x in examples],
+            )
+    except Exception as e:  # noqa: BLE001
+        if isinstance(e, PipelineError):
+            raise
+        raise_error(
+            "VALIDATE",
+            location,
+            "falha ao validar valores numericos de coordenadas",
+            impact="1",
+            examples=[f"{type(e).__name__}:{e}"],
+        )
+
+
 def validate_submission_against_sample(*, sample_path: Path, submission_path: Path) -> None:
     """
     Strict contract validation (fail-fast):
@@ -220,6 +291,8 @@ def validate_submission_against_sample(*, sample_path: Path, submission_path: Pa
     )
 
     _validate_no_null_rows(table_path=submission_path, columns=sub_cols, location=location)
+    coord_cols = _coordinate_columns(columns=sub_cols)
+    _validate_coordinate_values(table_path=submission_path, coord_columns=coord_cols, location=location)
 
 
 def validate_solution_against_sample(*, sample_path: Path, solution_path: Path) -> None:

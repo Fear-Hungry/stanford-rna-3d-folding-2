@@ -75,6 +75,42 @@ def test_contract_fails_on_nulls(tmp_path: Path) -> None:
     assert "valores nulos" in msg
 
 
+def test_contract_fails_on_non_numeric_coordinate(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.csv"
+    sub = tmp_path / "sub.csv"
+    _write(sample, "ID,resname,resid,x_1,y_1,z_1\nA_1,A,1,0,0,0\n")
+    _write(sub, "ID,resname,resid,x_1,y_1,z_1\nA_1,A,1,abc,0,0\n")
+    with pytest.raises(PipelineError) as e:
+        validate_submission_against_sample(sample_path=sample, submission_path=sub)
+    msg = str(e.value)
+    assert msg.startswith("[VALIDATE]")
+    assert "nao numerico" in msg
+
+
+def test_contract_fails_on_non_finite_coordinate(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.csv"
+    sub = tmp_path / "sub.csv"
+    _write(sample, "ID,resname,resid,x_1,y_1,z_1\nA_1,A,1,0,0,0\n")
+    _write(sub, "ID,resname,resid,x_1,y_1,z_1\nA_1,A,1,inf,0,0\n")
+    with pytest.raises(PipelineError) as e:
+        validate_submission_against_sample(sample_path=sample, submission_path=sub)
+    msg = str(e.value)
+    assert msg.startswith("[VALIDATE]")
+    assert "nao-finito" in msg
+
+
+def test_contract_fails_on_out_of_range_coordinate(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.csv"
+    sub = tmp_path / "sub.csv"
+    _write(sample, "ID,resname,resid,x_1,y_1,z_1\nA_1,A,1,0,0,0\n")
+    _write(sub, "ID,resname,resid,x_1,y_1,z_1\nA_1,A,1,1000001,0,0\n")
+    with pytest.raises(PipelineError) as e:
+        validate_submission_against_sample(sample_path=sample, submission_path=sub)
+    msg = str(e.value)
+    assert msg.startswith("[VALIDATE]")
+    assert "fora da faixa plausivel" in msg
+
+
 def test_validate_solution_accepts_parquet_with_matching_keys(tmp_path: Path) -> None:
     sample = tmp_path / "sample.csv"
     sol = tmp_path / "solution.parquet"

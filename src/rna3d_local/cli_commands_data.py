@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+
+import polars as pl
 
 from .cli_commands_common import _find_repo_root, _rel_or_abs, _target_ids_for_fold, _utc_now_compact
 from .contracts import validate_submission_against_sample
@@ -20,6 +24,7 @@ from .datasets import (
 from .download import download_competition_files
 from .errors import raise_error
 from .scoring import score_submission, write_score_artifacts
+from .utils import sha256_file
 from .vendor import vendor_all
 
 def _cmd_download(args: argparse.Namespace) -> int:
@@ -176,6 +181,98 @@ def _load_dataset_manifest(repo: Path, dataset_dir: Path) -> dict:
         raise_error("SCORE", location, "falha ao ler manifest.json", impact="1", examples=[f"{type(e).__name__}:{e}"])
     raise AssertionError("unreachable")
 
+
+def _table_columns(*, path: Path, location: str) -> list[str]:
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".csv":
+            return list(pl.scan_csv(path, infer_schema_length=1000, ignore_errors=False).collect_schema().names())
+        if suffix == ".parquet":
+            return list(pl.scan_parquet(path).collect_schema().names())
+    except Exception as e:  # noqa: BLE001
+        raise_error("SCORE", location, "falha ao ler schema da tabela", impact="1", examples=[f"{path.name}:{type(e).__name__}:{e}"])
+    raise_error("SCORE", location, "formato nao suportado para leitura de schema", impact="1", examples=[str(path)])
+    raise AssertionError("unreachable")
+
+
+def _coord_model_count_from_columns(*, columns: list[str], location: str) -> int:
+    by_model: dict[int, set[str]] = {}
+    for col in columns:
+        m = re.match(r"^([xyz])_(\d+)$", str(col))
+        if m is None:
+            continue
+        axis = str(m.group(1))
+        model = int(m.group(2))
+        by_model.setdefault(model, set()).add(axis)
+    if not by_model:
+        raise_error("SCORE", location, "sample sem colunas de coordenadas x_k/y_k/z_k", impact="1", examples=columns[:8])
+    incomplete = [m for m, axes in sorted(by_model.items()) if axes != {"x", "y", "z"}]
+    if incomplete:
+        raise_error(
+            "SCORE",
+            location,
+            "sample com bloco de coordenadas incompleto (esperado x_k,y_k,z_k)",
+            impact=str(len(incomplete)),
+            examples=[str(v) for v in incomplete[:8]],
+        )
+    return int(len(by_model))
+
+
+def _schema_sha(*, columns: list[str]) -> str:
+    return hashlib.sha256(",".join([str(c) for c in columns]).encode("utf-8")).hexdigest()
+
+
+def _score_meta(
+    *,
+    repo: Path,
+    dataset_dir: Path,
+    manifest: dict,
+    sample_path: Path,
+    solution_path: Path,
+    metric_py: Path,
+    usalign_bin: Path,
+    submission_path: Path,
+    location: str,
+) -> dict:
+    sample_columns = _table_columns(path=sample_path, location=location)
+    solution_columns = _table_columns(path=solution_path, location=location)
+    sample_schema_sha = _schema_sha(columns=sample_columns)
+    solution_schema_sha = _schema_sha(columns=solution_columns)
+    n_models = _coord_model_count_from_columns(columns=sample_columns, location=location)
+
+    sha_block = manifest.get("sha256") if isinstance(manifest, dict) else None
+    metric_sha = str((sha_block or {}).get("metric.py") or "").strip()
+    usalign_sha = str((sha_block or {}).get("USalign") or "").strip()
+    if not metric_sha:
+        metric_sha = sha256_file(metric_py)
+    if not usalign_sha:
+        usalign_sha = sha256_file(usalign_bin)
+
+    official_sample = repo / "input" / "stanford-rna-3d-folding-2" / "sample_submission.csv"
+    official_schema_sha = None
+    if official_sample.exists():
+        official_cols = _table_columns(path=official_sample, location=location)
+        official_schema_sha = _schema_sha(columns=official_cols)
+
+    if n_models == 5 and official_schema_sha is not None and sample_schema_sha == official_schema_sha:
+        regime_id = "kaggle_official_5model"
+    else:
+        regime_id = f"custom_n{n_models}_{sample_schema_sha[:12]}"
+
+    return {
+        "dataset_dir": _rel_or_abs(dataset_dir, repo),
+        "submission": _rel_or_abs(submission_path, repo),
+        "dataset_type": str(manifest.get("dataset_type", "unknown")),
+        "sample_columns": sample_columns,
+        "sample_schema_sha": sample_schema_sha,
+        "solution_schema_sha": solution_schema_sha,
+        "n_models": int(n_models),
+        "metric_sha256": metric_sha,
+        "usalign_sha256": usalign_sha,
+        "regime_id": regime_id,
+        "official_sample_schema_sha": official_schema_sha,
+    }
+
 def _cmd_score(args: argparse.Namespace) -> int:
     repo = _find_repo_root(Path.cwd())
     if args.dataset == "public_validation":
@@ -206,7 +303,17 @@ def _cmd_score(args: argparse.Namespace) -> int:
     out_dir = (repo / args.out_dir).resolve()
     if args.out_dir == "runs/auto":
         out_dir = repo / "runs" / f"{_utc_now_compact()}_score"
-    meta = {"dataset_dir": _rel_or_abs(dataset_dir, repo), "submission": _rel_or_abs(submission, repo)}
+    meta = _score_meta(
+        repo=repo,
+        dataset_dir=dataset_dir,
+        manifest=mf,
+        sample_path=sample,
+        solution_path=solution,
+        metric_py=metric_py,
+        usalign_bin=usalign_bin,
+        submission_path=submission,
+        location="src/rna3d_local/cli.py:_cmd_score",
+    )
     write_score_artifacts(out_dir=out_dir, result=result, meta=meta)
     print(json.dumps({"score": result.score, "out_dir": _rel_or_abs(out_dir, repo)}, indent=2, sort_keys=True))
     return 0

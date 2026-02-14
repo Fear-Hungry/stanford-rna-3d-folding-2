@@ -9,12 +9,28 @@ import numpy as np
 from .errors import raise_error
 from .kaggle_calibration import build_alignment_decision, build_kaggle_local_calibration
 
+REQUIRED_SCORE_META_FIELDS: tuple[str, ...] = (
+    "dataset_type",
+    "sample_columns",
+    "sample_schema_sha",
+    "n_models",
+    "metric_sha256",
+    "usalign_sha256",
+    "regime_id",
+)
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def read_score_json(*, score_json_path: Path, stage: str = "ROBUST", location: str = "src/rna3d_local/robust_score.py:read_score_json") -> float:
+def read_score_artifact(
+    *,
+    score_json_path: Path,
+    stage: str = "ROBUST",
+    location: str = "src/rna3d_local/robust_score.py:read_score_artifact",
+    require_metadata: bool = True,
+) -> dict:
     if not score_json_path.exists():
         raise_error(stage, location, "score_json nao encontrado", impact="1", examples=[str(score_json_path)])
     try:
@@ -24,10 +40,59 @@ def read_score_json(*, score_json_path: Path, stage: str = "ROBUST", location: s
     if "score" not in payload:
         raise_error(stage, location, "score_json sem campo score", impact="1", examples=[str(score_json_path)])
     try:
-        return float(payload["score"])
+        score = float(payload["score"])
     except (TypeError, ValueError):
         raise_error(stage, location, "campo score invalido no score_json", impact="1", examples=[str(payload.get("score"))])
-    raise AssertionError("unreachable")
+    if not np.isfinite(score):
+        raise_error(stage, location, "campo score nao-finito no score_json", impact="1", examples=[str(payload.get("score"))])
+
+    meta = payload.get("meta")
+    if require_metadata:
+        if not isinstance(meta, dict):
+            raise_error(stage, location, "score_json sem bloco meta obrigatorio", impact="1", examples=[str(score_json_path)])
+        missing = [k for k in REQUIRED_SCORE_META_FIELDS if k not in meta]
+        if missing:
+            raise_error(
+                stage,
+                location,
+                "score_json sem metadados obrigatorios de comparabilidade",
+                impact=str(len(missing)),
+                examples=missing[:8],
+            )
+        if not isinstance(meta.get("sample_columns"), list) or not meta.get("sample_columns"):
+            raise_error(stage, location, "meta.sample_columns invalido no score_json", impact="1", examples=[str(meta.get("sample_columns"))])
+        try:
+            n_models = int(meta.get("n_models"))
+        except (TypeError, ValueError):
+            raise_error(stage, location, "meta.n_models invalido no score_json", impact="1", examples=[str(meta.get("n_models"))])
+        if n_models <= 0:
+            raise_error(stage, location, "meta.n_models deve ser > 0", impact="1", examples=[str(n_models)])
+        for key in ("dataset_type", "sample_schema_sha", "metric_sha256", "usalign_sha256", "regime_id"):
+            value = str(meta.get(key) or "").strip()
+            if not value:
+                raise_error(stage, location, f"meta.{key} vazio no score_json", impact="1", examples=[str(meta.get(key))])
+
+    return {
+        "path": str(score_json_path),
+        "score": float(score),
+        "meta": meta if isinstance(meta, dict) else {},
+    }
+
+
+def read_score_json(
+    *,
+    score_json_path: Path,
+    stage: str = "ROBUST",
+    location: str = "src/rna3d_local/robust_score.py:read_score_json",
+    require_metadata: bool = False,
+) -> float:
+    artifact = read_score_artifact(
+        score_json_path=score_json_path,
+        stage=stage,
+        location=location,
+        require_metadata=bool(require_metadata),
+    )
+    return float(artifact["score"])
 
 
 def _resolve_public_score(*, named_scores: dict[str, float], public_score_name: str, location: str) -> float | None:
