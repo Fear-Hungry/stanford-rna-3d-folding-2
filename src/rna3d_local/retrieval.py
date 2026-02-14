@@ -24,6 +24,11 @@ from .bigdata import (
 )
 from .compute_backend import resolve_compute_backend
 from .errors import raise_error
+from .retrieval_cache import (
+    prepare_retrieval_cache,
+    restore_retrieval_candidates_from_cache,
+    write_retrieval_cache,
+)
 from .utils import sha256_file
 
 
@@ -105,6 +110,7 @@ def retrieve_template_candidates(
     gpu_memory_budget_mb: int = 12_288,
     gpu_precision: str = "fp32",
     gpu_hash_dim: int = 4096,
+    cache_dir: Path | None = None,
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
     max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
 ) -> RetrievalResult:
@@ -143,6 +149,70 @@ def retrieve_template_candidates(
         stage="RETRIEVAL",
         location=location,
     )
+
+    cache = prepare_retrieval_cache(
+        cache_dir=cache_dir,
+        template_index_path=template_index_path,
+        target_sequences_path=target_sequences_path,
+        top_k=top_k,
+        kmer_size=kmer_size,
+        length_weight=length_weight,
+        refine_pool_size=refine_pool_size,
+        refine_alignment_weight=refine_alignment_weight,
+        refine_open_gap_score=float(refine_open_gap_score),
+        refine_extend_gap_score=float(refine_extend_gap_score),
+        compute_backend=str(backend.backend),
+        gpu_precision=str(backend.precision),
+        gpu_hash_dim=int(gpu_hash_dim),
+        location=location,
+    )
+    cache_hit = False
+    if restore_retrieval_candidates_from_cache(cache=cache, out_path=out_path):
+        cache_hit = True
+        assert cache.cache_dir is not None
+        assert cache.cache_key is not None
+        assert cache.cache_candidates_path is not None
+        assert cache.cache_meta_path is not None
+        manifest = {
+            "created_utc": _utc_now(),
+            "paths": {
+                "template_index": _rel(template_index_path, repo_root),
+                "target_sequences": _rel(target_sequences_path, repo_root),
+                "candidates": _rel(out_path, repo_root),
+            },
+            "params": {
+                "top_k": top_k,
+                "kmer_size": kmer_size,
+                "length_weight": length_weight,
+                "refine_pool_size": refine_pool_size,
+                "refine_alignment_weight": refine_alignment_weight,
+                "refine_open_gap_score": float(refine_open_gap_score),
+                "refine_extend_gap_score": float(refine_extend_gap_score),
+                "compute_backend": str(backend.backend),
+                "compute_backend_requested": str(backend.requested),
+                "gpu_precision": str(backend.precision),
+                "gpu_hash_dim": int(gpu_hash_dim),
+                "gpu_memory_budget_mb": int(backend.gpu_memory_budget_mb),
+            },
+            "stats": {
+                "n_rows": int(cache.cache_rows),
+                "n_targets": int(cache.cache_targets),
+                "chunk_size": int(chunk_size),
+            },
+            "compute": backend.to_manifest_dict(),
+            "cache": {
+                "enabled": True,
+                "cache_dir": _rel(cache.cache_dir, repo_root),
+                "cache_key": str(cache.cache_key),
+                "cache_hit": True,
+                "cache_candidates": _rel(cache.cache_candidates_path, repo_root),
+                "cache_meta": _rel(cache.cache_meta_path, repo_root),
+            },
+            "sha256": {"candidates.parquet": sha256_file(out_path)},
+        }
+        manifest_path = out_path.parent / "retrieval_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return RetrievalResult(candidates_path=out_path, manifest_path=manifest_path)
 
     idx = collect_streaming(
         lf=scan_table(
@@ -427,6 +497,26 @@ def retrieve_template_candidates(
         if not finalized and tmp_out_path.exists():
             tmp_out_path.unlink()
 
+    write_retrieval_cache(
+        cache=cache,
+        out_path=out_path,
+        created_utc=_utc_now(),
+        template_index_path=template_index_path,
+        target_sequences_path=target_sequences_path,
+        top_k=int(top_k),
+        kmer_size=int(kmer_size),
+        length_weight=float(length_weight),
+        refine_pool_size=int(refine_pool_size),
+        refine_alignment_weight=float(refine_alignment_weight),
+        refine_open_gap_score=float(refine_open_gap_score),
+        refine_extend_gap_score=float(refine_extend_gap_score),
+        compute_backend=str(backend.backend),
+        gpu_precision=str(backend.precision),
+        gpu_hash_dim=int(gpu_hash_dim),
+        rows_written=int(rows_written),
+        targets_written=int(len(targets_written)),
+    )
+
     manifest = {
         "created_utc": _utc_now(),
         "paths": {
@@ -450,6 +540,14 @@ def retrieve_template_candidates(
         },
         "stats": {"n_rows": int(rows_written), "n_targets": int(len(targets_written)), "chunk_size": int(chunk_size)},
         "compute": backend.to_manifest_dict(),
+        "cache": {
+            "enabled": bool(cache.enabled),
+            "cache_dir": None if cache.cache_dir is None else _rel(cache.cache_dir, repo_root),
+            "cache_key": None if cache.cache_key is None else str(cache.cache_key),
+            "cache_hit": bool(cache_hit),
+            "cache_candidates": None if cache.cache_candidates_path is None else _rel(cache.cache_candidates_path, repo_root),
+            "cache_meta": None if cache.cache_meta_path is None else _rel(cache.cache_meta_path, repo_root),
+        },
         "sha256": {"candidates.parquet": sha256_file(out_path)},
     }
     manifest_path = out_path.parent / "retrieval_manifest.json"

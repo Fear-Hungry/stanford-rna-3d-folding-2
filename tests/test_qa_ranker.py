@@ -6,6 +6,7 @@ import polars as pl
 
 from rna3d_local.qa_ranker import (
     QA_FEATURE_NAMES,
+    _pair_similarity,
     build_candidate_feature_dict,
     load_qa_model,
     score_candidate_with_model,
@@ -73,17 +74,17 @@ def test_select_candidates_with_diversity_penalizes_duplicates() -> None:
     c1 = {
         "uid": "A",
         "qa_score": 0.95,
-        "coords": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        "coords": [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (20.0, 0.0, 0.0)],
     }
     c2 = {
         "uid": "B",
         "qa_score": 0.94,
-        "coords": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        "coords": [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (20.0, 0.0, 0.0)],
     }
     c3 = {
         "uid": "C",
         "qa_score": 0.80,
-        "coords": [(0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 2.0, 0.0)],
+        "coords": [(0.0, 0.0, 0.0), (0.0, 10.0, 0.0), (20.0, 20.0, 0.0)],
     }
     selected = select_candidates_with_diversity(
         candidates=[c1, c2, c3],
@@ -94,3 +95,14 @@ def test_select_candidates_with_diversity_penalizes_duplicates() -> None:
     uids = [str(c["uid"]) for c in selected]
     assert "A" in uids
     assert "C" in uids
+
+
+def test_pair_similarity_is_rotation_invariant() -> None:
+    a = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (20.0, 0.0, 0.0)]
+    b = [(0.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 20.0, 0.0)]
+    sim = _pair_similarity(
+        coords_a=a,
+        coords_b=b,
+        location="tests/test_qa_ranker.py:test_pair_similarity_is_rotation_invariant",
+    )
+    assert sim > 0.99

@@ -19,6 +19,7 @@ from .bigdata import (
     scan_table,
 )
 from .errors import raise_error
+from .template_audit import audit_external_templates
 from .utils import sha256_file
 
 
@@ -331,6 +332,15 @@ def build_template_db(
         if not p.exists():
             raise_error("TEMPLATE_DB", location, "arquivo obrigatorio ausente", impact="1", examples=[str(p)])
 
+    out_dir.mkdir(parents=True, exist_ok=True)
+    audit_report_path = out_dir / "external_templates_audit.json"
+    audit_external_templates(
+        external_templates_path=external_templates_path,
+        out_report_path=audit_report_path,
+        memory_budget_mb=memory_budget_mb,
+        max_rows_in_memory=max_rows_in_memory,
+    )
+
     train_sequences_df = _load_train_sequences(
         train_sequences_path=train_sequences_path,
         max_train_templates=max_train_templates,
@@ -378,7 +388,6 @@ def build_template_db(
         stage="TEMPLATE_DB",
     )
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     templates_path = out_dir / "templates.parquet"
     index_path = out_dir / "template_index.parquet"
     tmp_templates_path = out_dir / "_tmp_templates.parquet"
@@ -435,10 +444,12 @@ def build_template_db(
             "train_sequences": _rel(train_sequences_path, repo_root),
             "train_labels_parquet_dir": _rel(train_labels_parquet_dir, repo_root),
             "external_templates": _rel(external_templates_path, repo_root),
+            "external_templates_audit": _rel(audit_report_path, repo_root),
         },
         "sha256": {
             "templates.parquet": sha256_file(templates_path),
             "template_index.parquet": sha256_file(index_path),
+            "external_templates_audit.json": sha256_file(audit_report_path),
         },
     }
     manifest_path = out_dir / "manifest.json"

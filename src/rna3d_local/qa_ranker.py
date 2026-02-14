@@ -25,6 +25,8 @@ QA_FEATURE_NAMES: tuple[str, ...] = (
     "gap_extend_score",
 )
 
+QA_DIVERSITY_RMSD_SIGMA_ANGSTROM = 10.0
+
 
 @dataclass(frozen=True)
 class QaMetrics:
@@ -251,25 +253,46 @@ def score_candidate_with_model(
     return score
 
 
-def _pair_similarity(*, coords_a: list[tuple[float, float, float]], coords_b: list[tuple[float, float, float]], location: str) -> float:
-    a = _coords_to_np(coords_a, location=location)
-    b = _coords_to_np(coords_b, location=location)
+def _kabsch_rmsd(*, a: np.ndarray, b: np.ndarray, location: str) -> float:
     if a.shape != b.shape:
         raise_error("QA", location, "coords com shape divergente para diversidade", impact="1", examples=[f"a={a.shape}", f"b={b.shape}"])
     a0 = a - np.mean(a, axis=0, keepdims=True)
     b0 = b - np.mean(b, axis=0, keepdims=True)
-    va = a0.reshape(-1)
-    vb = b0.reshape(-1)
-    na = float(np.linalg.norm(va))
-    nb = float(np.linalg.norm(vb))
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    cos = float(np.dot(va, vb) / (na * nb))
-    if cos < -1.0:
-        cos = -1.0
-    if cos > 1.0:
-        cos = 1.0
-    return float((cos + 1.0) * 0.5)
+    h = b0.T @ a0
+    if not np.isfinite(h).all():
+        raise_error("QA", location, "matriz de covariancia nao-finita para diversidade", impact="1", examples=["nan_or_inf"])
+    try:
+        u, _s, vt = np.linalg.svd(h)
+    except Exception as e:  # noqa: BLE001
+        raise_error("QA", location, "falha no SVD para diversidade", impact="1", examples=[f"{type(e).__name__}:{e}"])
+    r = u @ vt
+    det = float(np.linalg.det(r))
+    if det < 0.0:
+        u[:, -1] *= -1.0
+        r = u @ vt
+    b_aligned = b0 @ r
+    diff = a0 - b_aligned
+    rmsd = float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
+    if not np.isfinite(rmsd):
+        raise_error("QA", location, "rmsd nao-finito para diversidade", impact="1", examples=["nan_or_inf"])
+    if rmsd < 0.0:
+        raise_error("QA", location, "rmsd negativo para diversidade", impact="1", examples=[str(rmsd)])
+    return rmsd
+
+
+def _pair_similarity(*, coords_a: list[tuple[float, float, float]], coords_b: list[tuple[float, float, float]], location: str) -> float:
+    a = _coords_to_np(coords_a, location=location)
+    b = _coords_to_np(coords_b, location=location)
+    rmsd = _kabsch_rmsd(a=a, b=b, location=location)
+    sigma = float(QA_DIVERSITY_RMSD_SIGMA_ANGSTROM)
+    if sigma <= 0.0:
+        raise_error("QA", location, "sigma de diversidade invalido", impact="1", examples=[str(sigma)])
+    sim = float(np.exp(-(rmsd / sigma)))
+    if sim < 0.0:
+        sim = 0.0
+    if sim > 1.0:
+        sim = 1.0
+    return sim
 
 
 def select_candidates_with_diversity(

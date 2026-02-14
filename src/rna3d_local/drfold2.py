@@ -5,6 +5,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -85,6 +86,69 @@ def _validate_target_rows(*, targets: pl.DataFrame, location: str) -> list[tuple
     return rows
 
 
+def _load_target_ids_filter(*, target_ids_file: Path, location: str) -> list[str]:
+    if not target_ids_file.exists():
+        raise_error("DRFOLD2", location, "target_ids_file inexistente", impact="1", examples=[str(target_ids_file)])
+    suffix = target_ids_file.suffix.lower()
+    if suffix in {".parquet", ".csv"}:
+        ids_df = collect_streaming(
+            lf=scan_table(
+                config=TableReadConfig(
+                    path=target_ids_file,
+                    stage="DRFOLD2",
+                    location=location,
+                    columns=("target_id",),
+                )
+            ).select(pl.col("target_id").cast(pl.Utf8).str.strip_chars()),
+            stage="DRFOLD2",
+            location=location,
+        )
+        raw_ids = [str(value).strip() if value is not None else "" for value in ids_df.get_column("target_id").to_list()]
+    else:
+        raw_ids = [line.strip() for line in target_ids_file.read_text(encoding="utf-8").splitlines()]
+
+    target_ids = [target_id for target_id in raw_ids if str(target_id).strip()]
+    if not target_ids:
+        raise_error("DRFOLD2", location, "target_ids_file vazio", impact="0", examples=[str(target_ids_file)])
+    invalid = [target_id for target_id in target_ids if str(target_id).upper() in {"NONE", "NAN", "NULL"}]
+    if invalid:
+        raise_error(
+            "DRFOLD2",
+            location,
+            "target_ids_file contem target_id invalido",
+            impact=str(len(invalid)),
+            examples=invalid[:8],
+        )
+    counts: dict[str, int] = {}
+    for target_id in target_ids:
+        counts[target_id] = int(counts.get(target_id, 0)) + 1
+    duplicates = sorted([target_id for target_id, count in counts.items() if count > 1])
+    if duplicates:
+        raise_error(
+            "DRFOLD2",
+            location,
+            "target_ids_file com target_id duplicado",
+            impact=str(len(duplicates)),
+            examples=duplicates[:8],
+        )
+    return target_ids
+
+
+def _select_targets_by_id(*, targets: list[tuple[str, str]], selected_target_ids: Iterable[str], location: str) -> list[tuple[str, str]]:
+    target_map = {target_id: sequence for target_id, sequence in targets}
+    selected = [str(target_id).strip() for target_id in selected_target_ids]
+    missing = [target_id for target_id in selected if target_id not in target_map]
+    if missing:
+        raise_error(
+            "DRFOLD2",
+            location,
+            "target_ids_file contem ids ausentes no arquivo de targets",
+            impact=str(len(missing)),
+            examples=missing[:8],
+        )
+    return [(target_id, target_map[target_id]) for target_id in selected]
+
+
 def extract_target_coordinates_from_pdb(*, pdb_path: Path, target_sequence: str, location: str) -> list[tuple[float, float, float]]:
     if not pdb_path.exists():
         raise_error("DRFOLD2", location, "arquivo PDB ausente", impact="1", examples=[str(pdb_path)])
@@ -112,20 +176,24 @@ def extract_target_coordinates_from_pdb(*, pdb_path: Path, target_sequence: str,
             impact=f"expected={len(target_sequence)} got={len(residues)}",
             examples=[str(pdb_path)],
         )
+    missing_c1: list[str] = []
     coords: list[tuple[float, float, float]] = []
-    for r in residues:
-        atom = None
-        for name in ("C1'", "C4'", "P", "O3'"):
-            if r.has_id(name):
-                atom = r[name]
-                break
-        if atom is None:
-            atom_list = list(r.get_atoms())
-            if not atom_list:
-                raise_error("DRFOLD2", location, "residuo sem atomos no PDB", impact="1", examples=[str(pdb_path), str(r.id)])
-            atom = atom_list[0]
+    for idx, r in enumerate(residues, start=1):
+        if not r.has_id("C1'"):
+            resseq = r.id[1] if isinstance(r.id, tuple) and len(r.id) > 1 else "?"
+            missing_c1.append(f"idx={idx}:resseq={resseq}")
+            continue
+        atom = r["C1'"]
         xyz = atom.get_coord()
         coords.append((float(xyz[0]), float(xyz[1]), float(xyz[2])))
+    if missing_c1:
+        raise_error(
+            "DRFOLD2",
+            location,
+            "PDB sem atomo obrigatorio C1' em residuos do alvo",
+            impact=str(len(missing_c1)),
+            examples=missing_c1[:8],
+        )
     return coords
 
 
@@ -160,6 +228,7 @@ def predict_drfold2(
     n_models: int = 5,
     python_bin: str = "python",
     target_limit: int | None = None,
+    target_ids_file: Path | None = None,
     chunk_size: int = 200_000,
     reuse_existing_targets: bool = False,
     memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
@@ -189,6 +258,9 @@ def predict_drfold2(
         location=location,
     ).sort("target_id")
     targets = _validate_target_rows(targets=targets_df, location=location)
+    if target_ids_file is not None:
+        selected_target_ids = _load_target_ids_filter(target_ids_file=target_ids_file, location=location)
+        targets = _select_targets_by_id(targets=targets, selected_target_ids=selected_target_ids, location=location)
     if target_limit is not None:
         targets = targets[: int(target_limit)]
     assert_row_budget(
@@ -346,6 +418,7 @@ def predict_drfold2(
             "n_models": int(n_models),
             "python_bin": str(python_bin),
             "target_limit": None if target_limit is None else int(target_limit),
+            "target_ids_file": None if target_ids_file is None else _rel(target_ids_file, repo_root),
             "chunk_size": int(chunk_size),
             "reuse_existing_targets": bool(reuse_existing_targets),
         },

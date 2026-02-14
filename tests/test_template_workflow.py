@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -237,4 +238,21 @@ def test_retrieval_fails_when_temporal_filter_removes_all(tmp_path: Path) -> Non
             out_path=tmp_path / "retrieval.parquet",
             top_k=2,
             kmer_size=2,
+        )
+
+
+def test_build_template_db_fails_on_invalid_external_templates(tmp_path: Path) -> None:
+    paths = _setup_small_dataset(tmp_path)
+    repo = tmp_path
+    future_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    external_df = pl.read_csv(paths["external_templates"]).with_columns(pl.lit(future_date).alias("release_date"))
+    external_df.write_csv(paths["external_templates"])
+
+    with pytest.raises(PipelineError):
+        build_template_db(
+            repo_root=repo,
+            train_sequences_path=paths["train_sequences"],
+            train_labels_parquet_dir=paths["train_labels_parquet_dir"],
+            external_templates_path=paths["external_templates"],
+            out_dir=tmp_path / "template_db",
         )

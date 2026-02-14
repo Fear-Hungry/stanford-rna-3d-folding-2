@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import polars as pl
@@ -131,6 +132,7 @@ def test_add_labels_to_candidate_pool_success(tmp_path: Path) -> None:
         label_col="label",
         label_source_col="label_source",
         label_source_name="solution_rmsd_inv1",
+        label_method="rmsd_kabsch",
         memory_budget_mb=8192,
         max_rows_in_memory=500000,
     )
@@ -173,6 +175,97 @@ def test_add_labels_to_candidate_pool_rejects_missing_solution_target(tmp_path: 
             label_col="label",
             label_source_col="label_source",
             label_source_name="solution_rmsd_inv1",
+            label_method="rmsd_kabsch",
             memory_budget_mb=8192,
             max_rows_in_memory=500000,
         )
+
+
+def test_add_labels_to_candidate_pool_kabsch_is_rotation_invariant(tmp_path: Path) -> None:
+    pool = tmp_path / "candidate_pool.parquet"
+    pl.DataFrame(
+        [
+            {
+                "target_id": "T1",
+                "model_id": 1,
+                "candidate_id": "tbm:T1:1",
+                "source": "tbm",
+                "resid_count": 2,
+                "coords": [[10.0, 10.0, 0.0], [10.0, 11.0, 0.0]],
+                "resids": [1, 2],
+            }
+        ]
+    ).write_parquet(pool)
+
+    solution = tmp_path / "solution.csv"
+    pl.DataFrame(
+        [
+            {"ID": "T1_1", "resid": 1, "x_1": 0.0, "y_1": 0.0, "z_1": 0.0},
+            {"ID": "T1_2", "resid": 2, "x_1": 1.0, "y_1": 0.0, "z_1": 0.0},
+        ]
+    ).write_csv(solution)
+
+    out_path, _manifest_path = add_labels_to_candidate_pool(
+        candidate_pool_path=pool,
+        solution_path=solution,
+        out_path=tmp_path / "labeled.parquet",
+        label_col="label",
+        label_source_col="label_source",
+        label_source_name="solution_rmsd_kabsch_inv1",
+        label_method="rmsd_kabsch",
+    )
+    labeled = pl.read_parquet(out_path)
+    assert labeled.get_column("label").to_list() == [1.0]
+
+
+def test_add_labels_to_candidate_pool_tm_score_usalign_manifest(tmp_path: Path) -> None:
+    pool = tmp_path / "candidate_pool.parquet"
+    pl.DataFrame(
+        [
+            {
+                "target_id": "T1",
+                "model_id": 1,
+                "candidate_id": "tbm:T1:1",
+                "source": "tbm",
+                "resid_count": 2,
+                "coords": [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+                "resids": [1, 2],
+                "resnames": ["A", "C"],
+            }
+        ]
+    ).write_parquet(pool)
+
+    solution = tmp_path / "solution.csv"
+    pl.DataFrame(
+        [
+            {"ID": "T1_1", "resid": 1, "resname": "A", "x_1": 1.0, "y_1": 0.0, "z_1": 0.0},
+            {"ID": "T1_2", "resid": 2, "resname": "C", "x_1": 2.0, "y_1": 0.0, "z_1": 0.0},
+        ]
+    ).write_csv(solution)
+
+    metric_py = tmp_path / "metric.py"
+    metric_py.write_text(
+        "def score(solution, submission, row_id_column_name, usalign_bin_hint=None):\n"
+        "    return 0.82\n",
+        encoding="utf-8",
+    )
+    usalign = tmp_path / "USalign"
+    usalign.write_text("dummy\n", encoding="utf-8")
+
+    out_path, manifest_path = add_labels_to_candidate_pool(
+        candidate_pool_path=pool,
+        solution_path=solution,
+        out_path=tmp_path / "labeled.parquet",
+        label_col="label",
+        label_source_col="label_source",
+        label_method="tm_score_usalign",
+        metric_py_path=metric_py,
+        usalign_bin_path=usalign,
+    )
+    labeled = pl.read_parquet(out_path)
+    assert labeled.get_column("label").to_list() == [0.82]
+    assert labeled.get_column("label_source").to_list() == ["solution_tm_score_usalign"]
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["label"]["label_method"] == "tm_score_usalign"
+    assert manifest["label"]["metric_py"] == str(metric_py.resolve())
