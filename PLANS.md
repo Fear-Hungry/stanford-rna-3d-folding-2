@@ -1072,3 +1072,27 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Testes de QA/diversidade validam invariancia a rotacao e penalizacao de duplicatas com a nova metrica.
   - DRfold2 falha cedo quando `C1'` estiver ausente em qualquer residuo.
   - `pytest` direcionado dos modulos impactados permanece verde.
+
+## PLAN-068 - Gate competitivo por comparabilidade de score (schema/hash/regime)
+
+- Objetivo: impedir promocao de candidatos com evidencia de score nao comparavel ao regime oficial Kaggle, mantendo suporte diagnostico para regimes alternativos.
+- Escopo:
+  - Tornar `score.json` auto-descritivo no comando `score` com metadados obrigatorios:
+    - `dataset_type`, `sample_columns`, `sample_schema_sha`, `n_models`, `metric_sha256`, `usalign_sha256`, `regime_id`.
+  - Exigir metadados obrigatorios em leitura de score para gates competitivos (`evaluate-robust`, `evaluate-submit-readiness`, `submit-kaggle` quando usar `--score-json`).
+  - Separar regimes em `evaluate-robust`/`evaluate-submit-readiness`:
+    - incluir apenas scores do regime competitivo selecionado;
+    - excluir e reportar scores de outros regimes em `excluded_by_regime`;
+    - bloquear fingerprint divergente dentro do regime (`sample_schema_sha`, `n_models`, `metric_sha256`, `usalign_sha256`).
+  - Endurecer `submit` para aceitar apenas reports com:
+    - `compatibility_checks.allowed=true`;
+    - `regime_summary.competitive_regime_id == kaggle_official_5model`.
+  - Endurecer contrato de submissao em `check-submission`:
+    - coordenadas `x_k/y_k/z_k` devem ser numericas, finitas e em faixa plausivel (`abs <= 1e6`).
+  - Expandir testes para cobrirem metadados de score, separacao de regime e hardening de submit.
+- Criterios de aceite:
+  - `evaluate-robust` falha cedo para `score.json` legado sem metadados obrigatorios.
+  - `evaluate-robust`/`evaluate-submit-readiness` reportam exclusao de scores fora do regime competitivo sem contaminar score robusto/readiness.
+  - `submit-kaggle` bloqueia reports sem `compatibility_checks` ou fora do regime oficial.
+  - `check-submission` bloqueia coordenadas nao numericas, nao-finitas e fora de faixa.
+  - Suite direcionada de testes de `contracts/scoring/robust/readiness/submit_hardening` permanece verde.

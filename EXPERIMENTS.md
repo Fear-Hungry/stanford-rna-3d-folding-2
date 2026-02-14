@@ -3731,3 +3731,173 @@ Log append-only de experimentos executados (UTC).
 - Conclusao + proximos passos:
   - Hipotese confirmada: o caminho competitivo sem blend esta enforced na CLI, diversidade agora e invariante por alinhamento e DRfold2 esta estrito em `C1'`.
   - Proximo passo recomendado: executar ablacao CV (`fold3/fold4`) para calibrar `sigma` de diversidade (`10.0`) contra score local, mantendo o gate competitivo atual.
+
+### 2026-02-14T16:03:15Z - marcusvinicius/Codex (PLAN-067: execucao completa para gerar submissao competitiva Top-5)
+
+- Objetivo/hipotese:
+  - Executar pipeline completo de inferencia/export no caminho competitivo (sem blend) para gerar `submission.csv` valida e medir score local em `public_validation`.
+  - Comparacao (baseline vs novo):
+    - baseline legado bloqueado: `ensemble-predict` (blend de coordenadas);
+    - novo: `build-candidate-pool + select-top5-global` com diversidade invariante por Kabsch.
+
+- Comandos executados + configuracao efetiva:
+  - Tentativa inicial (falha esperada por contrato de auditoria):
+    - `python -m rna3d_local build-template-db --train-labels-parquet-dir data/derived/train_labels_parquet_nonnull_xyz --external-templates external_templates.csv --out-dir runs/20260214_155553_plan067_full_submit/template_db`
+    - erro: `distancia consecutiva entre residuos fora de faixa plausivel [1A,15A]`.
+  - Reexecucao com template sanitizado (fluxo completo):
+    - `python -m rna3d_local build-template-db --train-labels-parquet-dir data/derived/train_labels_parquet_nonnull_xyz --external-templates runs/20260214_plan061_exec_all/external_templates_sanitized.csv --out-dir runs/20260214_155553_plan067_full_submit/template_db`
+    - `python -m rna3d_local retrieve-templates --template-index runs/20260214_155553_plan067_full_submit/template_db/template_index.parquet --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/20260214_155553_plan067_full_submit/retrieval_candidates.parquet --top-k 64 --refine-pool-size 192 --refine-alignment-weight 0.35 --compute-backend cuda`
+    - `python -m rna3d_local predict-tbm --retrieval runs/20260214_155553_plan067_full_submit/retrieval_candidates.parquet --templates runs/20260214_155553_plan067_full_submit/template_db/templates.parquet --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/20260214_155553_plan067_full_submit/tbm_predictions.parquet --n-models 5 --min-coverage 0.01 --qa-device cuda --compute-backend cuda`
+    - `python -m rna3d_local predict-rnapro --model-dir runs/20260211_154539_plan012_rerank_bigmodel/rnapro_model_512 --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/20260214_155553_plan067_full_submit/rnapro_predictions.parquet --n-models 5 --min-coverage 0.01 --qa-device cuda --compute-backend cuda`
+    - `python -m rna3d_local build-candidate-pool --predictions tbm=runs/20260214_155553_plan067_full_submit/tbm_predictions.parquet --predictions rnapro=runs/20260214_155553_plan067_full_submit/rnapro_predictions.parquet --out runs/20260214_155553_plan067_full_submit/candidate_pool.parquet --compute-backend cuda`
+    - `python -m rna3d_local select-top5-global --candidates runs/20260214_155553_plan067_full_submit/candidate_pool.parquet --model runs/20260214_plan061_exec_all/qa_tm_model.json --weights runs/20260214_plan061_exec_all/qa_tm_model.pt --out runs/20260214_155553_plan067_full_submit/top5_predictions.parquet --n-models 5 --qa-top-pool 80 --diversity-lambda 0.15 --device cuda`
+    - `python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/20260214_155553_plan067_full_submit/top5_predictions.parquet --out runs/20260214_155553_plan067_full_submit/submission.csv`
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260214_155553_plan067_full_submit/submission.csv`
+    - `python -m rna3d_local score --dataset public_validation --submission runs/20260214_155553_plan067_full_submit/submission.csv --per-target`
+
+- Parametros e hiperparametros efetivos (com valores):
+  - Retrieval: `top_k=64`, `refine_pool_size=192`, `refine_alignment_weight=0.35`, `compute_backend=cuda`.
+  - TBM: `n_models=5`, `min_coverage=0.01`, `qa_device=cuda`, `compute_backend=cuda`.
+  - RNAPro inferencia: `model_dir=rnapro_model_512`, `n_models=5`, `min_coverage=0.01`, `qa_device=cuda`, `compute_backend=cuda`.
+  - Selecao global: `n_models=5`, `qa_top_pool=80`, `diversity_lambda=0.15`, `device=cuda`, similaridade por Kabsch (`exp(-rmsd/10)`).
+
+- Seeds usadas (quando aplicavel):
+  - N/A (apenas inferencia/selecao; sem treino novo nesta execucao).
+
+- Versao do codigo (git commit) e dados (snapshot/caminhos):
+  - Commit base: `5398285`.
+  - Dados: `input/stanford-rna-3d-folding-2/*`, `data/derived/train_labels_parquet_nonnull_xyz`, `runs/20260214_plan061_exec_all/external_templates_sanitized.csv`.
+
+- Artefatos gerados em `runs/` + logs:
+  - Execucao principal: `runs/20260214_155553_plan067_full_submit/`
+  - Principais arquivos:
+    - `template_db/{manifest.json,template_index.parquet,templates.parquet}`
+    - `retrieval_candidates.parquet`, `retrieval_manifest.json`
+    - `tbm_predictions.parquet`, `tbm_manifest.json`
+    - `rnapro_predictions.parquet`, `rnapro_infer_manifest.json`
+    - `candidate_pool.parquet`, `candidate_pool_manifest.json`
+    - `top5_predictions.parquet`, `qa_rnrank_select_manifest.json`
+    - `submission.csv`
+    - logs por etapa: `runs/20260214_155553_plan067_full_submit/logs/*.log`
+  - Score local:
+    - `runs/20260214_160315_score/score.json`
+    - `runs/20260214_160315_score/per_target.csv`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM quando relevante):
+  - `check-submission`: `OK`.
+  - `public_validation score`: `0.2740425`.
+  - Tempos (real):
+    - build-template-db: `2.52s`
+    - retrieve-templates: `19.02s`
+    - predict-tbm: `27.78s`
+    - predict-rnapro: `26.49s`
+    - build-candidate-pool: `1.91s`
+    - select-top5-global: `2.09s`
+    - export-submission: `0.49s`
+    - check-submission: `0.40s`
+    - score: `274.36s`
+
+- Conclusao + proximos passos:
+  - Submissao completa foi gerada com sucesso no caminho competitivo sem blend e validada localmente.
+  - Candidato pronto para fluxo notebook-only de submit Kaggle caso autorizado.
+
+### 2026-02-14T16:39:13Z - marcusvinicius/Codex (PLAN-068: hardening de comparabilidade no gate competitivo)
+
+- Objetivo/hipotese:
+  - Garantir que gates competitivos (`evaluate-robust`, `evaluate-submit-readiness`, `submit`) nao comparem scores de regimes incompatíveis (schema/n_models/metric/usalign divergentes), e que `check-submission` detecte numericos invalidos antes do scorer.
+  - Comparacao (baseline vs novo):
+    - baseline: gates consumiam `dict[str,float]` sem validar metadados de comparabilidade;
+    - novo: score metadata obrigatoria + separacao de regime + fingerprint check + submit hardening por regime oficial.
+
+- Comandos executados + configuracao efetiva:
+  - Testes direcionados de regressao:
+    - `pytest -q tests/test_contracts.py tests/test_scoring.py tests/test_robust_score.py tests/test_submission_readiness.py tests/test_submit_gate_hardening.py tests/test_score_regime_compatibility.py tests/test_score_metadata.py`
+    - `pytest -q tests/test_cli_strict_surface.py`
+  - Evidencia operacional (artefatos em `runs/20260214_plan068_gate_hardening/`):
+    - bloqueio legado sem metadados:
+      - `python -m rna3d_local evaluate-robust --score public_validation=runs/20260214_plan068_gate_hardening/legacy_public_score.json --out runs/20260214_plan068_gate_hardening/robust_legacy_should_fail.json`
+    - robust com separacao de regimes:
+      - `python -m rna3d_local evaluate-robust --score public_validation=.../public_score.json --score cv:fold0=.../cv_fold0_score.json --score cv:fold1=.../cv_fold1_score.json --score cv40:fold0=.../cv40_fold0_score.json --min-cv-count 2 --out runs/20260214_plan068_gate_hardening/robust_ok.json`
+    - readiness com separacao de regimes (candidate vs baseline):
+      - `python -m rna3d_local evaluate-submit-readiness --candidate-score public_validation=.../public_score.json --candidate-score cv:fold0=.../cv_fold0_score.json --candidate-score cv:fold1=.../cv_fold1_score.json --candidate-score cv40:fold0=.../cv40_fold0_score.json --baseline-score public_validation=.../baseline_public_score.json --baseline-score cv:fold0=.../baseline_cv_fold0_score.json --baseline-score cv:fold1=.../baseline_cv_fold1_score.json --min-cv-count 2 --min-cv-improvement-count 1 --out runs/20260214_plan068_gate_hardening/readiness_ok.json`
+
+- Parametros e hiperparametros efetivos (com valores):
+  - Gate competitivo por comparabilidade:
+    - campos de fingerprint: `sample_schema_sha`, `n_models`, `metric_sha256`, `usalign_sha256`.
+    - regime competitivo selecionado: `kaggle_official_5model`.
+  - Hardening de contrato numerico:
+    - coordenadas exigem valor numerico e finito;
+    - limite de magnitude: `abs <= 1e6`.
+
+- Seeds usadas (quando aplicavel):
+  - N/A (apenas validacao de contratos/gates).
+
+- Versao do codigo (git commit) e dados (snapshot/caminhos):
+  - Commit base: `fc71fb9`.
+  - Dados de teste: artefatos sinteticos em `runs/20260214_plan068_gate_hardening/` e fixtures do `pytest`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260214_plan068_gate_hardening/pytest_core.log`
+  - `runs/20260214_plan068_gate_hardening/pytest_cli.log`
+  - `runs/20260214_plan068_gate_hardening/legacy_fail.log`
+  - `runs/20260214_plan068_gate_hardening/legacy_fail.exitcode`
+  - `runs/20260214_plan068_gate_hardening/robust_ok.json`
+  - `runs/20260214_plan068_gate_hardening/readiness_ok.json`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM quando relevante):
+  - Testes direcionados: `40 passed`.
+  - CLI strict surface: `9 passed`.
+  - Bloqueio de score legado confirmado: exit code `2`, erro `score_json sem metadados obrigatorios de comparabilidade`.
+  - `evaluate-robust`/`readiness` com regimes mistos: `allowed=true` e exclusao registrada de `cv40:fold0` em `excluded_by_regime`.
+
+- Conclusao + proximos passos:
+  - Hipotese confirmada: gates competitivos agora bloqueiam score sem metadados e deixam rastreavel quando scores de regimes nao comparaveis sao excluidos do calculo promocional.
+  - Proximo passo: recalcular score artifacts historicos que ainda estejam em formato legado para manter reprodutibilidade dos relatórios antigos sob o novo contrato.
+
+### 2026-02-14T17:24:23Z - marcusvinicius/Codex (ADHOC: execucao pesada de validacao pre-submit, parcial)
+
+- Objetivo/hipotese:
+  - Rodar validacao mais pesada (CV + gate competitivo) para verificar elegibilidade de submit do candidato atual sem blend.
+  - Comparacao esperada: candidato Top-5 global (TBM+RNAPro) vs baseline TBM-only, com readiness competitivo.
+
+- Comandos executados + configuracao efetiva:
+  - Pipeline pesado (resume) em `runs/20260214_164657_plan069_heavy_cv_submit_gate/`:
+    - `retrieve-templates`, `predict-tbm`, `predict-rnapro`, `build-candidate-pool`, `select-top5-global`, `export-submission`, `check-submission`, `score`.
+    - Targets para fold gerados a partir de `sample_submission` com colunas obrigatorias `target_id,sequence,temporal_cutoff`.
+  - Validacoes/gates efetivamente concluídos:
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260214_155553_plan067_full_submit/submission.csv`
+    - `python -m rna3d_local evaluate-robust --score cv:fold0=runs/20260214_164657_plan069_heavy_cv_submit_gate/score_candidate_fold0/score.json --min-cv-count 3 --out runs/20260214_164657_plan069_heavy_cv_submit_gate/robust_candidate_partial.json`
+    - `python -m rna3d_local evaluate-submit-readiness --candidate-score cv:fold0=runs/20260214_164657_plan069_heavy_cv_submit_gate/score_candidate_fold0/score.json --baseline-score cv:fold0=runs/20260214_164657_plan069_heavy_cv_submit_gate/score_candidate_fold0/score.json --min-cv-count 3 --min-cv-improvement-count 2 --out runs/20260214_164657_plan069_heavy_cv_submit_gate/readiness_candidate_partial.json`
+
+- Parametros e hiperparametros efetivos:
+  - Retrieval: `top_k=64`, `refine_pool_size=192`, `refine_alignment_weight=0.35`, `compute_backend=cuda`.
+  - TBM/RNAPro inferencia: `n_models=5`, `min_coverage=0.01`, `qa_device=cuda`, `compute_backend=cuda`.
+  - Selecao global: `qa_top_pool=80`, `diversity_lambda=0.15`, `device=cuda`.
+  - Gate parcial: `min_cv_count=3`, `min_cv_improvement_count=2`.
+
+- Seeds usadas:
+  - N/A (inferencia/score/gating).
+
+- Versao do codigo e dados:
+  - Commit base de trabalho: `fc71fb9`.
+  - Dados: `data/derived/train_cv/plan010_fold0`, `input/stanford-rna-3d-folding-2/*`, `data/derived/train_cv_targets/targets.parquet`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260214_164657_plan069_heavy_cv_submit_gate/score_candidate_fold0/score.json`
+  - `runs/20260214_164657_plan069_heavy_cv_submit_gate/robust_candidate_partial.json`
+  - `runs/20260214_164657_plan069_heavy_cv_submit_gate/readiness_candidate_partial.json`
+  - `runs/20260214_164657_plan069_heavy_cv_submit_gate/logs/*`
+
+- Metricas/resultado e custo:
+  - `check-submission` (public candidate): `OK`.
+  - `cv:fold0` candidate score (`plan010_fold0`): `0.9341193146417445`.
+  - `evaluate-robust` parcial: `allowed=false` (`cv_count insuficiente (1 < 3)`).
+  - `evaluate-submit-readiness` parcial: `allowed=false` por:
+    - `cv_count insuficiente (1 < 3)`;
+    - `score publico local ausente (public_validation)`;
+    - `robust_score sem melhora estrita`;
+    - `melhora CV insuficiente`.
+
+- Conclusao + proximos passos:
+  - Com os artefatos concluídos neste ciclo, o candidato NAO está elegivel para submit competitivo.
+  - Para elegibilidade, concluir no minimo mais 2 folds CV compatíveis no regime `kaggle_official_5model` e adicionar score de `public_validation` no mesmo pacote de comparabilidade.

@@ -45,11 +45,14 @@ python -m rna3d_local evaluate-robust \
 Comportamento padrao endurecido:
 - `evaluate-robust` exige `cv_count >= 2` por padrao;
 - candidatos sem CV (somente `public_validation`) sao bloqueados para promocao competitiva;
+- `evaluate-robust`/`evaluate-submit-readiness` exigem `score.json` com metadados de comparabilidade (`sample_schema_sha`, `n_models`, `metric_sha256`, `usalign_sha256`, `regime_id`);
+- scores de outros regimes sao mantidos apenas como diagnostico (`excluded_by_regime`) e nao entram no score competitivo;
 - calibracao local->public bloqueia extrapolacao fora do range historico observado (por padrao);
-- `submit-kaggle` exige `--robust-report` por padrao e `--require-min-cv-count=3`.
+- `submit-kaggle` exige `--robust-report` por padrao e `--require-min-cv-count=3`, com reports no regime `kaggle_official_5model`.
 
 Notas:
 - Se a submissao divergir do `sample_submission` (colunas, chaves, duplicatas, nulos), o fluxo falha imediatamente com erro acionavel no padrao do `AGENTS.md`.
+- `check-submission` tambem falha cedo para coordenadas nao numericas, nao-finitas (`NaN/Inf`) ou fora de faixa plausivel (`abs>1e6`).
 - `data/`, `input/` e `runs/` sao ignorados pelo git (artefatos locais).
 
 ### Fluxo recomendado para evitar pico de RAM (labels canonicos em Parquet)

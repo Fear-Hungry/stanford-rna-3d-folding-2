@@ -1897,3 +1897,40 @@ Log append-only de mudancas implementadas (UTC).
 - Riscos/follow-ups:
   - `blend_predictions` permanece no modulo `ensemble.py` para uso tecnico interno; se o objetivo for eliminacao completa do caminho legado, remover API e testes associados em plano dedicado.
   - A nova similaridade usa `sigma=10.0` fixo; pode ser calibrado por ablacao supervisionada em folds CV se necessario.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-068 (gate competitivo por comparabilidade de score)
+
+- Resumo:
+  - Endurecido o fluxo competitivo para bloquear mistura de scores nao comparaveis entre regimes/schema/metric:
+    - `score` agora grava `score.json` com metadados obrigatorios de comparabilidade (`dataset_type`, `sample_columns`, `sample_schema_sha`, `n_models`, `metric_sha256`, `usalign_sha256`, `regime_id`).
+    - `evaluate-robust` e `evaluate-submit-readiness` agora exigem metadados, selecionam regime competitivo, excluem scores de outros regimes (`excluded_by_regime`) e validam fingerprint uniforme (`sample_schema_sha`, `n_models`, `metric_sha256`, `usalign_sha256`).
+    - `submit` passou a exigir reports com `compatibility_checks.allowed=true` e `regime_summary.competitive_regime_id=kaggle_official_5model`.
+  - Endurecida validacao de contrato em `check-submission` para coordenadas:
+    - rejeita valor nao numerico;
+    - rejeita valor nao-finito (`NaN/Inf`);
+    - rejeita magnitude fora de faixa plausivel (`abs>1e6`).
+  - Mantida separacao entre uso competitivo (hard gate) e uso diagnostico (scores excluidos por regime no relatorio).
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `src/rna3d_local/cli_commands_data.py`
+  - `src/rna3d_local/robust_score.py`
+  - `src/rna3d_local/cli_commands_common.py`
+  - `src/rna3d_local/cli_commands_gating.py`
+  - `src/rna3d_local/contracts.py`
+  - `tests/test_contracts.py`
+  - `tests/test_robust_score.py`
+  - `tests/test_submit_gate_hardening.py`
+  - `tests/test_score_regime_compatibility.py`
+  - `tests/test_score_metadata.py`
+
+- Validacao local executada:
+  - `pytest -q tests/test_contracts.py tests/test_scoring.py tests/test_robust_score.py tests/test_submission_readiness.py tests/test_submit_gate_hardening.py tests/test_score_regime_compatibility.py tests/test_score_metadata.py` (`40 passed`)
+  - `pytest -q tests/test_cli_strict_surface.py` (`9 passed`)
+  - Evidencia operacional em `runs/20260214_plan068_gate_hardening/`:
+    - bloqueio esperado para score legado sem metadados (`legacy_fail.log`, exit code `2`);
+    - `evaluate-robust` e `evaluate-submit-readiness` com separacao de regime e exclusao de `cv40:fold0` em `excluded_by_regime`.
+
+- Riscos/follow-ups:
+  - Reports antigos (sem metadados/compatibility_checks) deixam de ser elegiveis para submit competitivo por contrato; para reutilizacao, e necessario recalcular `score` no formato novo.
+  - O regime oficial competitivo esta fixado em `kaggle_official_5model`; se houver mudanca futura de schema oficial, ajustar deteccao de `regime_id` no `score`.
