@@ -2,6 +2,20 @@
 
 Log append-only de experimentos executados (UTC).
 
+## 2026-02-14T00:58:07Z - marcusvinicius/Codex
+
+- Plano: `PLAN-060`
+- Objetivo/hipotese:
+  - Habilitar e validar os mecanismos base para o fluxo CV-first com reranker Top-5 (`build-candidate-pool -> add-labels-candidate-pool -> train-qa-rnrank -> select-top5-global`) sem quebrar contratos de fail-fast.
+- Comandos executados + configuracao efetiva:
+  - `pytest -q tests/test_candidate_pool.py tests/test_cli_strict_surface.py`
+  - `python -m rna3d_local --help | rg -n "add-labels-candidate-pool|add-labels"`
+- Resultado observável:
+  - Todos os testes destes módulos passaram.
+  - Comando `add-labels-candidate-pool` agora aparece no parser de CLI.
+- Conclusao + proximos passos:
+  - `PLAN-060` já possui o bloco funcional de rotulagem pronto para CV; próximos passos: executar run completo em `fold3/fold4/fold0` com arquivos reais e consolidar `evaluate-robust` + `evaluate-submit-readiness` antes de considerar promoção.
+
 ## PLAN-002
 
 ### 2026-02-10T20:00:40Z - marcusvinicius/Codex

@@ -2,6 +2,22 @@
 
 Log append-only de mudancas implementadas (UTC).
 
+## 2026-02-14 - marcusvinicius/Codex - PLAN-060
+
+- Resumo:
+  - Concluido ponto crítico de operação do `PLAN-060` para preparar reranking Top-5: habilitada a CLI `add-labels-candidate-pool` e corrigido bug de extração de `target_id` na rotulagem via `solution` no `candidate_pool`.
+  - Ação adicional: corrigido bug funcional que fazia `candidate_pool` de labels cair por indentação no caminho de parsing de `solution` quando o arquivo tinha linhas válidas.
+- Arquivos principais:
+  - `src/rna3d_local/candidate_pool.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_candidate_pool.py`
+  - `tests/test_cli_strict_surface.py`
+- Validacao local executada:
+  - `pytest -q tests/test_candidate_pool.py tests/test_cli_strict_surface.py`
+  - `python -m rna3d_local --help | rg -n "add-labels-candidate-pool|add-labels"`
+- Riscos/follow-ups:
+  - Ainda é necessário orquestrar em script/roteiro o fluxo completo `build-candidate-pool -> add-labels-candidate-pool -> train-qa-rnrank -> select-top5-global -> export/check/score` por fold, conforme sequência operacional completa do `PLAN-060`.
+
 ## 2026-02-10 - marcusvinicius/Codex - ADHOC
 
 - Inicializacao do repositorio para suportar `PLAN-001` (estrutura de pacote, regras de gitignore e scaffolding).

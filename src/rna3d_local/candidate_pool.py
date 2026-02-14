@@ -160,12 +160,12 @@ def _extract_solution_coords(*, solution_path: Path, location: str) -> dict[str,
     if rows.height == 0:
         raise_error("POOL", location, "solucao vazia para label", impact="0", examples=[str(solution_path)])
 
-        rows = rows.with_columns(
-            pl.col("ID").map_elements(
-                lambda v: _extract_target_id_from_row_id(row_id=v, location=location),
-                return_dtype=pl.Utf8,
-            ).alias("target_id")
-        )
+    rows = rows.with_columns(
+        pl.col("ID").map_elements(
+            lambda v: _extract_target_id_from_row_id(row_id=v, location=location),
+            return_dtype=pl.Utf8,
+        ).alias("target_id")
+    )
     rows = rows.with_columns(pl.col("resid").alias("resid_idx"))
     grouped = rows.group_by("target_id").agg(
         pl.col("resid_idx").sort().alias("resids"),

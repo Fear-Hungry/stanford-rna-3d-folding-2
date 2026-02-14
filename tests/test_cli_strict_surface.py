@@ -70,3 +70,18 @@ def test_robust_and_readiness_have_no_allow_flags() -> None:
     assert "--allow-calibration-extrapolation" not in readiness_opts
     assert "--allow-public-validation-without-cv" not in readiness_opts
     assert "--allow-calibration-extrapolation" not in calibrate_opts
+
+
+def test_add_labels_candidate_pool_parser_exists() -> None:
+    parser = build_parser()
+    add_labels = _subparser(parser, "add-labels-candidate-pool")
+    opts = set(add_labels._option_string_actions.keys())  # noqa: SLF001
+
+    assert "--candidates" in opts
+    assert "--solution" in opts
+    assert "--out" in opts
+    assert "--label-col" in opts
+    assert "--label-source-col" in opts
+    assert "--label-source" in opts
+    assert "--memory-budget-mb" in opts
+    assert "--max-rows-in-memory" in opts

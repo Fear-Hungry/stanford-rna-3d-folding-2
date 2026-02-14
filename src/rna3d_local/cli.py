@@ -1629,6 +1629,17 @@ def build_parser() -> argparse.ArgumentParser:
     bcp.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
     bcp.set_defaults(fn=_cmd_build_candidate_pool)
 
+    alc = sp.add_parser("add-labels-candidate-pool", help="Add labels to candidate pool using train labels")
+    alc.add_argument("--candidates", required=True, help="Candidate pool parquet/CSV")
+    alc.add_argument("--solution", required=True, help="Solution file in public format (CSV or parquet)")
+    alc.add_argument("--out", required=True, help="Output labeled candidate pool parquet")
+    alc.add_argument("--label-col", default="label")
+    alc.add_argument("--label-source-col", default="label_source")
+    alc.add_argument("--label-source", default="solution_rmsd_inv1")
+    alc.add_argument("--memory-budget-mb", type=int, default=DEFAULT_MEMORY_BUDGET_MB)
+    alc.add_argument("--max-rows-in-memory", type=int, default=DEFAULT_MAX_ROWS_IN_MEMORY)
+    alc.set_defaults(fn=_cmd_add_labels_candidate_pool)
+
     qrn = sp.add_parser("train-qa-rnrank", help="Train RNArank-style QA reranker (hybrid regression + ranking)")
     qrn.add_argument("--candidates", required=True, help="Candidate pool table (parquet/csv) with labels")
     qrn.add_argument("--out-model", required=True, help="Output qa_rnrank_model.json")

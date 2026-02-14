@@ -5,7 +5,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from rna3d_local.candidate_pool import build_candidate_pool_from_predictions
+from rna3d_local.candidate_pool import add_labels_to_candidate_pool, build_candidate_pool_from_predictions
 from rna3d_local.errors import PipelineError
 
 
@@ -92,4 +92,87 @@ def test_build_candidate_pool_fails_on_duplicate_resid(tmp_path: Path) -> None:
             repo_root=tmp_path,
             prediction_entries=[("tbm", bad)],
             out_path=tmp_path / "out.parquet",
+        )
+
+
+def test_add_labels_to_candidate_pool_success(tmp_path: Path) -> None:
+    pool = tmp_path / "candidate_pool.parquet"
+    pl.DataFrame(
+        [
+            {
+                "target_id": "T1",
+                "model_id": 1,
+                "candidate_id": "tbm:T1:1",
+                "source": "tbm",
+                "resid_count": 2,
+                "coords": [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+                "resids": [1, 2],
+            }
+        ]
+    ).write_parquet(pool)
+
+    solution = tmp_path / "solution.csv"
+    pl.DataFrame(
+        [
+            {"ID": "T1_1", "resid": 1, "x_1": 1.0, "y_1": 0.0, "z_1": 0.0},
+            {"ID": "T1_2", "resid": 2, "x_1": 2.0, "y_1": 0.0, "z_1": 0.0},
+        ]
+    ).write_csv(solution)
+
+    out = tmp_path / "labeled.parquet"
+    existing_manifest = tmp_path / "candidate_pool_labels_manifest.json"
+    if existing_manifest.exists():
+        existing_manifest.unlink()
+
+    out_path, manifest_path = add_labels_to_candidate_pool(
+        candidate_pool_path=pool,
+        solution_path=solution,
+        out_path=out,
+        label_col="label",
+        label_source_col="label_source",
+        label_source_name="solution_rmsd_inv1",
+        memory_budget_mb=8192,
+        max_rows_in_memory=500000,
+    )
+    assert out_path == out
+    assert manifest_path.exists()
+    assert manifest_path.name == "candidate_pool_labels_manifest.json"
+    labeled = pl.read_parquet(out_path)
+    assert labeled.get_column("label").to_list() == [1.0]
+    assert labeled.get_column("label_source").to_list() == ["solution_rmsd_inv1"]
+
+
+def test_add_labels_to_candidate_pool_rejects_missing_solution_target(tmp_path: Path) -> None:
+    pool = tmp_path / "candidate_pool.parquet"
+    pl.DataFrame(
+        [
+            {
+                "target_id": "T1",
+                "model_id": 1,
+                "candidate_id": "tbm:T1:1",
+                "source": "tbm",
+                "resid_count": 1,
+                "coords": [[1.0, 0.0, 0.0]],
+                "resids": [1],
+            }
+        ]
+    ).write_parquet(pool)
+
+    solution = tmp_path / "solution.csv"
+    pl.DataFrame(
+        [
+            {"ID": "OTHER_1", "resid": 1, "x_1": 1.0, "y_1": 0.0, "z_1": 0.0}
+        ]
+    ).write_csv(solution)
+
+    with pytest.raises(PipelineError):
+        add_labels_to_candidate_pool(
+            candidate_pool_path=pool,
+            solution_path=solution,
+            out_path=tmp_path / "labeled.parquet",
+            label_col="label",
+            label_source_col="label_source",
+            label_source_name="solution_rmsd_inv1",
+            memory_budget_mb=8192,
+            max_rows_in_memory=500000,
         )
