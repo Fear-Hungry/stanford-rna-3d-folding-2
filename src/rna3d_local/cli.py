@@ -9,7 +9,11 @@ from pathlib import Path
 import polars as pl
 
 from .bigdata import DEFAULT_MAX_ROWS_IN_MEMORY, DEFAULT_MEMORY_BUDGET_MB, TableReadConfig, collect_streaming, scan_table
-from .candidate_pool import build_candidate_pool_from_predictions, parse_prediction_entries
+from .candidate_pool import (
+    add_labels_to_candidate_pool,
+    build_candidate_pool_from_predictions,
+    parse_prediction_entries,
+)
 from .contracts import validate_submission_against_sample
 from .datasets import (
     build_public_validation_dataset,
@@ -581,6 +585,7 @@ def _cmd_predict_tbm(args: argparse.Namespace) -> int:
         perturbation_scale=float(args.perturbation_scale),
         mapping_mode=str(args.mapping_mode),
         projection_mode=str(args.projection_mode),
+        max_mismatch_ratio=None if args.max_mismatch_ratio is None else float(args.max_mismatch_ratio),
         qa_model_path=None if args.qa_model is None else (repo / args.qa_model).resolve(),
         qa_device=str(args.qa_device),
         qa_top_pool=int(args.qa_top_pool),
@@ -835,6 +840,32 @@ def _cmd_build_candidate_pool(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_add_labels_candidate_pool(args: argparse.Namespace) -> int:
+    location = "src/rna3d_local/cli.py:_cmd_add_labels_candidate_pool"
+    repo = _find_repo_root(Path.cwd())
+    out_path, manifest_path = add_labels_to_candidate_pool(
+        candidate_pool_path=(repo / args.candidates).resolve(),
+        solution_path=(repo / args.solution).resolve(),
+        out_path=(repo / args.out).resolve(),
+        label_col=str(args.label_col),
+        label_source_col=str(args.label_source_col),
+        label_source_name=str(args.label_source),
+        memory_budget_mb=int(args.memory_budget_mb),
+        max_rows_in_memory=int(args.max_rows_in_memory),
+    )
+    print(
+        json.dumps(
+            {
+                "labeled_candidate_pool": _rel_or_abs(out_path, repo),
+                "manifest": _rel_or_abs(manifest_path, repo),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _cmd_train_qa_rnrank(args: argparse.Namespace) -> int:
     location = "src/rna3d_local/cli.py:_cmd_train_qa_rnrank"
     repo = _find_repo_root(Path.cwd())
@@ -987,6 +1018,7 @@ def _cmd_submit_kaggle(args: argparse.Namespace) -> int:
     sample_path = (repo / args.sample).resolve()
     submission_path = (repo / args.submission).resolve()
     score_json_path = None if args.score_json is None else (repo / args.score_json).resolve()
+    calibration_overrides_path = None if args.calibration_overrides is None else (repo / args.calibration_overrides).resolve()
     robust_report = None if args.robust_report is None else (repo / args.robust_report).resolve()
     robust_payload = None if robust_report is None else _read_robust_report(report_path=robust_report, location=location)
     readiness_report = None if args.readiness_report is None else (repo / args.readiness_report).resolve()
@@ -1033,6 +1065,7 @@ def _cmd_submit_kaggle(args: argparse.Namespace) -> int:
         calibration = build_kaggle_local_calibration(
             competition=str(args.competition),
             page_size=int(args.calibration_page_size),
+            local_overrides_path=calibration_overrides_path,
         )
         current_local_score = _read_score_json(score_json_path=score_json_path, location=location)
         alignment_decision = build_alignment_decision(
@@ -1126,9 +1159,11 @@ def _cmd_submit_kaggle(args: argparse.Namespace) -> int:
 def _cmd_calibrate_kaggle_local(args: argparse.Namespace) -> int:
     repo = _find_repo_root(Path.cwd())
     out = (repo / args.out).resolve()
+    calibration_overrides_path = None if args.calibration_overrides is None else (repo / args.calibration_overrides).resolve()
     report = build_kaggle_local_calibration(
         competition=str(args.competition),
         page_size=int(args.page_size),
+        local_overrides_path=calibration_overrides_path,
     )
     estimate = None
     decision = None
@@ -1170,6 +1205,7 @@ def _cmd_evaluate_robust(args: argparse.Namespace) -> int:
         calibration_method=str(args.calibration_method),
         calibration_page_size=int(args.calibration_page_size),
         calibration_min_pairs=int(args.calibration_min_pairs),
+        calibration_overrides_path=None if args.calibration_overrides is None else (repo / args.calibration_overrides).resolve(),
         min_public_improvement=float(args.min_public_improvement),
         min_cv_count=int(args.min_cv_count),
         block_public_validation_without_cv=True,
@@ -1227,6 +1263,7 @@ def _cmd_evaluate_submit_readiness(args: argparse.Namespace) -> int:
         calibration_method=str(args.calibration_method),
         calibration_page_size=int(args.calibration_page_size),
         calibration_min_pairs=int(args.calibration_min_pairs),
+        calibration_overrides_path=None if args.calibration_overrides is None else (repo / args.calibration_overrides).resolve(),
         min_public_improvement=float(args.min_public_improvement),
         allow_calibration_extrapolation=False,
         min_calibration_pearson=float(args.min_calibration_pearson),
@@ -1437,6 +1474,7 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--perturbation-scale", type=float, default=0.0)
     pt.add_argument("--mapping-mode", choices=["strict_match", "hybrid", "chemical_class"], default="hybrid")
     pt.add_argument("--projection-mode", choices=["target_linear", "template_warped"], default="template_warped")
+    pt.add_argument("--max-mismatch-ratio", type=float, default=None, help="Descarta candidatos com mismatch_ratio > limiar")
     pt.add_argument("--qa-model", default=None, help="Optional qa_model.json path")
     pt.add_argument("--qa-device", choices=["auto", "cpu", "cuda"], default="cuda")
     pt.add_argument("--qa-top-pool", type=int, default=40)
@@ -1694,6 +1732,11 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--calibration-method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
     sk.add_argument("--calibration-page-size", type=int, default=100)
     sk.add_argument("--calibration-min-pairs", type=int, default=3)
+    sk.add_argument(
+        "--calibration-overrides",
+        default=None,
+        help="Optional JSON with calibration cleanup rules: {\"by_ref\": {\"<submission_ref>\": <local_score>}, \"exclude_refs\": [\"<submission_ref>\"], \"only_override_refs\": true|false}",
+    )
     sk.add_argument("--require-min-cv-count", type=int, default=2)
     sk.add_argument("--is-smoke", action="store_true")
     sk.add_argument("--is-partial", action="store_true")
@@ -1708,6 +1751,11 @@ def build_parser() -> argparse.ArgumentParser:
     kc.add_argument("--method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
     kc.add_argument("--min-public-improvement", type=float, default=0.0)
     kc.add_argument("--min-pairs", type=int, default=3)
+    kc.add_argument(
+        "--calibration-overrides",
+        default=None,
+        help="Optional JSON with calibration cleanup rules: {\"by_ref\": {\"<submission_ref>\": <local_score>}, \"exclude_refs\": [\"<submission_ref>\"], \"only_override_refs\": true|false}",
+    )
     kc.set_defaults(fn=_cmd_calibrate_kaggle_local)
 
     rb = sp.add_parser("evaluate-robust", help="Aggregate multiple local score.json files and apply robust + calibrated go/no-go gate")
@@ -1726,6 +1774,11 @@ def build_parser() -> argparse.ArgumentParser:
     rb.add_argument("--calibration-method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
     rb.add_argument("--calibration-page-size", type=int, default=100)
     rb.add_argument("--calibration-min-pairs", type=int, default=3)
+    rb.add_argument(
+        "--calibration-overrides",
+        default=None,
+        help="Optional JSON with calibration cleanup rules: {\"by_ref\": {\"<submission_ref>\": <local_score>}, \"exclude_refs\": [\"<submission_ref>\"], \"only_override_refs\": true|false}",
+    )
     rb.add_argument("--min-public-improvement", type=float, default=0.0)
     rb.add_argument("--min-cv-count", type=int, default=2)
     rb.set_defaults(fn=_cmd_evaluate_robust)
@@ -1761,6 +1814,11 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--calibration-method", choices=["median", "p10", "worst_seen", "linear_fit"], default="p10")
     sr.add_argument("--calibration-page-size", type=int, default=100)
     sr.add_argument("--calibration-min-pairs", type=int, default=3)
+    sr.add_argument(
+        "--calibration-overrides",
+        default=None,
+        help="Optional JSON with calibration cleanup rules: {\"by_ref\": {\"<submission_ref>\": <local_score>}, \"exclude_refs\": [\"<submission_ref>\"], \"only_override_refs\": true|false}",
+    )
     sr.add_argument("--min-public-improvement", type=float, default=0.0)
     sr.add_argument("--min-calibration-pearson", type=float, default=0.0)
     sr.add_argument("--min-calibration-spearman", type=float, default=0.0)

@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from rna3d_local.drfold2 import extract_target_coordinates_from_pdb
+import polars as pl
+from rna3d_local.drfold2 import _validate_target_rows, extract_target_coordinates_from_pdb
 from rna3d_local.errors import PipelineError
 
 
@@ -78,3 +79,14 @@ def test_extract_target_coordinates_from_pdb_fails_on_length_mismatch(tmp_path: 
             target_sequence="AC",
             location="tests/test_drfold2_parser.py:test_extract_target_coordinates_from_pdb_fails_on_length_mismatch",
         )
+
+
+def test_validate_target_rows_rejects_null_or_placeholder_target_id() -> None:
+    rows = pl.DataFrame(
+        {
+            "target_id": ["Q1", None, "None", "nan"],
+            "sequence": ["ACGU", "ACGU", "ACGU", "ACGU"],
+        }
+    )
+    with pytest.raises(PipelineError):
+        _validate_target_rows(targets=rows, location="tests/test_drfold2_parser.py:test_validate_target_rows_rejects_null_or_placeholder_target_id")

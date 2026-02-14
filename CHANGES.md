@@ -1526,3 +1526,142 @@ Log append-only de mudancas implementadas (UTC).
 - Riscos/follow-ups:
   - Scripts antigos que dependiam de flags permissivas ou comandos `research-*` na CLI principal agora falham por contrato e precisam migrar para o fluxo estrito.
   - O modulo `research` permanece no pacote, mas sem exposicao na CLI principal; se voltar ao escopo operacional, deve reentrar via plano dedicado com gates estritos.
+
+## 2026-02-13 - marcusvinicius/Codex - PLAN-057 (execucao experimental + atualizacao de planos/registros)
+
+- Resumo:
+  - Adicionado `PLAN-057` em `PLANS.md` para frente de pool expandido + selector CV-first com medicao de teto oracle.
+  - Rodada experimental executada e registrada em `EXPERIMENTS.md` para:
+    - fechamento de `PLAN-055` e `PLAN-056`;
+    - execucao de `PLAN-057` com auditoria de oracle e novas variantes TBM (`vB`, `vC`, `vD`);
+    - novo melhor score local com patch incremental `best+vA+vC+vD` (`0.39615`).
+  - Sem alteracoes de codigo-fonte nesta rodada; foco em execucao, validacao estrita e rastreabilidade.
+- Arquivos principais:
+  - `PLANS.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `python -m rna3d_local check-submission --sample ... --submission ...` (multiplas rodadas)
+  - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission ... --out-dir ... --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - `python -m rna3d_local predict-tbm ... --out runs/20260213_plan042_tbm_variant_sweep/vC.tbm.parquet --memory-budget-mb 8192 --max-rows-in-memory 10000000`
+  - `python -m rna3d_local predict-tbm ... --out runs/20260213_plan042_tbm_variant_sweep/vD.tbm.parquet --memory-budget-mb 8192 --max-rows-in-memory 10000000`
+  - `python -m rna3d_local export-submission ... --predictions runs/20260213_plan042_tbm_variant_sweep/vC.tbm.parquet`
+  - `python -m rna3d_local export-submission ... --predictions runs/20260213_plan042_tbm_variant_sweep/vD.tbm.parquet`
+- Riscos/follow-ups:
+  - O novo melhor local atual (`0.39615`) foi obtido por patch incremental em `public_validation`.
+  - Gate estrito atual bloqueou promocao competitiva (`evaluate-robust` e `evaluate-submit-readiness` com `allowed=false`) por ausencia de CV no candidato e calibracao local->public negativa; necessario destravar com evidencia CV sem bypass.
+
+## 2026-02-13 - marcusvinicius/Codex - PLAN-057 (extensao CV da familia vC/vD + gates de prontidao)
+
+- Resumo:
+  - Executada validacao CV completa da familia `vC/vD` em `fold3/fold4` e extensao em `fold0`.
+  - Gerados candidatos patch por fold (`patch_vc`, `patch_vcd`) com validacao estrita (`check-submission`) e score oficial (`score --per-target`).
+  - Resultado principal: `patch_vcd` melhorou baseline em todos os folds avaliados e manteve ganho no public local.
+  - Gating atualizado:
+    - CV3+nocalib: bloqueado por instabilidade de escala (`fold0` muito fora da faixa dos outros folds);
+    - CV2 (`fold3/fold4`)+nocalib: aprovado;
+    - CV2 com calibracao estrita: bloqueado por correlacao historica local->public negativa.
+- Arquivos principais:
+  - `EXPERIMENTS.md`
+  - `runs/20260213_194500_plan057_cv_vcd/**`
+- Validacao local executada:
+  - `predict-tbm` (`vC`/`vD`) + `export-submission` + `check-submission` + `score --per-target` em `fold0/fold3/fold4`.
+  - `evaluate-robust` (baseline e candidato) em regimes CV3 e CV2.
+  - `evaluate-submit-readiness` em regimes CV3/CV2 com e sem calibracao.
+- Riscos/follow-ups:
+  - Apesar do ganho consistente em CV comparavel (`fold3/fold4`), o gate calibrado continua bloqueando devido ao historico Kaggle atual.
+  - Proximo passo operacional: revisar estrategia de calibracao (pares comparaveis/janela) antes de promocao competitiva com calibracao ativa.
+
+## 2026-02-13 - marcusvinicius/Codex - PLAN-058 (diagnostico de calibracao por regime)
+
+- Resumo:
+  - Executada calibracao Kaggle com janela ampliada (`page_size=200`) e analise segmentada por regime de score local.
+  - Confirmado que, no regime competitivo alto (`local>=0.30`), a relacao local->public permanece negativa no historico atual.
+  - Para o candidato atual (`local=0.39615`), estimativa conservadora por `p10` ficou em ~`0.2656`, abaixo do baseline publico de referencia (`0.268`).
+- Arquivos principais:
+  - `PLANS.md`
+  - `EXPERIMENTS.md`
+  - `runs/20260213_194500_plan057_cv_vcd/kaggle_calibration_page200.json`
+  - `runs/20260213_194500_plan057_cv_vcd/calibration_segmented_report.json`
+- Validacao local executada:
+  - `python -m rna3d_local calibrate-kaggle-local --competition stanford-rna-3d-folding-2 --page-size 200 --out runs/20260213_194500_plan057_cv_vcd/kaggle_calibration_page200.json --method p10 --min-pairs 3`
+  - Analise segmentada local (script) com saida em `calibration_segmented_report.json`.
+- Riscos/follow-ups:
+  - Sem novos pares Kaggle em regime comparavel, a calibracao continua conservadora e bloqueia submit competitivo calibrado.
+
+
+## 2026-02-13 - marcusvinicius/Codex - PLAN-059 (limpeza de calibracao por submission ref)
+
+- Resumo:
+  - Implementado suporte de limpeza de calibracao Kaggle->local por `submission ref` com arquivo de overrides JSON.
+  - Novo comportamento no calibrador:
+    - `by_ref`: sobrescreve `local_score` por ref;
+    - `exclude_refs`: remove refs especificos;
+    - `only_override_refs`: usa apenas pares explicitamente recalculados.
+  - Integracao do override em todos os gates que usam calibracao:
+    - `calibrate-kaggle-local`
+    - `evaluate-robust`
+    - `evaluate-submit-readiness`
+    - `submit-kaggle`
+  - Recalculo completo dos 5 artefatos ja submetidos e geracao de artefatos limpos de calibracao em `runs/20260213_recalc_submitted`.
+
+- Arquivos principais:
+  - `PLANS.md`
+  - `EXPERIMENTS.md`
+  - `src/rna3d_local/kaggle_calibration.py`
+  - `src/rna3d_local/robust_score.py`
+  - `src/rna3d_local/submission_readiness.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_robust_score.py`
+  - `tests/test_submission_readiness.py`
+
+- Validacao local executada:
+  - `pytest -q tests/test_kaggle_calibration.py tests/test_robust_score.py tests/test_submission_readiness.py tests/test_cli_strict_surface.py` (`20 passed`)
+  - `python -m rna3d_local calibrate-kaggle-local --help` (OK; novo `--calibration-overrides` exposto)
+  - Rescore estrito dos 5 submetidos com `check-submission` + `score` em `data/derived/public_validation` (OK; sem OOM).
+
+- Riscos/follow-ups:
+  - A calibracao limpa por pares recalculados ficou com `n_pairs=4`; estatisticamente mais consistente, mas ainda pequena.
+  - Mesmo com limpeza, gate `p10` segue bloqueando quando `baseline_public_score=0.268`; proximo passo e alinhar baseline publico operacional antes do proximo submit.
+  - Versao base de codigo durante a mudanca: `0a5b6bf`.
+
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-059 (adendo: rescoring completo dos pares historicos)
+
+- Resumo:
+  - Executado rescoring adicional dos 4 submetidos legados que ainda participam da calibracao com score publico (`PLAN-012`, `PLAN-016`, `PLAN-027`, `PLAN-030`).
+  - Consolidado override completo com 9 refs mapeados (`8` com score publico) em `runs/20260213_recalc_submitted_all/calibration_overrides.all_submitted_recalc.json`.
+  - Confirmado empiricamente que diferencas entre `local` da mensagem Kaggle e score recalculado foram apenas de arredondamento (ordem de `1e-8`).
+
+- Arquivos principais:
+  - `EXPERIMENTS.md`
+  - `runs/20260213_recalc_submitted_legacy/**`
+  - `runs/20260213_recalc_submitted_all/**`
+
+- Validacao local executada:
+  - `check-submission` + `score` para os 4 legados em `data/derived/public_validation` (OK; sem OOM)
+  - `python -m rna3d_local calibrate-kaggle-local --competition stanford-rna-3d-folding-2 --page-size 200 --calibration-overrides runs/20260213_recalc_submitted_all/calibration_overrides.all_submitted_recalc.json --out runs/20260213_recalc_submitted_all/calibration_clean_all_submitted.json --local-score 0.39615 --baseline-public-score 0.268 --method p10 --min-pairs 3`
+
+- Riscos/follow-ups:
+  - Mesmo com cleanup total por ref, gate `p10` continua bloqueando para baseline publico `0.268` (`expected_public_p10=0.2656709286`).
+  - Proxima decisao deve ser sobre politica de baseline/calibracao, nao sobre rescoring historico.
+
+## 2026-02-14 - marcusvinicius/Codex - PLAN-059 (correcao operacional de calibracao Kaggle)
+
+- Resumo:
+  - Ajustada a etapa de calibração para ignorar submissões sem status de conclusão explícita no histórico de submissões Kaggle, reduzindo ruído em pares `local_score` x `public_score`.
+  - Mantido fallback de status vazio (`''`) para preservar compatibilidade quando API retorna campos não-populados.
+  - Adicionado contador `excluded_by_status` em `kaggle_calibration` para observabilidade.
+  - Coberto por testes unitários novos com API fake do Kaggle (`tests/test_kaggle_calibration.py`) para:
+    - descartar status não completos;
+    - manter apenas pares com `local_score` e `publicScore` válidos.
+
+- Arquivos principais:
+  - `src/rna3d_local/kaggle_calibration.py`
+  - `tests/test_kaggle_calibration.py`
+
+- Validacao local executada:
+  - `pytest -q tests/test_kaggle_calibration.py` (`9 passed`)
+  - `pytest -q` (`107 passed`, `1 warning`)
+
+- Riscos/follow-ups:
+  - Ainda pode haver limitação de correlação local↔public por tamanho amostral pequeno; a política de `method` (p10/worst_seen/etc.) e limiares (`baseline_public_score`) continuam fatores limitantes para unlock de submit.

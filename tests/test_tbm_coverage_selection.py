@@ -207,3 +207,50 @@ def test_predict_tbm_perturbation_is_deterministic(tmp_path: Path) -> None:
     a = pl.read_parquet(out_a).sort(["model_id", "resid"])
     b = pl.read_parquet(out_b).sort(["model_id", "resid"])
     assert a.equals(b)
+
+
+def test_predict_tbm_filters_high_mismatch_ratio(tmp_path: Path) -> None:
+    retrieval = tmp_path / "retrieval.parquet"
+    templates = tmp_path / "templates.parquet"
+    template_index = tmp_path / "template_index.parquet"
+    targets = tmp_path / "targets.csv"
+    out = tmp_path / "tbm.parquet"
+
+    pl.DataFrame(
+        [
+            {"target_id": "Q1", "template_uid": "ext:BAD", "rank": 1, "similarity": 0.99},
+            {"target_id": "Q1", "template_uid": "ext:GOOD", "rank": 2, "similarity": 0.98},
+        ]
+    ).write_parquet(retrieval)
+
+    template_rows: list[dict] = []
+    for resid in range(1, 5):
+        template_rows.append({"template_uid": "ext:BAD", "resid": resid, "x": float(resid), "y": 0.0, "z": 0.0})
+        template_rows.append({"template_uid": "ext:GOOD", "resid": resid, "x": float(resid), "y": 1.0, "z": 0.0})
+    pl.DataFrame(template_rows).write_parquet(templates)
+
+    pl.DataFrame(
+        [
+            {"template_uid": "ext:BAD", "sequence": "UUUU"},
+            {"template_uid": "ext:GOOD", "sequence": "AAAA"},
+        ]
+    ).write_parquet(template_index)
+
+    _write_csv(targets, [{"target_id": "Q1", "sequence": "AAAA"}])
+
+    predict_tbm(
+        repo_root=tmp_path,
+        retrieval_candidates_path=retrieval,
+        templates_path=templates,
+        target_sequences_path=targets,
+        out_path=out,
+        n_models=1,
+        min_coverage=0.50,
+        max_mismatch_ratio=0.0,
+        chunk_size=100,
+    )
+
+    pred = pl.read_parquet(out).sort("resid")
+    assert pred.height == 4
+    assert pred.get_column("template_uid").unique().to_list() == ["ext:GOOD"]
+    assert pred.get_column("coverage").min() > 0.99

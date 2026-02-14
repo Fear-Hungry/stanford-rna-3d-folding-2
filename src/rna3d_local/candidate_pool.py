@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -100,6 +102,287 @@ def _mean_distance_for_offset(*, coords: list[tuple[float, float, float]], offse
     if count <= 0:
         return 0.0
     return float(total / float(count))
+
+
+def _extract_target_id_from_row_id(*, row_id: object, location: str) -> str:
+    text = str(row_id).strip()
+    if not text:
+        raise_error("POOL", location, "ID vazio no arquivo de solucoes", impact="1", examples=[str(row_id)])
+    if "_" not in text:
+        raise_error("POOL", location, "ID com formato inesperado (esperado <target_id>_<resid>)", impact="1", examples=[text])
+    target_id = text.rsplit("_", maxsplit=1)[0].strip()
+    if not target_id:
+        raise_error("POOL", location, "target_id extraido vazio do ID", impact="1", examples=[text])
+    return target_id
+
+
+def _extract_solution_coords(*, solution_path: Path, location: str) -> dict[str, list[tuple[float, float, float]]]:
+    if not solution_path.exists():
+        raise_error("POOL", location, "arquivo de solucao inexistente para labels", impact="1", examples=[str(solution_path)])
+
+    suffix = solution_path.suffix.lower()
+    if suffix == ".parquet":
+        lf = pl.scan_parquet(solution_path)
+    elif suffix == ".csv":
+        lf = pl.scan_csv(solution_path)
+    else:
+        raise_error(
+            "POOL",
+            location,
+            "formato de solucao invalido para labels (suportado: parquet/csv)",
+            impact="1",
+            examples=[str(solution_path)],
+        )
+
+    cols = set(lf.collect_schema().names())
+    required = {"ID", "resid", "x_1", "y_1", "z_1"}
+    missing = [c for c in required if c not in cols]
+    if missing:
+        raise_error(
+            "POOL",
+            location,
+            "solucao sem coluna obrigatoria para label",
+            impact=str(len(missing)),
+            examples=missing[:8],
+        )
+
+    rows = collect_streaming(
+        lf=lf.select(
+            pl.col("ID").cast(pl.Utf8),
+            pl.col("resid").cast(pl.Int32),
+            pl.col("x_1").cast(pl.Float64),
+            pl.col("y_1").cast(pl.Float64),
+            pl.col("z_1").cast(pl.Float64),
+        ),
+        stage="POOL",
+        location=location,
+    )
+    if rows.height == 0:
+        raise_error("POOL", location, "solucao vazia para label", impact="0", examples=[str(solution_path)])
+
+        rows = rows.with_columns(
+            pl.col("ID").map_elements(
+                lambda v: _extract_target_id_from_row_id(row_id=v, location=location),
+                return_dtype=pl.Utf8,
+            ).alias("target_id")
+        )
+    rows = rows.with_columns(pl.col("resid").alias("resid_idx"))
+    grouped = rows.group_by("target_id").agg(
+        pl.col("resid_idx").sort().alias("resids"),
+        pl.col("x_1").sort_by("resid_idx").alias("x_values"),
+        pl.col("y_1").sort_by("resid_idx").alias("y_values"),
+        pl.col("z_1").sort_by("resid_idx").alias("z_values"),
+    )
+
+    solution_map: dict[str, list[tuple[float, float, float]]] = {}
+    invalid_examples: list[str] = []
+    invalid_count = 0
+
+    for row in grouped.iter_rows(named=True):
+        tid = str(row["target_id"])
+        resids_raw = row["resids"]
+        xv = row["x_values"]
+        yv = row["y_values"]
+        zv = row["z_values"]
+        if not (len(xv) == len(yv) == len(zv)):
+            invalid_count += 1
+            if len(invalid_examples) < 8:
+                invalid_examples.append(f"{tid}:shape_mismatch")
+            continue
+        if len(resids_raw) == 0 or len(xv) == 0 or len(yv) == 0 or len(zv) == 0:
+            invalid_count += 1
+            if len(invalid_examples) < 8:
+                invalid_examples.append(f"{tid}:empty_target")
+            continue
+        resids = [int(v) for v in resids_raw]
+        expected = list(range(1, len(resids) + 1))
+        if resids != expected:
+            invalid_count += 1
+            if len(invalid_examples) < 8:
+                invalid_examples.append(f"{tid}:non_contiguous_resid")
+            continue
+        coords: list[tuple[float, float, float]] = []
+        for idx, values in enumerate(zip(xv, yv, zv, strict=True), start=1):
+            try:
+                x = float(values[0])
+                y = float(values[1])
+                z = float(values[2])
+            except (TypeError, ValueError):
+                if len(invalid_examples) < 8:
+                    invalid_examples.append(f"{tid}:{idx}:invalid_coord")
+                continue
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                if len(invalid_examples) < 8:
+                    invalid_examples.append(f"{tid}:{idx}:non_finite_coord")
+                continue
+            coords.append((x, y, z))
+        if len(coords) != len(resids):
+            invalid_count += 1
+            if len(invalid_examples) < 8:
+                invalid_examples.append(f"{tid}:coord_count_mismatch")
+            continue
+        solution_map[str(tid)] = coords
+
+    if invalid_count > 0:
+        raise_error(
+            "POOL",
+            location,
+            "solucao invalida para label",
+            impact=str(invalid_count),
+            examples=invalid_examples,
+        )
+    return solution_map
+
+
+def _solve_candidate_pool_label(*, candidate: dict[str, Any], reference: dict[str, list[tuple[float, float, float]]], location: str) -> tuple[float, float]:
+    tid = str(candidate["target_id"])
+    if tid not in reference:
+        raise_error("POOL", location, "target ausente na solucao de treino", impact="1", examples=[tid])
+
+    coords = candidate["coords"]
+    refs = reference[tid]
+    if coords is None:
+        raise_error("POOL", location, "coords ausentes no candidato", impact="1", examples=[f"{tid}:{int(candidate['model_id'])}"])
+    if len(coords) != len(refs):
+        raise_error(
+            "POOL",
+            location,
+            "comprimento de residuos do candidato divergente da solucao",
+            impact=f"target={tid} candidate={int(candidate['model_id'])} cand={len(coords)} sol={len(refs)}",
+            examples=[f"{tid}:{int(candidate['model_id'])}"],
+        )
+
+    acc = 0.0
+    for i, c in enumerate(coords):
+        px = float(c[0])
+        py = float(c[1])
+        pz = float(c[2])
+        rx, ry, rz = refs[i]
+        dx = px - rx
+        dy = py - ry
+        dz = pz - rz
+        acc += float(dx * dx + dy * dy + dz * dz)
+    rmsd = math.sqrt(acc / max(1, len(coords)))
+    if not math.isfinite(rmsd):
+        raise_error(
+            "POOL",
+            location,
+            "label nao finito para candidato",
+            impact=f"{tid}:{int(candidate['model_id'])}",
+            examples=[f"rmsd={rmsd}"],
+        )
+    label = 1.0 / (1.0 + float(rmsd))
+    return float(label), float(rmsd)
+
+
+def add_labels_to_candidate_pool(
+    *,
+    candidate_pool_path: Path,
+    solution_path: Path,
+    out_path: Path,
+    label_col: str = "label",
+    label_source_col: str = "label_source",
+    label_source_name: str = "solution_rmsd_inv1",
+    memory_budget_mb: int = DEFAULT_MEMORY_BUDGET_MB,
+    max_rows_in_memory: int = DEFAULT_MAX_ROWS_IN_MEMORY,
+) -> tuple[Path, Path]:
+    location = "src/rna3d_local/candidate_pool.py:add_labels_to_candidate_pool"
+    assert_memory_budget(stage="POOL", location=location, budget_mb=memory_budget_mb)
+
+    if label_col == label_source_col:
+        raise_error("POOL", location, "label_col e label_source_col devem ser diferentes", impact="1", examples=[label_col])
+    if not str(label_source_name).strip():
+        raise_error("POOL", location, "label_source_name vazio", impact="1", examples=[str(label_source_name)])
+
+    if not candidate_pool_path.exists():
+        raise_error("POOL", location, "candidate_pool ausente", impact="1", examples=[str(candidate_pool_path)])
+    if label_source_col == "label":
+        raise_error("POOL", location, "label_source_col reservado para metadado de label", impact="1", examples=[label_source_col])
+
+    pool = collect_streaming(
+        lf=pl.scan_parquet(candidate_pool_path),
+        stage="POOL",
+        location=location,
+    )
+    required_pool = {"target_id", "model_id", "resid_count", "coords", "resids"}
+    missing_pool = [c for c in required_pool if c not in set(pool.columns)]
+    if missing_pool:
+        raise_error("POOL", location, "candidate_pool sem coluna obrigatoria", impact=str(len(missing_pool)), examples=missing_pool[:8])
+    if label_col in pool.columns:
+        raise_error(
+            "POOL",
+            location,
+            "candidate_pool ja possui coluna de label",
+            impact="1",
+            examples=[str(candidate_pool_path)],
+        )
+    if label_source_col in pool.columns:
+        raise_error(
+            "POOL",
+            location,
+            "candidate_pool ja possui coluna de label_source",
+            impact="1",
+            examples=[str(candidate_pool_path)],
+        )
+    assert_row_budget(stage="POOL", location=location, rows=int(pool.height), max_rows_in_memory=max_rows_in_memory, label="candidate_pool")
+    if pool.height == 0:
+        raise_error("POOL", location, "candidate_pool vazio", impact="0", examples=[str(candidate_pool_path)])
+
+    solution_map = _extract_solution_coords(solution_path=solution_path, location=location)
+    pool_targets = set(pool.get_column("target_id").to_list())
+    missing_targets = sorted([t for t in pool_targets if str(t) not in solution_map])
+    if missing_targets:
+        raise_error(
+            "POOL",
+            location,
+            "targets do candidate_pool ausentes na solucao para rotulagem",
+            impact=str(len(missing_targets)),
+            examples=missing_targets[:8],
+        )
+
+    labels: list[float] = []
+    sources: list[str] = []
+    for row in pool.iter_rows(named=True):
+        label, _ = _solve_candidate_pool_label(candidate=row, reference=solution_map, location=location)
+        labels.append(label)
+        sources.append(str(label_source_name))
+
+    out_df = pool.with_columns(
+        pl.Series(name=label_col, values=labels, dtype=pl.Float64),
+        pl.Series(name=label_source_col, values=sources, dtype=pl.Utf8),
+    )
+    out_df = out_df.sort(["target_id", "source", "model_id"])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path.unlink()
+    out_df.write_parquet(out_path)
+    assert_memory_budget(stage="POOL", location=location, budget_mb=memory_budget_mb)
+
+    manifest = {
+        "created_utc": _utc_now(),
+        "paths": {
+            "candidate_pool": str(candidate_pool_path),
+            "solution": str(solution_path),
+            "labeled_candidate_pool": str(out_path),
+        },
+        "label": {
+            "label_col": str(label_col),
+            "label_source_col": str(label_source_col),
+            "label_source": str(label_source_name),
+            "labeled_targets": int(len(solution_map)),
+        },
+        "stats": {
+            "rows": int(out_df.height),
+            "targets": int(out_df.select("target_id").n_unique()),
+            "features_with_label": int(len(out_df.columns)),
+        },
+        "sha256": {
+            "labeled_candidate_pool.parquet": sha256_file(out_path),
+        },
+    }
+    manifest_path = out_path.parent / "candidate_pool_labels_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out_path, manifest_path
 
 
 def _parse_prediction_entry(*, raw: str, location: str) -> tuple[str | None, Path]:
@@ -428,5 +711,6 @@ __all__ = [
     "CANDIDATE_POOL_DEFAULT_FEATURE_NAMES",
     "CANDIDATE_POOL_REQUIRED_COLUMNS",
     "build_candidate_pool_from_predictions",
+    "add_labels_to_candidate_pool",
     "parse_prediction_entries",
 ]

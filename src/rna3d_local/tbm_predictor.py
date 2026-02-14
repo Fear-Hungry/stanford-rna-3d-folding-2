@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,54 @@ def _rel(path: Path, root: Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
+
+
+def _validate_targets_df(*, targets: pl.DataFrame, location: str) -> list[tuple[str, str]]:
+    if targets.height == 0:
+        raise_error("TBM", location, "targets vazio", impact="0", examples=[])
+    dup = (
+        targets.group_by("target_id")
+        .agg(pl.len().alias("n"))
+        .filter(pl.col("n") > 1)
+        .select("target_id")
+        .head(8)
+    )
+    if dup.height > 0:
+        raise_error(
+            "TBM",
+            location,
+            "targets com target_id duplicado",
+            impact=str(int(dup.height)),
+            examples=[str(v) for v in dup.get_column("target_id").to_list()],
+        )
+
+    rows: list[tuple[str, str]] = []
+    bad_examples: list[str] = []
+    for tid, seq in targets.iter_rows():
+        if tid is None:
+            bad_examples.append("None:")
+            continue
+        t = str(tid).strip()
+        if not t or t.upper() in {"NONE", "NAN", "NULL"}:
+            bad_examples.append(f"{t}:")
+            continue
+        if seq is None or (isinstance(seq, float) and math.isnan(float(seq))):
+            bad_examples.append(f"{t}:")
+            continue
+        s = str(seq).strip().upper()
+        if not s or s.upper() in {"NONE", "NAN", "NULL"}:
+            bad_examples.append(f"{t}:")
+            continue
+        rows.append((t, s))
+    if bad_examples:
+        raise_error(
+            "TBM",
+            location,
+            "targets com campos ausentes/invalidos",
+            impact=str(len(bad_examples)),
+            examples=bad_examples[:8],
+        )
+    return rows
 
 
 @dataclass(frozen=True)
@@ -176,6 +225,7 @@ def predict_tbm(
     perturbation_scale: float = 0.0,
     mapping_mode: str = "hybrid",
     projection_mode: str = "template_warped",
+    max_mismatch_ratio: float | None = None,
     qa_model_path: Path | None = None,
     qa_device: str = "cuda",
     qa_top_pool: int = 40,
@@ -208,6 +258,8 @@ def predict_tbm(
         raise_error("TBM", location, "qa_top_pool deve ser > 0", impact="1", examples=[str(qa_top_pool)])
     if diversity_lambda < 0.0:
         raise_error("TBM", location, "diversity_lambda invalido (>=0)", impact="1", examples=[str(diversity_lambda)])
+    if max_mismatch_ratio is not None and (float(max_mismatch_ratio) < 0.0 or float(max_mismatch_ratio) > 1.0):
+        raise_error("TBM", location, "max_mismatch_ratio invalido (deve estar em [0,1])", impact="1", examples=[str(max_mismatch_ratio)])
     if chunk_size <= 0:
         raise_error("TBM", location, "chunk_size deve ser > 0", impact="1", examples=[str(chunk_size)])
     backend = resolve_compute_backend(
@@ -295,6 +347,7 @@ def predict_tbm(
         location=location,
     )
     targets = targets.select(pl.col("target_id").cast(pl.Utf8), pl.col("sequence").cast(pl.Utf8)).sort("target_id")
+    target_rows = _validate_targets_df(targets=targets, location=location)
     assert_row_budget(
         stage="TBM",
         location=location,
@@ -357,10 +410,9 @@ def predict_tbm(
             qa_model_type = "linear"
         qa_model_sha256 = sha256_file(qa_model_path)
 
+    mismatch_filter_targets: list[str] = []
     try:
-        for tid, seq in targets.select("target_id", "sequence").iter_rows():
-            tid = str(tid)
-            seq = str(seq)
+        for tid, seq in target_rows:
             candidates_all = sorted(candidates_by_target.get(tid, []), key=lambda x: x[1])
             if len(candidates_all) == 0:
                 missing_candidates_count += 1
@@ -369,6 +421,8 @@ def predict_tbm(
                 continue
             use_pool = max(int(rerank_pool_size), int(n_models))
             candidates = candidates_all[:use_pool]
+            target_mismatch_filter_count = 0
+            target_mismatch_filter_examples: list[str] = []
             target_length = len(seq)
             valid_candidates: list[dict] = []
             for uid, rank, similarity in candidates:
@@ -404,6 +458,12 @@ def predict_tbm(
                         else:
                             mismatch_count += 1
                     cov = compute_coverage(mapped_positions=len(valid_mapped), target_length=target_length, location=location)
+                    mismatch_ratio = float(mismatch_count) / float(target_length)
+                    if max_mismatch_ratio is not None and mismatch_ratio > float(max_mismatch_ratio):
+                        target_mismatch_filter_count += 1
+                        if len(target_mismatch_filter_examples) < 8:
+                            target_mismatch_filter_examples.append(f"{uid}:mismatch_ratio={mismatch_ratio:.4f}")
+                        continue
                     if cov < min_coverage:
                         continue
                     coords = project_target_coordinates(
@@ -441,9 +501,19 @@ def predict_tbm(
                     )
 
             if len(valid_candidates) < n_models:
-                insufficient_coverage_count += 1
-                if len(insufficient_coverage_examples) < 8:
-                    insufficient_coverage_examples.append(f"{tid}:{len(valid_candidates)}/{n_models}")
+                if (
+                    max_mismatch_ratio is not None
+                    and target_mismatch_filter_count == len(candidates)
+                    and len(valid_candidates) == 0
+                ):
+                    if len(mismatch_filter_targets) < 8:
+                        mismatch_filter_targets.append(f"{tid}:{' ; '.join(target_mismatch_filter_examples)}")
+                    else:
+                        mismatch_filter_targets.append(f"{tid}:many")
+                else:
+                    insufficient_coverage_count += 1
+                    if len(insufficient_coverage_examples) < 8:
+                        insufficient_coverage_examples.append(f"{tid}:{len(valid_candidates)}/{n_models}")
                 continue
 
             features_batch: list[dict[str, float]] = []
@@ -557,6 +627,14 @@ def predict_tbm(
                 impact=str(insufficient_coverage_count),
                 examples=insufficient_coverage_examples,
             )
+        if len(mismatch_filter_targets) > 0 and max_mismatch_ratio is not None:
+            raise_error(
+                "TBM",
+                location,
+                "alvos sem modelos suficientes apos filtro de mismatch",
+                impact=str(len(mismatch_filter_targets)),
+                examples=mismatch_filter_targets[:8],
+            )
         if rows_written == 0:
             raise_error("TBM", location, "nenhuma predicao gerada", impact="0", examples=[])
 
@@ -588,6 +666,7 @@ def predict_tbm(
             "perturbation_scale": float(perturbation_scale),
             "mapping_mode": str(mapping_mode),
             "projection_mode": str(projection_mode),
+            "max_mismatch_ratio": None if max_mismatch_ratio is None else float(max_mismatch_ratio),
             "qa_model_path": None if qa_model_path is None else _rel(qa_model_path, repo_root),
             "qa_model_type": str(qa_model_type),
             "qa_device": str(qa_device),

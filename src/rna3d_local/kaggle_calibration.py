@@ -16,6 +16,13 @@ _LOCAL_PATTERNS: tuple[re.Pattern[str], ...] = (
 _ALLOWED_CALIBRATION_METHODS = ("median", "p10", "worst_seen", "linear_fit")
 
 
+def _is_complete_status(*, status: str) -> bool:
+    text = str(status or "").strip().lower()
+    if not text:
+        return True
+    return "complete" in text
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -30,6 +37,46 @@ def _parse_local_score(description: str) -> float | None:
             except ValueError:
                 return None
     return None
+
+
+def _load_local_score_overrides(*, path: Path | None, location: str) -> tuple[dict[str, float], set[str], bool]:
+    if path is None:
+        return {}, set(), False
+    if not path.exists():
+        raise_error("CALIBRATION", location, "arquivo de overrides nao encontrado", impact="1", examples=[str(path)])
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise_error("CALIBRATION", location, "falha ao ler overrides", impact="1", examples=[f"{type(e).__name__}:{e}"])
+    if not isinstance(payload, dict):
+        raise_error("CALIBRATION", location, "overrides deve ser objeto JSON", impact="1", examples=[str(path)])
+    by_ref_raw = payload.get("by_ref", {})
+    if by_ref_raw is None:
+        by_ref_raw = {}
+    if not isinstance(by_ref_raw, dict):
+        raise_error("CALIBRATION", location, "campo by_ref invalido em overrides", impact="1", examples=[str(type(by_ref_raw))])
+    by_ref: dict[str, float] = {}
+    bad_refs: list[str] = []
+    for raw_ref, raw_score in by_ref_raw.items():
+        ref = str(raw_ref).strip()
+        if not ref:
+            bad_refs.append("<empty_ref>")
+            continue
+        try:
+            by_ref[ref] = float(raw_score)
+        except (TypeError, ValueError):
+            bad_refs.append(ref)
+    if bad_refs:
+        examples = bad_refs[:8]
+        raise_error("CALIBRATION", location, "valores invalidos em overrides.by_ref", impact=str(len(bad_refs)), examples=examples)
+    exclude_refs_raw = payload.get("exclude_refs", [])
+    if exclude_refs_raw is None:
+        exclude_refs_raw = []
+    if not isinstance(exclude_refs_raw, list):
+        raise_error("CALIBRATION", location, "campo exclude_refs invalido em overrides", impact="1", examples=[str(type(exclude_refs_raw))])
+    exclude_refs = {str(x).strip() for x in exclude_refs_raw if str(x).strip()}
+    only_override_refs = bool(payload.get("only_override_refs", False))
+    return by_ref, exclude_refs, only_override_refs
 
 
 def _pearson_corr(x: np.ndarray, y: np.ndarray) -> float | None:
@@ -89,6 +136,7 @@ def build_kaggle_local_calibration(
     *,
     competition: str,
     page_size: int = 100,
+    local_overrides_path: Path | None = None,
 ) -> dict:
     location = "src/rna3d_local/kaggle_calibration.py:build_kaggle_local_calibration"
     if int(page_size) <= 0:
@@ -120,14 +168,34 @@ def build_kaggle_local_calibration(
         )
     if subs is None:
         subs = []
+    local_overrides_by_ref, exclude_refs, only_override_refs = _load_local_score_overrides(path=local_overrides_path, location=location)
     pairs: list[dict] = []
     total = 0
+    excluded_by_ref = 0
+    overridden_by_ref = 0
+    excluded_by_scope = 0
+    excluded_by_status = 0
     for sub in subs:
         d = sub.to_dict()
         total += 1
         status = str(d.get("status") or "")
+        if not _is_complete_status(status=status):
+            excluded_by_status += 1
+            continue
         desc = str(d.get("description") or "")
+        ref_str = str(d.get("ref") or "").strip()
+        if only_override_refs and (not ref_str or ref_str not in local_overrides_by_ref):
+            excluded_by_scope += 1
+            continue
+        if ref_str and ref_str in exclude_refs:
+            excluded_by_ref += 1
+            continue
+        local_source = "description"
         local_score = _parse_local_score(desc)
+        if ref_str and ref_str in local_overrides_by_ref:
+            local_score = float(local_overrides_by_ref[ref_str])
+            local_source = "override_ref"
+            overridden_by_ref += 1
         pub_raw = d.get("publicScore")
         if local_score is None or pub_raw is None:
             continue
@@ -141,6 +209,7 @@ def build_kaggle_local_calibration(
                 "date": d.get("date"),
                 "status": status,
                 "description": desc,
+                "local_source": local_source,
                 "local_score": float(local_score),
                 "public_score": float(public_score),
                 "delta_public_minus_local": float(public_score - local_score),
@@ -188,6 +257,14 @@ def build_kaggle_local_calibration(
         "created_utc": _utc_now(),
         "competition": str(competition),
         "page_size": int(page_size),
+        "local_overrides_path": None if local_overrides_path is None else str(local_overrides_path),
+        "local_overrides_count": int(len(local_overrides_by_ref)),
+        "exclude_refs_count": int(len(exclude_refs)),
+        "only_override_refs": bool(only_override_refs),
+        "excluded_by_ref": int(excluded_by_ref),
+        "excluded_by_scope": int(excluded_by_scope),
+        "excluded_by_status": int(excluded_by_status),
+        "overridden_by_ref": int(overridden_by_ref),
         "submissions_scanned": int(total),
         "pairs": pairs,
         "stats": stats,

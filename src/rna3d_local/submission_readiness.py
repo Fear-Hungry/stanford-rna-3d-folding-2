@@ -55,6 +55,7 @@ def evaluate_submit_readiness(
     calibration_method: str = "p10",
     calibration_page_size: int = 100,
     calibration_min_pairs: int = 3,
+    calibration_overrides_path: Path | None = None,
     min_public_improvement: float = 0.0,
     allow_calibration_extrapolation: bool = False,
     min_calibration_pearson: float = 0.0,
@@ -215,6 +216,7 @@ def evaluate_submit_readiness(
         calibration = build_kaggle_local_calibration(
             competition=str(competition),
             page_size=int(calibration_page_size),
+            local_overrides_path=calibration_overrides_path,
         )
         stats = calibration.get("stats")
         if not isinstance(stats, dict):

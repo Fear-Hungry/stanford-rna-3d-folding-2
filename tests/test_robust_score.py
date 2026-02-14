@@ -37,9 +37,10 @@ def test_evaluate_robust_gate_blocks_without_strict_improvement() -> None:
 
 
 def test_evaluate_robust_gate_applies_calibration(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_build_calibration(*, competition: str, page_size: int) -> dict:
+    def _fake_build_calibration(*, competition: str, page_size: int, local_overrides_path: Path | None = None) -> dict:
         assert competition == "stanford-rna-3d-folding-2"
         assert page_size == 10
+        assert local_overrides_path is None
         return {"stats": {"n_pairs": 5}}
 
     def _fake_alignment(**kwargs) -> dict:

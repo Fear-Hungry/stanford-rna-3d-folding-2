@@ -57,9 +57,24 @@ def _validate_target_rows(*, targets: pl.DataFrame, location: str) -> list[tuple
     bad_count = 0
     bad_examples: list[str] = []
     for tid, seq in targets.iter_rows():
-        t = str(tid)
-        s = str(seq or "").strip().upper()
-        if not t or not s:
+        if tid is None:
+            bad_count += 1
+            bad_examples.append("None")
+            continue
+        t = str(tid).strip()
+        if not t or t.upper() in {"NONE", "NAN", "NULL"}:
+            raise_error(
+                "DRFOLD2",
+                location,
+                "target_id invalido em arquivo de targets",
+                impact="1",
+                examples=[str(tid)],
+            )
+        if seq is None or (isinstance(seq, float) and seq != seq):
+            s = ""
+        else:
+            s = str(seq).strip().upper()
+        if not s or s.upper() in {"NONE", "NAN", "NULL"}:
             bad_count += 1
             if len(bad_examples) < 8:
                 bad_examples.append(f"{t}:{s}")

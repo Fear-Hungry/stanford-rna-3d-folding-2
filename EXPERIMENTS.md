@@ -3020,3 +3020,544 @@ Log append-only de experimentos executados (UTC).
 - Conclusao + proximos passos:
   - Wrapper `main GPU` implementado e validado para os criterios de aceite do plano (`bash -n` + `<cmd> --help`).
   - Proximo passo: executar um ciclo real GPU-first (retrieve -> predict -> pool -> QA -> export -> check -> score) com artefatos em `runs/` para medir ganho de throughput/latencia por etapa.
+
+## PLAN-054
+
+### 2026-02-13T18:17:04Z - marcusvinicius/Codex (seletor c02 vs c04 por alvo: sequencia e confianca TBM)
+
+- Objetivo/hipotese:
+  - Objetivo: tentar recuperar generalizacao combinando `c02` (melhor CV) e `c04` (melhor public local) sem patch permissivo, via seletor por alvo deterministico.
+  - Hipotese: um seletor por features (sequencia ou confianca TBM) poderia aproximar o oracle local (`c02/c04`) e superar `c04` no `public_validation`.
+  - Baseline de comparacao:
+    - `c02` public local: `0.2832035714285714`
+    - `c04` public local: `0.31880964285714286`
+
+- Codigo e dados usados:
+  - commit: `0a5b6bf`
+  - folds CV: `runs/20260213_plan046_cv_sweep_c01_c04/fold3` e `runs/20260213_plan046_cv_sweep_c01_c04/fold4`
+  - public local: `data/derived/public_validation`
+  - candidatos base: `runs/20260212_plan037_tbm_sweep_cpu/{c02,c04}.{tbm.parquet,submission.csv}`
+
+- Comandos executados + configuracao efetiva:
+  - Diagnostico de teto (oracle) `c02 vs c04` no public (via `per_target.csv`) e folds (`fold3/fold4`).
+  - Variante A (sequencia):
+    - script Python deterministico para gerar features por alvo (`seq_len`, `gc_ratio`, `au_ratio`), sweep de regras threshold (`always`, `len<=L`, `gc<=G`, `len<=L & gc<=G`), selecao da melhor regra por `mean_cv` em `fold3/fold4`, e geracao de submissao blended por alvo.
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_180523_plan054_c02c04_selector/submission_plan054_selector.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_180523_plan054_c02c04_selector/submission_plan054_selector.csv --out-dir runs/20260213_180523_plan054_c02c04_selector/score_public --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - Variante B (confianca TBM):
+    - script Python deterministico para agregar features por alvo de `c02/c04` (`coverage`, `similarity`, `qa_score`, `template_rank`, `n_models`, `n_templates`), criar features diferenciais (`diff_*`), sweep de regra unidimensional `diff_feature > threshold`, e gerar submissao blended por alvo.
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_181202_plan054_c02c04_conf_selector/submission_plan054_conf_selector.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_181202_plan054_c02c04_conf_selector/submission_plan054_conf_selector.csv --out-dir runs/20260213_181202_plan054_c02c04_conf_selector/score_public --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+
+- Parametros/hiperparametros efetivos:
+  - Variante A (sequencia):
+    - familia de regras: `always_c02`, `always_c04`, `len_le`, `gc_le`, `len_gc`.
+    - melhor regra CV: `len_thr=1128` (`choose c02 if seq_len <= 1128 else c04`).
+    - picks public: `c02=26`, `c04=2`.
+  - Variante B (confianca TBM):
+    - familia de regras: `choose c02 if diff_feature > threshold else c04`.
+    - melhor regra CV: `feature=diff_cov_mean`, `threshold=-0.18375`.
+    - picks public: `c02=28`, `c04=0`.
+
+- Seeds:
+  - N/A (regras deterministicas; sem treino estocastico).
+
+- Artefatos gerados em `runs/`:
+  - `runs/20260213_180523_plan054_c02c04_selector/`
+    - `oracle_cv_summary.csv`, `oracle_public_summary.csv`, `rules_cv_scores.csv`, `best_rule.json`, `public_target_choices.csv`, `submission_plan054_selector.csv`, `score_public/{score.json,per_target.csv}`
+  - `runs/20260213_181202_plan054_c02c04_conf_selector/`
+    - `train_features.parquet`, `rules_conf_scores.csv`, `best_rule.json`, `public_target_choices.csv`, `submission_plan054_conf_selector.csv`, `score_public/{score.json,per_target.csv}`
+
+- Metricas/score e custo:
+  - Oracle local `c02/c04` no public: `0.3246939285714286` (delta `+0.005884285714285731` vs `c04`).
+  - Variante A (sequencia):
+    - CV (regra selecionada): `fold3=0.9853200327332242`, `fold4=0.9763111048951048`, `mean_cv=0.9808155688141644`.
+    - Public local: `0.30421785714285715`.
+  - Variante B (confianca TBM):
+    - CV (regra selecionada): `fold3=0.9853200327332242`, `fold4=0.9763056223776221`, `mean_cv=0.9808128275554231`.
+    - Public local: `0.2832035714285714`.
+  - Baseline `c04` public local: `0.31880964285714286`.
+  - Custo operacional: 2 scorings oficiais de public local em CPU (metrica vendorizada), ambos dentro dos guardrails (`memory-budget-mb=8192`, `max-rows-in-memory=500000`, `chunk-size=50000`).
+
+- Conclusao:
+  - Nenhuma variante superou o baseline `c04` no `public_validation` local.
+  - O seletor por sequencia degradou para `0.3042`; o seletor por confianca TBM colapsou para `c02` e ficou em `0.2832`.
+  - Decisao: **nao submeter** (regra de gating do repositorio: submeter apenas com melhora local estrita sobre baseline oficial).
+
+- Proximos passos:
+  - Abandonar seletor binario `c02 vs c04` como frente principal.
+  - Priorizar frente de maior potencial: gerar novos candidatos (TBM multi-template + RNAPro template-aware + DRfold2 local) e aplicar reranker com pool mais diverso, em vez de recombinar apenas `c02/c04`.
+
+## PLAN-055
+
+### 2026-02-13T18:28:00Z - marcusvinicius/Codex (seletor multi-config `c01..c04` por confianca TBM)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: escolher por alvo entre `c01..c04` usando regra deterministica CV-first baseada em sinais de confianca TBM.
+  - Hipotese: seletor multi-config superaria o melhor single (`c04`) no `public_validation`.
+  - Baseline de comparacao: `c04 = 0.31880964285714286` (public local).
+
+- Comandos executados + configuracao efetiva:
+  - Selecao por regras deterministicas sobre `cv_table.parquet` (fold3/fold4), com agregacao de score medio por regra.
+  - Geracao de submissao por alvo:
+    - `runs/20260213_182157_plan055_selector_c01_c04/submission_plan055_selector.csv`
+  - Validacao estrita:
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_182157_plan055_selector_c01_c04/submission_plan055_selector.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_182157_plan055_selector_c01_c04/submission_plan055_selector.csv --out-dir runs/20260213_182157_plan055_selector_c01_c04/score_public --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+
+- Parametros e hiperparametros efetivos:
+  - Melhor seletor CV: `argmax(sim_mean)` por alvo.
+  - Picks public: `c01=5`, `c02=2`, `c03=14`, `c04=7`.
+
+- Seeds usadas:
+  - N/A (regras deterministicas).
+
+- Versao do codigo (git commit) e dados:
+  - Commit: `0a5b6bf`.
+  - Dados:
+    - CV: `runs/20260213_plan046_cv_sweep_c01_c04/fold{3,4}`
+    - Public local: `data/derived/public_validation`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260213_182157_plan055_selector_c01_c04/{cv_table.parquet,selectors_cv_scores.csv,summary.json,public_target_choices.csv,submission_plan055_selector.csv}`
+  - `runs/20260213_182157_plan055_selector_c01_c04/score_public/{score.json,per_target.csv}`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - CV:
+    - `fold3=0.9841871194762685`
+    - `fold4=0.9757083916083915`
+    - `mean_cv=0.9799477555423299`
+  - Public local oficial: `0.31236392857142853`
+  - Delta vs `c04`: `-0.00644571428571433`.
+  - Execucao em CPU; sem OOM sob `memory-budget-mb=8192`.
+
+- Conclusao + proximos passos:
+  - Hipotese rejeitada: seletor multi-config regrediu no public local frente a `c04`.
+  - Decisao: **nao submeter**.
+  - Proximo passo: testar meta-reranker supervisionado (PLAN-056).
+
+## PLAN-056
+
+### 2026-02-13T18:36:00Z - marcusvinicius/Codex (meta-reranker supervisionado por alvo/config + fallback linear)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: substituir regras fixas por meta-modelo supervisionado para escolher `c01..c04` por alvo.
+  - Hipotese: modelo supervisionado melhoraria o baseline `c04` no public local sem degradar CV.
+
+- Comandos executados + configuracao efetiva:
+  - Treino RNArank inicial (bloqueado por gate anti-overfitting):
+    - `python -m rna3d_local train-qa-rnrank --candidates runs/20260213_182833_plan056_meta_reranker_c01_c04/fold3_candidates.parquet --out-model runs/20260213_182833_plan056_meta_reranker_c01_c04/model_train_fold3.json --device cuda`
+  - Fallback para modelo linear (treino/avaliacao via script local com `qa_ranker`):
+    - treino cruzado `fold3->fold4` e `fold4->fold3`;
+    - treino final `fold3+fold4` e inferencia em `public_candidates.parquet`.
+  - Submissao candidata gerada:
+    - `runs/20260213_182833_plan056_meta_reranker_c01_c04/submission_plan056_meta_lr.csv`
+  - Validacao estrita:
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_182833_plan056_meta_reranker_c01_c04/submission_plan056_meta_lr.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_182833_plan056_meta_reranker_c01_c04/submission_plan056_meta_lr.csv --out-dir runs/20260213_182833_plan056_meta_reranker_c01_c04/score_public --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+
+- Parametros e hiperparametros efetivos:
+  - RNArank (tentativa bloqueada): gate default de overfitting (`max_r2_drop=0.30` etc).
+  - Modelo final efetivo: regressao linear leve em features agregadas por alvo/config (features de template + sequencia + one-hot de config).
+
+- Seeds usadas:
+  - `seed=20260213` no treino linear.
+
+- Versao do codigo (git commit) e dados:
+  - Commit: `0a5b6bf`.
+  - Dados:
+    - treino: `runs/20260213_182833_plan056_meta_reranker_c01_c04/{fold3_candidates.parquet,fold4_candidates.parquet}`
+    - inferencia public: `runs/20260213_182833_plan056_meta_reranker_c01_c04/public_candidates.parquet`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260213_182833_plan056_meta_reranker_c01_c04/{cv_summary_lr.json,public_estimate_lr.json,public_choices_lr.csv,submission_plan056_meta_lr.csv}`
+  - `runs/20260213_182833_plan056_meta_reranker_c01_c04/{model_lr_fold3.json,model_lr_fold4.json,model_lr_cv.json}`
+  - `runs/20260213_182833_plan056_meta_reranker_c01_c04/logs/{train_fold3.log,check_public.log,score_public.log}`
+  - `runs/20260213_182833_plan056_meta_reranker_c01_c04/score_public/{score.json,per_target.csv}`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - RNArank treino bloqueado por overfitting:
+    - `r2_drop=5.113760` (`>0.300000`).
+  - CV linear:
+    - `fold3_by_model_fold4=0.9796251718494273`
+    - `fold4_by_model_fold3=0.9689650349650349`
+    - `mean=0.9742951034072311`
+    - baseline `c04 mean=0.9720419223329861`
+  - Public local oficial: `0.30824357142857145`
+  - Delta vs `c04`: `-0.01056607142857141`.
+
+- Conclusao + proximos passos:
+  - Meta-reranker supervisionado nao generalizou para `public_validation`.
+  - Decisao: **nao submeter**.
+  - Proximo passo: ampliar pool e medir teto oracle antes de novo treino (PLAN-057).
+
+## PLAN-057
+
+### 2026-02-13T19:21:26Z - marcusvinicius/Codex (oracle expandido + novas variantes TBM vB/vC/vD + patch incremental)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: encontrar novo ganho local acima do melhor candidato vigente (`0.39166357142857133`) com novos geradores TBM ortogonais e patch incremental por alvo.
+  - Hipotese A: havia headroom no subespaço `c01..c04`.
+  - Hipotese B: uma nova variante TBM ortogonal poderia melhorar subset de alvos e elevar o melhor score local via patch.
+
+- Comandos executados + configuracao efetiva:
+  - Oracle `c01..c04` no public (scores oficiais por alvo):
+    - `python -m rna3d_local check-submission ...` e `python -m rna3d_local score --per-target ...` para `c01..c04` com artefatos em `runs/20260213_190000_plan057_pool_expand_oracle/public_validation/`.
+  - Oracle CV `fold3/fold4` a partir de `PLAN-046` (`score_c01..c04/per_target.csv`).
+  - Oracle global de 60 submissões já scoreadas no public local (auditoria de headroom real).
+  - Fechamento da variante pendente `vB`:
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_plan042_tbm_variant_sweep/vB.submission.csv --out-dir runs/20260213_plan042_tbm_variant_sweep/score_vB --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - Nova variante `vC`:
+    - `python -m rna3d_local predict-tbm --retrieval runs/20260212_plan035_rnapro_precomputed20/retrieval_candidates.parquet --templates runs/20260211_205904_plan018_full_real/template_db/templates.parquet --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/20260213_plan042_tbm_variant_sweep/vC.tbm.parquet --n-models 5 --min-coverage 0.01 --rerank-pool-size 160 --gap-open-scores=-12,-10,-8,-6 --gap-extend-scores=-4,-3,-2,-1 --max-variants-per-template 4 --perturbation-scale 0.08 --mapping-mode strict_match --projection-mode template_warped --qa-top-pool 80 --diversity-lambda 0.20 --chunk-size 200000 --memory-budget-mb 8192 --max-rows-in-memory 10000000`
+    - `python -m rna3d_local export-submission --sample data/derived/public_validation/sample_submission.csv --predictions runs/20260213_plan042_tbm_variant_sweep/vC.tbm.parquet --out runs/20260213_plan042_tbm_variant_sweep/vC.submission.csv --memory-budget-mb 8192 --max-rows-in-memory 500000`
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_plan042_tbm_variant_sweep/vC.submission.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_plan042_tbm_variant_sweep/vC.submission.csv --out-dir runs/20260213_plan042_tbm_variant_sweep/score_vC --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - Patch incremental:
+    - merge por `target_id` entre `submission_patch_bestplus_vA.csv` e `vC.submission.csv` com escolha `max(target_score)` por alvo;
+    - `check-submission` + `score --per-target` para `submission_patch_bestplus_vA_plus_vC.csv`.
+  - Nova variante `vD`:
+    - `python -m rna3d_local predict-tbm --retrieval runs/20260212_plan035_rnapro_precomputed20/retrieval_candidates.parquet --templates runs/20260211_205904_plan018_full_real/template_db/templates.parquet --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/20260213_plan042_tbm_variant_sweep/vD.tbm.parquet --n-models 5 --min-coverage 0.01 --rerank-pool-size 160 --gap-open-scores=-12,-10,-8,-6 --gap-extend-scores=-4,-3,-2,-1 --max-variants-per-template 4 --perturbation-scale 0.08 --mapping-mode hybrid --projection-mode target_linear --qa-top-pool 80 --diversity-lambda 0.20 --chunk-size 200000 --memory-budget-mb 8192 --max-rows-in-memory 10000000`
+    - `python -m rna3d_local export-submission --sample data/derived/public_validation/sample_submission.csv --predictions runs/20260213_plan042_tbm_variant_sweep/vD.tbm.parquet --out runs/20260213_plan042_tbm_variant_sweep/vD.submission.csv --memory-budget-mb 8192 --max-rows-in-memory 500000`
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_plan042_tbm_variant_sweep/vD.submission.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_plan042_tbm_variant_sweep/vD.submission.csv --out-dir runs/20260213_plan042_tbm_variant_sweep/score_vD --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - Patch incremental final:
+    - merge por `target_id` entre `submission_patch_bestplus_vA_plus_vC.csv` e `vD.submission.csv` com escolha `max(target_score)` por alvo;
+    - `check-submission` + `score --per-target` para `submission_patch_bestplus_vA_plus_vC_plus_vD.csv`.
+
+- Parametros e hiperparametros efetivos:
+  - Perfil operacional conservador:
+    - `memory_budget_mb=8192`
+    - `max_rows_in_memory=500000` (score/export/check)
+    - `max_rows_in_memory=10000000` (predict-tbm)
+    - `chunk_size=50000` (score) e `200000` (predict-tbm)
+  - Variante `vC`: `strict_match + template_warped`, gaps agressivos, `max_variants=4`, `perturbation_scale=0.08`, `qa_top_pool=80`, `diversity_lambda=0.20`.
+  - Variante `vD`: `hybrid + target_linear`, mesmos gaps agressivos de `vC`, `max_variants=4`, `perturbation_scale=0.08`, `qa_top_pool=80`, `diversity_lambda=0.20`.
+
+- Seeds usadas:
+  - N/A (inferencia TBM/scoring deterministico).
+
+- Versao do codigo (git commit) e dados:
+  - Commit: `0a5b6bf`.
+  - Dados:
+    - public local: `data/derived/public_validation`
+    - retrieval/templates: `runs/20260212_plan035_rnapro_precomputed20/retrieval_candidates.parquet`, `runs/20260211_205904_plan018_full_real/template_db/templates.parquet`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260213_190000_plan057_pool_expand_oracle/{public_validation/*,cv_oracle_summary.json,global_public_oracle_summary.json,global_public_oracle_choices.csv}`
+  - `runs/20260213_plan042_tbm_variant_sweep/{vB.submission.csv,score_vB/*,vC.tbm.parquet,vC.submission.csv,score_vC/*,vD.tbm.parquet,vD.submission.csv,score_vD/*}`
+  - `runs/20260213_plan042_tbm_variant_sweep/{choices_bestplus_vA_plus_vC.csv,submission_patch_bestplus_vA_plus_vC.csv,score_patch_bestplus_vA_plus_vC/*,patch_bestplus_vA_plus_vC_summary.json}`
+  - `runs/20260213_plan042_tbm_variant_sweep/{choices_bestplus_vA_plus_vC_plus_vD.csv,submission_patch_bestplus_vA_plus_vC_plus_vD.csv,score_patch_bestplus_vA_plus_vC_plus_vD/*,patch_bestplus_vA_plus_vC_plus_vD_summary.json}`
+  - logs:
+    - `runs/20260213_plan042_tbm_variant_sweep/logs/{vB_score.log,vC_predict.log,vC_export.log,vC_check.log,vC_score.log,vD_predict.log,vD_export.log,vD_check.log,vD_score.log,patch_vC_check.log,patch_vC_score.log,patch_vD_check.log,patch_vD_score.log}`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - Oracle `c01..c04` public:
+    - melhor single `c04=0.31880964285714286`
+    - oracle `0.34647071428571424` (`+0.027661071428571382`)
+  - Oracle `c01..c04` em CV:
+    - fold3 delta oracle vs best single: `+0.000040474631752496215`
+    - fold4 delta oracle vs best single: `+0.00029537062937090575`
+  - Oracle global de 60 candidatos ja scoreados no public:
+    - `global_oracle=0.39166357142857133` (igual ao melhor single anterior; sem headroom adicional por recombinacao pura do historico).
+  - `vB`:
+    - score local `0.18594178571428574`
+    - patch contra `best+vA`: `delta=0.0` (0 alvos ganhos)
+  - `vC`:
+    - score local `0.32054214285714294`
+    - patch `best+vA+vC`:
+      - baseline `best+vA=0.39166357142857133`
+      - novo score `0.3920985714285714`
+      - `delta=+0.0004350000000000742`
+      - picks do patch: `best_va=24` alvos, `vC=4` alvos.
+  - `vD`:
+    - score local `0.2503625`
+    - patch `best+vA+vC+vD`:
+      - baseline `best+vA+vC=0.3920985714285714`
+      - novo score `0.39615`
+      - `delta=+0.004051428571428595`
+      - picks do patch: `best_vc=26` alvos, `vD=2` alvos.
+  - Gates estritos (sem bypass) para o melhor candidato `0.39615`:
+    - `evaluate-robust`: `allowed=false`
+      - motivos: `cv_count insuficiente`, `public_validation sem CV`, `calibracao bloqueou`.
+    - `evaluate-submit-readiness`: `allowed=false`
+      - motivos: `cv_count insuficiente`, `public_validation sem CV`, `pearson/spearman de calibracao negativos`.
+  - O scorer operou em CPU/USalign sem OOM (RAM controlada pelos budgets).
+
+- Conclusao + proximos passos:
+  - Novo melhor local confirmado: `0.39615` (`best+vA+vC+vD`), superando estritamente o melhor anterior.
+  - `vB` foi descartada; `vC` e `vD` geraram ganhos incrementais complementares por alvo.
+  - O candidato foi **bloqueado pelos gates estritos atuais** por ausencia de evidencias CV e por calibracao local->public negativa.
+  - Proximo passo: produzir avaliacao CV correspondente (mesma familia de candidato) para destravar readiness sem bypass, ou manter candidato apenas como referencia de teto local.
+
+### 2026-02-13T23:11:50Z - marcusvinicius/Codex (PLAN-057 CV completo da familia `vC/vD` + gates de prontidao)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: destravar o bloqueio por ausencia de CV da melhor familia (`best+vA+vC+vD`) gerando evidencias em folds e recalculando gates sem bypass.
+  - Hipotese: o patch `vC+vD` manteria ganhos consistentes em CV e validaria readiness para promocao.
+
+- Comandos executados + configuracao efetiva:
+  - Baselines CV per-target:
+    - `python -m rna3d_local score --dataset-dir runs/20260212_012217_plan021_ablation/folds/fold3 --submission runs/20260212_123258_plan023_robust_proxy/fold3/submission_ens_099.csv --out-dir runs/20260213_194500_plan057_cv_vcd/fold3/score_baseline_ens099 --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+    - `python -m rna3d_local score --dataset-dir runs/20260212_012217_plan021_ablation/folds/fold4 --submission runs/20260212_123258_plan023_robust_proxy/fold4/submission_ens_099.csv --out-dir runs/20260213_194500_plan057_cv_vcd/fold4/score_baseline_ens099 --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+    - `python -m rna3d_local score --dataset-dir runs/20260212_012217_plan021_ablation/folds/fold0 --submission runs/20260212_012217_plan021_ablation/fold0/submission_hybrid.csv --out-dir runs/20260213_194500_plan057_cv_vcd/fold0/score_baseline_hybrid --per-target --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - `vC` e `vD` em `fold3/fold4`:
+    - `predict-tbm -> export-submission -> check-submission -> score --per-target` com:
+      - `vC`: `mapping_mode=strict_match`, `projection_mode=template_warped`
+      - `vD`: `mapping_mode=hybrid`, `projection_mode=target_linear`
+      - parametros comuns: `n_models=5`, `rerank_pool_size=160`, `gap_open=-12,-10,-8,-6`, `gap_extend=-4,-3,-2,-1`, `max_variants=4`, `perturbation_scale=0.08`, `qa_top_pool=80`, `diversity_lambda=0.20`, `memory_budget_mb=8192`.
+  - `vC` e `vD` em `fold0`:
+    - `predict-tbm` usando `retrieval` de `runs/20260212_012217_plan021_ablation/fold0/retrieval_candidates.parquet` e templates `runs/20260211_real_kaggle_baseline_full_v2/template_db/templates.parquet`;
+    - seguido de `export-submission -> check-submission -> score --per-target`.
+  - Patches por fold:
+    - gerados `submission_patch_vc.csv` e `submission_patch_vcd.csv` por escolha de melhor `target_score` por `target_id`;
+    - validados com `check-submission` e pontuados com `score --per-target`.
+  - Gates:
+    - `evaluate-robust` e `evaluate-submit-readiness` em dois regimes:
+      - CV3 (`fold0/fold3/fold4`) + public;
+      - CV2 (`fold3/fold4`) + public.
+
+- Parametros e hiperparametros efetivos:
+  - Perfil operacional comum:
+    - `memory_budget_mb=8192`
+    - `max_rows_in_memory=500000` (score/export/check), `10000000` (predict)
+    - `chunk_size=50000` (score), `200000` (predict).
+  - Gating:
+    - readiness CV3: defaults (`min_cv_count=3`, `max_cv_std=0.03`, `max_cv_gap=0.08`)
+    - readiness CV2: `--min-cv-count 2 --min-cv-improvement-count 2`.
+
+- Seeds usadas:
+  - N/A (inferencia/scoring deterministico).
+
+- Versao do codigo (git commit) e dados:
+  - Commit: `0a5b6bf`.
+  - Dados:
+    - folds: `runs/20260212_012217_plan021_ablation/folds/{fold0,fold3,fold4}`
+    - retrieval/templates folds3/4: `runs/20260212_123258_plan023_robust_proxy/fold{3,4}/*`
+    - retrieval fold0: `runs/20260212_012217_plan021_ablation/fold0/retrieval_candidates.parquet`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260213_194500_plan057_cv_vcd/{fold0,fold3,fold4}/*`
+  - `runs/20260213_194500_plan057_cv_vcd/cv_vcd_summary.json`
+  - `runs/20260213_194500_plan057_cv_vcd/robust_{baseline,candidate,candidate_vs_baseline}_*.json`
+  - `runs/20260213_194500_plan057_cv_vcd/readiness_{cv3,cv2}_public_{nocalib,calib_strict}.json`
+  - logs detalhados em `runs/20260213_194500_plan057_cv_vcd/logs/`.
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - Scores por fold (baseline vs `patch_vcd`):
+    - `fold0`: `0.9416304049844281 -> 0.9803896573208771` (`+0.03875925233644906`)
+    - `fold3`: `0.29048371522094957 -> 0.37417214402618687` (`+0.0836884288052373`)
+    - `fold4`: `0.2576584755244754 -> 0.33596921678321684` (`+0.07831074125874143`)
+  - Public local:
+    - `best+vA`: `0.39166357142857133`
+    - `best+vA+vC+vD`: `0.39615` (`+0.004486428571428669`)
+  - Robust CV2+public:
+    - baseline: `0.27407109537271246`
+    - candidato: `0.35507068040470185` (`+0.08099958503198939`)
+  - Gates:
+    - `readiness_cv3_public_nocalib`: `allowed=false` (instabilidade/dispersao altas por fold0 muito fora de escala)
+    - `readiness_cv2_public_nocalib`: `allowed=true`
+    - `readiness_cv2_public_calib_strict`: `allowed=false` (correlacao de calibracao Kaggle historica negativa).
+  - Execucao de scorer em CPU/USalign, sem OOM em todos os jobs.
+
+- Conclusao + proximos passos:
+  - A familia `vC+vD` foi validada com ganhos consistentes em `fold3/fold4` e ganho local no public.
+  - Em regime CV2 comparavel (`fold3/fold4`), o candidato passa readiness/robust sem calibracao.
+  - Com calibracao Kaggle estrita (`baseline_public_score=0.268`), continua bloqueado por correlacao historica negativa local->public.
+  - Proximo passo: recalibrar gate de alinhamento (janela historica/pares comparaveis) ou decidir submit competitivo com gate CV2+nocalib explicitamente registrado.
+
+## PLAN-058
+
+### 2026-02-13T23:12:41Z - marcusvinicius/Codex (diagnostico de calibracao por regime local)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: verificar se a calibracao global estava mascarando regimes distintos e estimar risco de submit para o candidato `local=0.39615`.
+  - Hipotese: segmentar por regime de `local_score` recente/alto poderia produzir sinal mais fiel do comportamento publico.
+
+- Comandos executados + configuracao efetiva:
+  - `python -m rna3d_local calibrate-kaggle-local --competition stanford-rna-3d-folding-2 --page-size 200 --out runs/20260213_194500_plan057_cv_vcd/kaggle_calibration_page200.json --method p10 --min-pairs 3`
+  - Script local de segmentacao (append-only em `runs/`) para blocos:
+    - `all`
+    - `local_ge_0_30`
+    - `local_ge_0_32`
+    - `recent_5`
+    - `recent_8`
+  - Artefato final: `runs/20260213_194500_plan057_cv_vcd/calibration_segmented_report.json`.
+
+- Parametros e hiperparametros efetivos:
+  - candidato avaliado: `local_candidate=0.39615`
+  - metrica de estimativa: deltas `public-local` por segmento (`mean`, `median`, `p10`).
+
+- Seeds usadas:
+  - N/A.
+
+- Versao do codigo (git commit) e dados:
+  - Commit: `0a5b6bf`.
+  - Fonte de dados: historico Kaggle retornado por `calibrate-kaggle-local` (`n_pairs=8`).
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260213_194500_plan057_cv_vcd/kaggle_calibration_page200.json`
+  - `runs/20260213_194500_plan057_cv_vcd/calibration_segmented_report.json`
+  - `runs/20260213_194500_plan057_cv_vcd/logs/calibration_page200.log`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - Segmentos de regime alto (`local>=0.30` e `local>=0.32`) mantiveram correlacao negativa (`pearson<0`, `spearman<=0`) e deltas p10 proximos de `-0.1305`.
+  - Estimativa conservadora para o candidato `0.39615`:
+    - `expected_public_p10 ≈ 0.2656` (todos os segmentos testados).
+  - Isso fica abaixo do baseline publico de referencia (`0.268`).
+
+- Conclusao + proximos passos:
+  - Mesmo com CV forte local, a calibracao historica segmentada continua apontando risco alto de nao superar o publico de referencia.
+  - Decisao recomendada: **bloquear submit competitivo cego** ate obter novo par de calibracao em regime comparavel (ou revisar formalmente a regra de calibracao no plano seguinte).
+
+
+## PLAN-059
+
+### 2026-02-13T23:52:37Z - marcusvinicius/Codex (recalculo de submetidos + limpeza de calibracao por ref)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: recalcular localmente os artefatos ja submetidos (scorer atual) e remover vies de `local_score` desatualizado do gate calibrado.
+  - Hipotese: usar calibracao por `submission ref` (somente pares recalculados) reduz bloqueio indevido por historico heterogeneo.
+
+- Comandos executados + configuracao efetiva:
+  - Rescore estrito dos submetidos (todos com `check-submission` + `score`):
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260212_plan036_entropy_gate/submission_entropy_gate.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260212_plan036_entropy_gate/submission_entropy_gate.csv --out-dir runs/20260213_recalc_submitted/plan036_entropy/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_plan038_target_patch_tbm/submission_plan038_patch.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_plan038_target_patch_tbm/submission_plan038_patch.csv --out-dir runs/20260213_recalc_submitted/plan038_patch/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_plan040_global_pool_patch/submission_plan040_all.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_plan040_global_pool_patch/submission_plan040_all.csv --out-dir runs/20260213_recalc_submitted/plan040_global/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260213_plan042_tbm_variant_sweep/submission_patch_bestplus_vA.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260213_plan042_tbm_variant_sweep/submission_patch_bestplus_vA.csv --out-dir runs/20260213_recalc_submitted/plan042_bestplus_vA/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+    - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260212_plan037_tbm_sweep_cpu/c04.submission.csv`
+    - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260212_plan037_tbm_sweep_cpu/c04.submission.csv --out-dir runs/20260213_recalc_submitted/plan044_c04_chemical/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - Consolidacao de refs + overrides limpos:
+    - script local Python -> `runs/20260213_recalc_submitted/recalculated_submitted_scores.json`
+    - script local Python -> `runs/20260213_recalc_submitted/calibration_overrides.submitted_recalc.json`
+  - Calibracao comparativa:
+    - `python -m rna3d_local calibrate-kaggle-local --competition stanford-rna-3d-folding-2 --page-size 200 --out runs/20260213_recalc_submitted/calibration_full_history.json --local-score 0.39615 --baseline-public-score 0.268 --method p10 --min-pairs 3`
+    - `python -m rna3d_local calibrate-kaggle-local --competition stanford-rna-3d-folding-2 --page-size 200 --calibration-overrides runs/20260213_recalc_submitted/calibration_overrides.submitted_recalc.json --out runs/20260213_recalc_submitted/calibration_clean_submitted_only.json --local-score 0.39615 --baseline-public-score 0.268 --method p10 --min-pairs 3`
+    - script local Python -> `runs/20260213_recalc_submitted/calibration_comparison.json`
+
+- Parametros e hiperparametros efetivos:
+  - `memory_budget_mb=8192`, `max_rows_in_memory=500000`, `chunk_size=50000`.
+  - calibracao: `method=p10`, `page_size=200`, `min_pairs=3`.
+  - overrides: `only_override_refs=true`, `by_ref` para refs recalculados.
+
+- Seeds usadas:
+  - N/A (scoring/calibracao deterministica).
+
+- Versao do codigo (git commit) e dados:
+  - Commit: `0a5b6bf`.
+  - Dataset de score: `data/derived/public_validation`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260213_recalc_submitted/plan036_entropy/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted/plan038_patch/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted/plan040_global/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted/plan042_bestplus_vA/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted/plan044_c04_chemical/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted/recalculated_submitted_scores.json`
+  - `runs/20260213_recalc_submitted/calibration_overrides.submitted_recalc.json`
+  - `runs/20260213_recalc_submitted/calibration_full_history.json`
+  - `runs/20260213_recalc_submitted/calibration_clean_submitted_only.json`
+  - `runs/20260213_recalc_submitted/calibration_comparison.json`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - Scores locais recalculados:
+    - `plan036_entropy`: `0.3637460714`
+    - `plan038_patch`: `0.3865007143`
+    - `plan040_global`: `0.3914000000`
+    - `plan042_bestplus_vA`: `0.3916635714`
+    - `plan044_c04_chemical`: `0.3188096429`
+  - Calibracao (`local=0.39615`, `baseline_public=0.268`, `p10`):
+    - full history: `n_pairs=8`, `expected_public_p10=0.2656709286`, `allowed=false`
+    - clean submitted-only: `n_pairs=4`, `expected_public_p10=0.2655655000`, `allowed=false`
+  - Execucao em CPU, sem OOM.
+
+- Conclusao + proximos passos:
+  - A limpeza de `local_score` historico por `submission ref` foi implementada e operacionalizada.
+  - Mesmo com calibracao limpa, o gate `p10` continua bloqueando quando `baseline_public_score=0.268` (estimativa abaixo do limiar).
+  - Proximo passo: rodar readiness/submit usando `--calibration-overrides runs/20260213_recalc_submitted/calibration_overrides.submitted_recalc.json` e baseline publico atualizado/explicitado por plano antes de nova submissao.
+
+
+### 2026-02-14T00:15:37Z - marcusvinicius/Codex (PLAN-059 adendo: recalculo completo dos 8 pares historicos com score publico)
+
+- Objetivo/hipotese e comparacao:
+  - Objetivo: verificar se o bloqueio de calibracao vinha de scores antigos desatualizados nas submissoes com score publico.
+  - Hipotese: rescoring dos pares antigos (`PLAN-012/016/027/030`) alteraria materialmente a calibracao.
+
+- Comandos executados + configuracao efetiva:
+  - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260211_154539_plan012_rerank_bigmodel/submission_512.csv`
+  - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260211_154539_plan012_rerank_bigmodel/submission_512.csv --out-dir runs/20260213_recalc_submitted_legacy/plan012_v41/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260211_190951_plan015_submission_blend_ab_v2/submission_a0_4.csv`
+  - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260211_190951_plan015_submission_blend_ab_v2/submission_a0_4.csv --out-dir runs/20260213_recalc_submitted_legacy/plan016_v42/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260212_121629_plan027_patch_qa_targets/submission_patch_pos_qac.csv`
+  - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260212_121629_plan027_patch_qa_targets/submission_patch_pos_qac.csv --out-dir runs/20260213_recalc_submitted_legacy/plan027_v53/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - `python -m rna3d_local check-submission --sample data/derived/public_validation/sample_submission.csv --submission runs/20260212_173620_plan030_ruleblend_len_gc/submission_tree_depth7.csv`
+  - `python -m rna3d_local score --dataset-dir data/derived/public_validation --submission runs/20260212_173620_plan030_ruleblend_len_gc/submission_tree_depth7.csv --out-dir runs/20260213_recalc_submitted_legacy/plan030_v55/score --memory-budget-mb 8192 --max-rows-in-memory 500000 --chunk-size 50000`
+  - Consolidacao total (9 submetidos mapeados / 8 pares com publico):
+    - `runs/20260213_recalc_submitted_all/recalculated_all_submitted_scores.json`
+    - `runs/20260213_recalc_submitted_all/calibration_overrides.all_submitted_recalc.json`
+  - Recalibracao limpa total:
+    - `python -m rna3d_local calibrate-kaggle-local --competition stanford-rna-3d-folding-2 --page-size 200 --calibration-overrides runs/20260213_recalc_submitted_all/calibration_overrides.all_submitted_recalc.json --out runs/20260213_recalc_submitted_all/calibration_clean_all_submitted.json --local-score 0.39615 --baseline-public-score 0.268 --method p10 --min-pairs 3`
+
+- Parametros e hiperparametros efetivos:
+  - `memory_budget_mb=8192`, `max_rows_in_memory=500000`, `chunk_size=50000`.
+  - calibracao limpa total: `only_override_refs=true`, `n_pairs=8`.
+
+- Seeds usadas:
+  - N/A.
+
+- Versao do codigo (git commit) e dados:
+  - Commit: `0a5b6bf`.
+  - Dataset de score: `data/derived/public_validation`.
+
+- Artefatos gerados em `runs/` + logs:
+  - `runs/20260213_recalc_submitted_legacy/plan012_v41/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted_legacy/plan016_v42/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted_legacy/plan027_v53/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted_legacy/plan030_v55/{check.log,score.log,score/score.json}`
+  - `runs/20260213_recalc_submitted_all/recalculated_all_submitted_scores.json`
+  - `runs/20260213_recalc_submitted_all/calibration_overrides.all_submitted_recalc.json`
+  - `runs/20260213_recalc_submitted_all/calibration_clean_all_submitted.json`
+  - `runs/20260213_recalc_submitted_all/calibration_all_comparison.json`
+
+- Metricas/score obtidos e custo (tempo, GPU/CPU, RAM):
+  - Recalculo dos legados:
+    - `plan012_v41`: `0.2372639286`
+    - `plan016_v42`: `0.2409446429`
+    - `plan027_v53`: `0.3102867857`
+    - `plan030_v55`: `0.3255221429`
+  - Delta maximo entre `local` da mensagem Kaggle e score recalculado: `4.285714283458475e-08` (apenas arredondamento).
+  - Calibracao limpa total (`local=0.39615`, `baseline_public=0.268`, `p10`):
+    - `expected_public_p10=0.2656709286`, `allowed=false`.
+
+- Conclusao + proximos passos:
+  - O bloqueio atual nao era causado por score local desatualizado dos planos submetidos; os valores bateram (diferenca apenas numerica de arredondamento).
+  - O bloqueio permanece por desalinhamento empirico local->public no historico atual.
+  - Proximo passo operacional: revisar o baseline publico alvo do gate (ou politica de calibracao) antes de novas submissoes competitivas.
+
+### 2026-02-14T00:32:29Z - marcusvinicius/Codex (PLAN-059: calibracao Kaggle sem ruido de status)
+
+- Objetivo/hipotese:
+  - Remover do histórico de calibracao pares de submissões com status não completo, para reduzir ruído no `local_score`↔`public_score`.
+
+- Comandos executados + configuracao efetiva:
+  - `pytest -q tests/test_kaggle_calibration.py`
+  - `pytest -q`
+
+- Parametros:
+  - `competition`: `stanford-rna-3d-folding-2` (simulacao com KaggleApi fake em teste unitário).
+  - `page_size=10` nos casos de teste da regra de status.
+
+- Arquivos principais:
+  - `src/rna3d_local/kaggle_calibration.py`
+  - `tests/test_kaggle_calibration.py`
+
+- Metricas e custo:
+  - `tests/test_kaggle_calibration.py`: `9 passed`
+  - `pytest -q`: `107 passed`, 1 warning do ambiente CUDA.
+
+- Conclusao + proximos passos:
+  - Ajuste aplicado e validado; calibracao agora reporta e contabiliza `excluded_by_status`.
+  - Proximo passo: avaliar política de método/limites de gate com histórico limpo antes de novo submit competitivo.

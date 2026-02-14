@@ -100,6 +100,7 @@ def evaluate_robust_gate(
     calibration_method: str = "p10",
     calibration_page_size: int = 100,
     calibration_min_pairs: int = 3,
+    calibration_overrides_path: Path | None = None,
     min_public_improvement: float = 0.0,
     min_cv_count: int = 2,
     block_public_validation_without_cv: bool = True,
@@ -154,6 +155,7 @@ def evaluate_robust_gate(
         calibration = build_kaggle_local_calibration(
             competition=str(competition),
             page_size=int(calibration_page_size),
+            local_overrides_path=calibration_overrides_path,
         )
         alignment = build_alignment_decision(
             local_score=float(local_for_public),

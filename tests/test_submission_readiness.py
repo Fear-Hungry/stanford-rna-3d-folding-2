@@ -6,9 +6,10 @@ from rna3d_local import submission_readiness as sr
 
 
 def test_readiness_allows_when_cv_and_robust_improve(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_build_calibration(*, competition: str, page_size: int) -> dict:
+    def _fake_build_calibration(*, competition: str, page_size: int, local_overrides_path=None) -> dict:
         assert competition == "stanford-rna-3d-folding-2"
         assert page_size == 25
+        assert local_overrides_path is None
         return {
             "stats": {
                 "n_pairs": 8,
@@ -73,7 +74,7 @@ def test_readiness_blocks_on_cv_regression() -> None:
 
 
 def test_readiness_blocks_when_calibration_health_is_negative(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_build_calibration(*, competition: str, page_size: int) -> dict:
+    def _fake_build_calibration(*, competition: str, page_size: int, local_overrides_path=None) -> dict:
         return {
             "stats": {
                 "n_pairs": 7,
