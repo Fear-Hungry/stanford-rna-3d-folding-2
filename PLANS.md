@@ -1732,3 +1732,33 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Criterios de aceite:
   - `pytest -q` verde.
   - suite roda com `0` warnings (ou apenas warnings explicitamente filtrados por terceiros).
+
+## PLAN-101 - Harness de experimentos + recipes Top-10 (sem promessas)
+
+- Objetivo: padronizar execucao reprodutivel de experimentos (Fase 1+2+SE3) com validacao estrita, logs e artefatos em `runs/`, permitindo iteracao controlada rumo a melhoria de score local (sem prometer ranking).
+- Escopo:
+  - Experiment runner (CLI):
+    - adicionar comando `run-experiment` que executa uma receita JSON com lista de comandos e variaveis;
+    - criar `runs/<timestamp>_<tag>/` com:
+      - `recipe.json` (receita resolvida),
+      - `meta.json` (git commit, python, platform),
+      - logs por etapa (`step_XX_<name>.log`),
+      - `run_report.json` (status por etapa, tempos, artefatos esperados).
+    - modo `--dry-run` que valida placeholders e imprime comandos expandidos sem executar.
+    - fail-fast: qualquer comando com erro encerra execucao com mensagem acionavel no padrao do repositorio.
+  - Preprocess minimo faltante:
+    - adicionar comando `derive-pairings-from-chemical` para gerar `pairings.parquet` a partir de `chemical_features.parquet` (sem fallback silencioso).
+  - Avaliacao local robusta para iteracao:
+    - ajustar scorer USalign para ignorar sentinelas de coordenadas ausentes (`-1e18`) no ground_truth durante o score local (sem mudar contrato de chaves).
+    - (opcional) modo de score `best_of_gt_copies` quando ground_truth possuir `x_1..x_k` (ex.: `validation_labels.csv`), com selecao do melhor TM-score por alvo entre as copias disponiveis; default permanece compatível com comportamento atual.
+  - Recipes + documentacao:
+    - adicionar `experiments/README.md` com ordem recomendada (smoke -> ablaçoes -> candidatos) e budgets.
+    - adicionar `experiments/recipes/` com um conjunto inicial de receitas (Fase1 TBM, Hybrid Fase2, SE3 ablaçoes, minimization on/off, thresholds do router).
+  - Testes:
+    - cobrir: validacao de receita/placeholder, fail-fast quando comando falha, e `derive-pairings-from-chemical`.
+    - garantir `pytest -q` verde.
+- Criterios de aceite:
+  - `python -m rna3d_local run-experiment --recipe experiments/recipes/*.json --dry-run` valida e imprime comandos.
+  - `python -m rna3d_local derive-pairings-from-chemical --chemical-features <...> --out <...>` gera parquet com schema estrito.
+  - `score-local-bestof5` ignora sentinelas `-1e18` do ground_truth sem crash.
+  - `pytest -q` verde.

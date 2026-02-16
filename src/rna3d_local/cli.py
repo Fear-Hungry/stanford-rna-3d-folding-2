@@ -12,12 +12,14 @@ from .embedding_index import build_embedding_index
 from .ensemble.qa_ranker_se3 import rank_se3_ensemble
 from .ensemble.select_top5 import select_top5_se3
 from .evaluation import score_local_bestof5
+from .experiments import run_experiment
 from .errors import PipelineError
 from .homology_eval import evaluate_homology_folds
 from .homology_folds import build_homology_folds
 from .hybrid_router import build_hybrid_candidates
 from .hybrid_select import select_top5_hybrid
 from .minimization import minimize_ensemble
+from .pairings import derive_pairings_from_chemical
 from .phase2_assets import build_phase2_assets_manifest
 from .rnapro_offline import predict_rnapro_offline
 from .reranker import score_template_reranker, train_template_reranker
@@ -103,6 +105,15 @@ def main(argv: list[str] | None = None) -> int:
                 out_path=(repo / args.out).resolve(),
             )
             _print_json({"features": str(out.features_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "derive-pairings-from-chemical":
+            out = derive_pairings_from_chemical(
+                repo_root=repo,
+                chemical_features_path=(repo / args.chemical_features).resolve(),
+                out_path=(repo / args.out).resolve(),
+            )
+            _print_json({"pairings": str(out.pairings_path), "manifest": str(out.manifest_path)})
             return 0
 
         if args.command == "build-homology-folds":
@@ -223,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
                 usalign_path=(repo / args.usalign_bin).resolve(),
                 score_json_path=(repo / args.score_json).resolve(),
                 report_path=(None if args.report is None else (repo / args.report).resolve()),
+                timeout_seconds=int(args.timeout_seconds),
+                ground_truth_mode=str(args.ground_truth_mode),
             )
             _print_json(
                 {
@@ -447,6 +460,26 @@ def main(argv: list[str] | None = None) -> int:
                 fail_on_disallow=not bool(args.allow_disallow),
             )
             _print_json({"allowed": bool(out.allowed), "report": str(out.report_path)})
+            return 0
+
+        if args.command == "run-experiment":
+            out = run_experiment(
+                repo_root=repo,
+                recipe_path=(repo / args.recipe).resolve(),
+                runs_dir=(repo / args.runs_dir).resolve(),
+                tag_override=(None if args.tag is None else str(args.tag)),
+                var_overrides=list(args.var),
+                dry_run=bool(args.dry_run),
+            )
+            _print_json(
+                {
+                    "dry_run": bool(args.dry_run),
+                    "run_dir": None if out is None else str(out.run_dir),
+                    "recipe_resolved": None if out is None else str(out.recipe_resolved_path),
+                    "meta": None if out is None else str(out.meta_path),
+                    "report": None if out is None else str(out.report_path),
+                }
+            )
             return 0
 
         parser.print_help()

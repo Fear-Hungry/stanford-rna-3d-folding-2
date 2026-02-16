@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     chem.add_argument("--quickstart", required=True)
     chem.add_argument("--out", required=True)
 
+    pair = subparsers.add_parser("derive-pairings-from-chemical", help="Derive pairings (pair_prob) from chemical_features (p_paired)")
+    pair.add_argument("--chemical-features", required=True)
+    pair.add_argument("--out", required=True)
+
     folds = subparsers.add_parser("build-homology-folds", help="Build strict homology-aware CV folds")
     folds.add_argument("--train-targets", required=True)
     folds.add_argument("--pdb-sequences", required=True)
@@ -110,6 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
     local_score.add_argument("--ground-truth", required=True)
     local_score.add_argument("--submission", required=True)
     local_score.add_argument("--usalign-bin", required=True)
+    local_score.add_argument("--timeout-seconds", type=int, default=900)
+    local_score.add_argument("--ground-truth-mode", choices=["single", "best_of_gt_copies"], default="single")
     local_score.add_argument("--score-json", required=True)
     local_score.add_argument("--report", default=None)
 
@@ -237,5 +243,17 @@ def build_parser() -> argparse.ArgumentParser:
     ready.add_argument("--baseline-score", required=True, type=float)
     ready.add_argument("--report", required=True)
     ready.add_argument("--allow-disallow", action="store_true", help="Do not fail when gate is disallowed")
+
+    exp = subparsers.add_parser("run-experiment", help="Run reproducible experiment recipe (strict, fail-fast)")
+    exp.add_argument("--recipe", required=True, help="Path to experiment recipe JSON")
+    exp.add_argument("--runs-dir", default="runs", help="Base output directory for runs/")
+    exp.add_argument("--tag", default=None, help="Override recipe tag for run directory naming")
+    exp.add_argument(
+        "--var",
+        action="append",
+        default=[],
+        help="Override recipe variable (KEY=VALUE). Can be repeated.",
+    )
+    exp.add_argument("--dry-run", action="store_true", help="Validate and print expanded commands without executing")
 
     return parser

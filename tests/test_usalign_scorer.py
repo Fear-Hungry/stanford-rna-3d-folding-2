@@ -39,6 +39,39 @@ print(f"{pred}\\tgt\\t0.0\\t{score:.6f}")
     path.chmod(0o755)
 
 
+def _write_fake_usalign_with_gt_copy(path: Path) -> None:
+    content = """#!/usr/bin/env python3
+import os
+import re
+import sys
+
+pred = os.path.basename(sys.argv[1])
+true = os.path.basename(sys.argv[2])
+pm = re.match(r"(.+)_pred_(\\d+)\\.pdb$", pred)
+tm = re.match(r"(.+)_gt_(\\d+)\\.pdb$", true)
+if pm is None or tm is None:
+    print("invalid filenames", file=sys.stderr)
+    sys.exit(2)
+target = pm.group(1)
+model_id = int(pm.group(2))
+gt_copy = int(tm.group(2))
+scores = {
+    "T1": {
+        1: [0.10, 0.20, 0.30, 0.40, 0.50],
+        2: [0.90, 0.20, 0.10, 0.05, 0.01],
+    }
+}
+if target not in scores or gt_copy not in scores[target] or model_id < 1 or model_id > 5:
+    print("invalid target/model/gt_copy", file=sys.stderr)
+    sys.exit(3)
+score = scores[target][gt_copy][model_id - 1]
+print("pred\\ttrue\\trmsd\\ttm2")
+print(f"{pred}\\t{true}\\t0.0\\t{score:.6f}")
+"""
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+
+
 def _write_submission(path: Path, ids: list[str]) -> None:
     rows: list[dict[str, object]] = []
     for index, key in enumerate(ids, start=1):
@@ -127,3 +160,28 @@ def test_score_local_bestof5_accepts_target_id_resid_and_x1(tmp_path: Path) -> N
     )
     assert result.n_targets == 1
     assert result.score == pytest.approx(0.65, abs=1e-6)
+
+
+def test_score_local_bestof5_best_of_gt_copies(tmp_path: Path) -> None:
+    usalign_bin = tmp_path / "USalign"
+    _write_fake_usalign_with_gt_copy(usalign_bin)
+    ground_truth = tmp_path / "ground_truth.csv"
+    submission = tmp_path / "submission.csv"
+    score_json = tmp_path / "score.json"
+    pl.DataFrame(
+        [
+            {"target_id": "T1", "resid": 1, "resname": "A", "x_1": 0.0, "y_1": 0.0, "z_1": 0.0, "x_2": 1.0, "y_2": 0.0, "z_2": 0.0},
+            {"target_id": "T1", "resid": 2, "resname": "C", "x_1": 1.0, "y_1": 0.0, "z_1": 0.0, "x_2": 2.0, "y_2": 0.0, "z_2": 0.0},
+        ]
+    ).write_csv(ground_truth)
+    _write_submission(submission, ids=["T1_1", "T1_2"])
+    result = score_local_bestof5(
+        ground_truth_path=ground_truth,
+        submission_path=submission,
+        usalign_path=usalign_bin,
+        score_json_path=score_json,
+        report_path=None,
+        ground_truth_mode="best_of_gt_copies",
+    )
+    assert result.n_targets == 1
+    assert result.score == pytest.approx(0.90, abs=1e-6)

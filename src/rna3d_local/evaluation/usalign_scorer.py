@@ -31,9 +31,18 @@ class _TargetRows:
 
 
 class USalignBestOf5Scorer:
-    def __init__(self, *, usalign_path: Path, timeout_seconds: int = 900) -> None:
+    def __init__(
+        self,
+        *,
+        usalign_path: Path,
+        timeout_seconds: int = 900,
+        ground_truth_mode: str = "single",
+        missing_coord_threshold: float = -1e17,
+    ) -> None:
         self.usalign_path = Path(usalign_path).resolve()
         self.timeout_seconds = int(timeout_seconds)
+        self.ground_truth_mode = str(ground_truth_mode).strip().lower()
+        self.missing_coord_threshold = float(missing_coord_threshold)
         stage = "SCORE_LOCAL_BESTOF5"
         location = "src/rna3d_local/evaluation/usalign_scorer.py:USalignBestOf5Scorer.__init__"
         if not self.usalign_path.exists():
@@ -42,6 +51,10 @@ class USalignBestOf5Scorer:
             raise_error(stage, location, "binario USalign sem permissao de execucao", impact="1", examples=[str(self.usalign_path)])
         if self.timeout_seconds <= 0:
             raise_error(stage, location, "timeout_seconds invalido (<=0)", impact="1", examples=[str(self.timeout_seconds)])
+        if self.ground_truth_mode not in {"single", "best_of_gt_copies"}:
+            raise_error(stage, location, "ground_truth_mode invalido", impact="1", examples=[self.ground_truth_mode])
+        if self.missing_coord_threshold >= 0:
+            raise_error(stage, location, "missing_coord_threshold invalido (esperado negativo)", impact="1", examples=[str(self.missing_coord_threshold)])
 
     def score_submission(
         self,
@@ -55,7 +68,10 @@ class USalignBestOf5Scorer:
         location = "src/rna3d_local/evaluation/usalign_scorer.py:USalignBestOf5Scorer.score_submission"
         ground_truth = read_table(ground_truth_path, stage=stage, location=location)
         submission = read_table(submission_path, stage=stage, location=location)
-        gt = self._canonicalize_ground_truth(ground_truth, stage=stage, location=location)
+        gt_copy_ids: list[int] | None = None
+        if self.ground_truth_mode == "best_of_gt_copies":
+            gt_copy_ids = self._extract_gt_copy_ids(ground_truth, stage=stage, location=location)
+        gt = self._canonicalize_ground_truth(ground_truth, gt_copy_ids=gt_copy_ids, stage=stage, location=location)
         sub = self._canonicalize_submission(submission, stage=stage, location=location)
         self._validate_global_contract(gt=gt, submission=sub, stage=stage, location=location)
         per_target_gt = self._group_by_target(gt, stage=stage, location=location)
@@ -77,6 +93,7 @@ class USalignBestOf5Scorer:
                 best_tm, model_scores = self._score_target_bestof5(
                     ground_truth_target=target,
                     submission_target=pred_target,
+                    gt_copy_ids=gt_copy_ids,
                     tmp_dir=tmp_dir,
                     stage=stage,
                     location=location,
@@ -122,7 +139,34 @@ class USalignBestOf5Scorer:
             report_path=output_report_path,
         )
 
-    def _canonicalize_ground_truth(self, df: pl.DataFrame, *, stage: str, location: str) -> pl.DataFrame:
+    def _extract_gt_copy_ids(self, df: pl.DataFrame, *, stage: str, location: str) -> list[int]:
+        copy_ids: set[int] = set()
+        for column in df.columns:
+            if "_" not in column:
+                continue
+            axis, suffix = column.split("_", 1)
+            if axis not in {"x", "y", "z"}:
+                continue
+            if not suffix.isdigit():
+                continue
+            copy_ids.add(int(suffix))
+        candidates = sorted(copy_ids)
+        valid: list[int] = []
+        for copy_id in candidates:
+            if f"x_{copy_id}" in df.columns and f"y_{copy_id}" in df.columns and f"z_{copy_id}" in df.columns:
+                valid.append(int(copy_id))
+        if not valid:
+            raise_error(stage, location, "tripletos de coordenadas x_i,y_i,z_i ausentes no ground_truth", impact="1", examples=df.columns[:8])
+        return valid
+
+    def _canonicalize_ground_truth(
+        self,
+        df: pl.DataFrame,
+        *,
+        gt_copy_ids: list[int] | None,
+        stage: str,
+        location: str,
+    ) -> pl.DataFrame:
         required_from_id = ["ID"]
         required_from_target_resid = ["target_id", "resid"]
         has_id = all(column in df.columns for column in required_from_id)
@@ -135,40 +179,59 @@ class USalignBestOf5Scorer:
                 impact="2",
                 examples=["ID", "target_id+resid"],
             )
-        x_col: str
-        y_col: str
-        z_col: str
-        if all(column in df.columns for column in ["x", "y", "z"]):
-            x_col, y_col, z_col = "x", "y", "z"
-        elif all(column in df.columns for column in ["x_1", "y_1", "z_1"]):
-            x_col, y_col, z_col = "x_1", "y_1", "z_1"
-        else:
-            raise_error(
-                stage,
-                location,
-                "ground_truth sem coordenadas suportadas (x,y,z ou x_1,y_1,z_1)",
-                impact="1",
-                examples=df.columns[:8],
-            )
         if has_id:
             out = df.with_columns(pl.col("ID").cast(pl.Utf8).alias("ID"))
         else:
             out = df.with_columns(
                 pl.concat_str([pl.col("target_id").cast(pl.Utf8), pl.lit("_"), pl.col("resid").cast(pl.Int64).cast(pl.Utf8)]).alias("ID")
             )
-        out = out.select(
-            pl.col("ID").cast(pl.Utf8),
-            pl.col(x_col).cast(pl.Float64, strict=False).alias("x"),
-            pl.col(y_col).cast(pl.Float64, strict=False).alias("y"),
-            pl.col(z_col).cast(pl.Float64, strict=False).alias("z"),
-            (
-                pl.col("resname").cast(pl.Utf8)
-                if "resname" in out.columns
-                else pl.lit("A", dtype=pl.Utf8)
-            ).alias("resname"),
-        )
-        self._validate_coord_columns(out, coord_columns=["x", "y", "z"], stage=stage, location=location, label="ground_truth")
-        return out
+        base_exprs: list[pl.Expr] = [pl.col("ID").cast(pl.Utf8)]
+        if "resname" in out.columns:
+            base_exprs.append(pl.col("resname").cast(pl.Utf8).alias("resname"))
+        else:
+            base_exprs.append(pl.lit("A", dtype=pl.Utf8).alias("resname"))
+
+        if self.ground_truth_mode == "single":
+            x_col: str
+            y_col: str
+            z_col: str
+            if all(column in df.columns for column in ["x", "y", "z"]):
+                x_col, y_col, z_col = "x", "y", "z"
+            elif all(column in df.columns for column in ["x_1", "y_1", "z_1"]):
+                x_col, y_col, z_col = "x_1", "y_1", "z_1"
+            else:
+                raise_error(
+                    stage,
+                    location,
+                    "ground_truth sem coordenadas suportadas (x,y,z ou x_1,y_1,z_1)",
+                    impact="1",
+                    examples=df.columns[:8],
+                )
+            out_single = out.select(
+                *base_exprs,
+                pl.col(x_col).cast(pl.Float64, strict=False).alias("x"),
+                pl.col(y_col).cast(pl.Float64, strict=False).alias("y"),
+                pl.col(z_col).cast(pl.Float64, strict=False).alias("z"),
+            )
+            self._validate_coord_columns(out_single, coord_columns=["x", "y", "z"], stage=stage, location=location, label="ground_truth")
+            return out_single
+
+        if not gt_copy_ids:
+            raise_error(stage, location, "gt_copy_ids ausente para ground_truth_mode=best_of_gt_copies", impact="1", examples=["gt_copy_ids"])
+        coord_exprs: list[pl.Expr] = []
+        coord_columns: list[str] = []
+        for copy_id in gt_copy_ids:
+            coord_columns.extend([f"x_{copy_id}", f"y_{copy_id}", f"z_{copy_id}"])
+            coord_exprs.extend(
+                [
+                    pl.col(f"x_{copy_id}").cast(pl.Float64, strict=False).alias(f"x_{copy_id}"),
+                    pl.col(f"y_{copy_id}").cast(pl.Float64, strict=False).alias(f"y_{copy_id}"),
+                    pl.col(f"z_{copy_id}").cast(pl.Float64, strict=False).alias(f"z_{copy_id}"),
+                ]
+            )
+        out_multi = out.select(*base_exprs, *coord_exprs)
+        self._validate_coord_columns(out_multi, coord_columns=coord_columns, stage=stage, location=location, label="ground_truth")
+        return out_multi
 
     def _canonicalize_submission(self, df: pl.DataFrame, *, stage: str, location: str) -> pl.DataFrame:
         missing = ["ID"] + [f"{axis}_{model_id}" for model_id in _COORD_MODEL_IDS for axis in ("x", "y", "z")]
@@ -262,6 +325,7 @@ class USalignBestOf5Scorer:
         *,
         ground_truth_target: _TargetRows,
         submission_target: _TargetRows,
+        gt_copy_ids: list[int] | None,
         tmp_dir: Path,
         stage: str,
         location: str,
@@ -284,34 +348,73 @@ class USalignBestOf5Scorer:
                 impact=str(max(len(gt_resids), len(pred_resids))),
                 examples=mismatch_examples[:8],
             )
-        gt_path = tmp_dir / f"{ground_truth_target.target_id}_gt.pdb"
-        self._write_pdb(
-            rows=ground_truth_target.rows,
-            x_col="x",
-            y_col="y",
-            z_col="z",
-            out_path=gt_path,
-            stage=stage,
-            location=location,
-            target_id=ground_truth_target.target_id,
-        )
+        gt_modes: list[tuple[str, str, str, str | None]] = []
+        if self.ground_truth_mode == "single":
+            gt_modes = [("x", "y", "z", None)]
+        else:
+            gt_modes = [(f"x_{copy_id}", f"y_{copy_id}", f"z_{copy_id}", str(copy_id)) for copy_id in (gt_copy_ids or [])]
+        if not gt_modes:
+            raise_error(stage, location, "nenhuma copia de ground_truth disponivel para score", impact="1", examples=[ground_truth_target.target_id])
         model_scores: list[float] = []
         for model_id in _COORD_MODEL_IDS:
             pred_path = tmp_dir / f"{ground_truth_target.target_id}_pred_{model_id}.pdb"
-            self._write_pdb(
-                rows=submission_target.rows,
-                x_col=f"x_{model_id}",
-                y_col=f"y_{model_id}",
-                z_col=f"z_{model_id}",
-                out_path=pred_path,
-                stage=stage,
-                location=location,
-                target_id=ground_truth_target.target_id,
-            )
-            model_scores.append(
-                self._run_usalign(pred_pdb=pred_path, true_pdb=gt_path, stage=stage, location=location, target_id=ground_truth_target.target_id)
-            )
+            best_for_model: float | None = None
+            for x_col, y_col, z_col, gt_copy_id in gt_modes:
+                keep_indices = self._keep_indices_for_gt(rows=ground_truth_target.rows, x_col=x_col, y_col=y_col, z_col=z_col)
+                if len(keep_indices) < 2:
+                    continue
+                gt_rows = [ground_truth_target.rows[idx] for idx in keep_indices]
+                pred_rows = [submission_target.rows[idx] for idx in keep_indices]
+                suffix = "" if gt_copy_id is None else f"_{gt_copy_id}"
+                gt_path = tmp_dir / f"{ground_truth_target.target_id}_gt{suffix}.pdb"
+                self._write_pdb(
+                    rows=gt_rows,
+                    x_col=x_col,
+                    y_col=y_col,
+                    z_col=z_col,
+                    out_path=gt_path,
+                    stage=stage,
+                    location=location,
+                    target_id=ground_truth_target.target_id,
+                )
+                self._write_pdb(
+                    rows=pred_rows,
+                    x_col=f"x_{model_id}",
+                    y_col=f"y_{model_id}",
+                    z_col=f"z_{model_id}",
+                    out_path=pred_path,
+                    stage=stage,
+                    location=location,
+                    target_id=ground_truth_target.target_id,
+                )
+                score = self._run_usalign(pred_pdb=pred_path, true_pdb=gt_path, stage=stage, location=location, target_id=ground_truth_target.target_id)
+                if best_for_model is None or float(score) > float(best_for_model):
+                    best_for_model = float(score)
+            if best_for_model is None:
+                raise_error(
+                    stage,
+                    location,
+                    "ground_truth sem coordenadas validas suficientes (sentinela) para score",
+                    impact="1",
+                    examples=[ground_truth_target.target_id],
+                )
+            model_scores.append(float(best_for_model))
         return max(model_scores), model_scores
+
+    def _keep_indices_for_gt(self, *, rows: list[dict[str, object]], x_col: str, y_col: str, z_col: str) -> list[int]:
+        keep: list[int] = []
+        thr = float(self.missing_coord_threshold)
+        for idx, row in enumerate(rows):
+            try:
+                x = float(row[x_col])
+                y = float(row[y_col])
+                z = float(row[z_col])
+            except Exception:
+                continue
+            if x <= thr or y <= thr or z <= thr:
+                continue
+            keep.append(int(idx))
+        return keep
 
     def _write_pdb(
         self,
@@ -439,8 +542,16 @@ def score_local_bestof5(
     usalign_path: Path,
     score_json_path: Path,
     report_path: Path | None = None,
+    timeout_seconds: int = 900,
+    ground_truth_mode: str = "single",
+    missing_coord_threshold: float = -1e17,
 ) -> LocalBestOf5ScoreResult:
-    scorer = USalignBestOf5Scorer(usalign_path=usalign_path)
+    scorer = USalignBestOf5Scorer(
+        usalign_path=usalign_path,
+        timeout_seconds=int(timeout_seconds),
+        ground_truth_mode=str(ground_truth_mode),
+        missing_coord_threshold=float(missing_coord_threshold),
+    )
     return scorer.score_submission(
         ground_truth_path=ground_truth_path,
         submission_path=submission_path,
