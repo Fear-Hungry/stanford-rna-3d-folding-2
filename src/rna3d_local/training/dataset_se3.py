@@ -36,6 +36,8 @@ def load_training_graphs(
     max_cov_pairs: int,
     stage: str,
     location: str,
+    thermo_num_workers: int = 1,
+    msa_num_workers: int = 1,
 ) -> list[TargetGraph]:
     targets = _read_targets(targets_path, stage=stage, location=location)
     pairings = read_table(pairings_path, stage=stage, location=location)
@@ -50,6 +52,7 @@ def load_training_graphs(
         chain_separator=chain_separator,
         stage=stage,
         location=location,
+        num_workers=int(thermo_num_workers),
     )
     chem_mapping = compute_chemical_exposure_mapping(
         targets=targets,
@@ -71,6 +74,7 @@ def load_training_graphs(
         max_cov_pairs=max_cov_pairs,
         stage=stage,
         location=location,
+        num_workers=int(msa_num_workers),
     )
     return build_target_graphs(
         targets=targets,
@@ -105,6 +109,8 @@ def load_inference_graphs(
     max_cov_pairs: int,
     stage: str,
     location: str,
+    thermo_num_workers: int = 1,
+    msa_num_workers: int = 1,
 ) -> list[TargetGraph]:
     targets = _read_targets(targets_path, stage=stage, location=location)
     pairings = read_table(pairings_path, stage=stage, location=location)
@@ -118,6 +124,7 @@ def load_inference_graphs(
         chain_separator=chain_separator,
         stage=stage,
         location=location,
+        num_workers=int(thermo_num_workers),
     )
     chem_mapping = compute_chemical_exposure_mapping(
         targets=targets,
@@ -139,6 +146,7 @@ def load_inference_graphs(
         max_cov_pairs=max_cov_pairs,
         stage=stage,
         location=location,
+        num_workers=int(msa_num_workers),
     )
     return build_target_graphs(
         targets=targets,

@@ -18,6 +18,7 @@ python -m rna3d_local predict-tbm --retrieval runs/reranker/reranked.parquet --t
 python -m rna3d_local minimize-ensemble --predictions runs/tbm/predictions.parquet --out runs/tbm/predictions_minimized.parquet --backend openmm --max-iterations 80 --bond-length-angstrom 5.9 --vdw-min-distance-angstrom 2.1 --position-restraint-k 800.0
 python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/tbm/predictions_minimized.parquet --out runs/tbm/submission.csv
 python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/tbm/submission.csv
+python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/tbm/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --score-json runs/tbm/score.json --report runs/tbm/score_report.json
 
 # Fase 2 (assets + modelos offline + roteamento hibrido)
 python -m rna3d_local build-phase2-assets --assets-dir assets
@@ -31,7 +32,8 @@ python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2
 python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/phase2/submission.csv --score-json runs/phase2/score.json --baseline-score 0.0 --report runs/phase2/readiness.json
 
 # Branch experimental SE(3) + gerativo (Best-of-5)
-python -m rna3d_local train-se3-generator --targets input/stanford-rna-3d-folding-2/train_sequences.csv --pairings runs/se3/pairings.parquet --chemical-features runs/chem/chemical_features.parquet --labels input/stanford-rna-3d-folding-2/train_labels.csv --config runs/se3/config_train.json --out-dir runs/se3/model --seed 123
+python -m rna3d_local prepare-phase1-data-lab --targets input/stanford-rna-3d-folding-2/train_sequences.csv --pairings runs/se3/pairings.parquet --chemical-features runs/chem/chemical_features.parquet --labels input/stanford-rna-3d-folding-2/train_labels.csv --out-dir runs/se3_phase1 --thermo-backend rnafold --msa-backend mmseqs2 --mmseqs-db /data/mmseqs/rna_db --workers 16
+python -m rna3d_local train-se3-generator --targets input/stanford-rna-3d-folding-2/train_sequences.csv --pairings runs/se3/pairings.parquet --chemical-features runs/chem/chemical_features.parquet --labels input/stanford-rna-3d-folding-2/train_labels.csv --config runs/se3/config_train.json --out-dir runs/se3/model --seed 123 --training-store runs/se3_phase1/training_store.zarr
 python -m rna3d_local sample-se3-ensemble --model-dir runs/se3/model --targets input/stanford-rna-3d-folding-2/test_sequences.csv --pairings runs/se3/pairings_test.parquet --chemical-features runs/chem/chemical_features.parquet --out runs/se3/candidates.parquet --method both --n-samples 24 --seed 123
 python -m rna3d_local rank-se3-ensemble --candidates runs/se3/candidates.parquet --out runs/se3/ranked.parquet --diversity-lambda 0.35
 python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out runs/se3/top5.parquet --n-models 5 --diversity-lambda 0.35
@@ -57,6 +59,10 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - `msa_backend`:
   - `mmseqs2`: busca homologos e extrai covariancia de mutacoes compensatorias (WC/Hoogsteen proxy);
   - `mock`: apenas para teste local.
+- `prepare-phase1-data-lab`:
+  - precomputa BPP (RNAfold/LinearFold) e covariancia MSA (MMseqs2) em paralelo (`--workers`);
+  - empacota dataset de treino em `training_store.zarr` para leitura lazy por target direto do SSD/NVMe;
+  - requer dependencia opcional `zarr` (`pip install .[data_lab]`).
 - Parametros fisicos: `radius_angstrom` (recomendado 12-15) e `max_neighbors`.
 - Awareness multicadeia:
   - `chain_separator` define quebra de cadeia na sequencia (ex: `|`);
@@ -107,18 +113,27 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
   "crop_max_length": 384,
   "crop_sequence_fraction": 0.60,
   "gradient_accumulation_steps": 16,
-  "autocast_bfloat16": true
+  "autocast_bfloat16": true,
+  "training_protocol": "local_16gb"
 }
 ```
 
 ## Observacoes operacionais
 
 - Sem fallback silencioso: falhas de contrato interrompem execucao.
+- `training_protocol=local_16gb` aplica contrato estrito para treino local:
+  - `dynamic_cropping=true`;
+  - `crop_min_length/crop_max_length` em `[256,384]`;
+  - `use_gradient_checkpointing=true`;
+  - `autocast_bfloat16=true`;
+  - `gradient_accumulation_steps` em `[16,32]`.
+- `autocast_bfloat16=true` falha cedo se CUDA/BF16 nao estiver disponivel (nao existe fallback silencioso para FP32/CPU).
 - `encoder=mock`, `backend=rules` e `ann_engine=numpy_bruteforce` existem apenas para teste local explicito.
 - `build-homology-folds` aplica estratificacao de dominio por padrao (falha cedo sem fonte de dominio valida).
 - `evaluate-homology-folds` prioriza score de orphans com ponderacao explicita (`orphan_weight`) e exige classificacao orphan valida.
 - `minimize-ensemble` deve ser executado antes de `export-submission`; `backend=openmm` falha cedo se dependencia/plataforma estiver indisponivel.
 - `minimize-ensemble` roda em regime curto (`max_iterations <= 100`) com restraints harmonicas fortes (`position_restraint_k`) para preservar macro-topologia.
+- `score-local-bestof5` usa o binario C++ do USalign para reproduzir Best-of-5 localmente e gerar `score.json` estrito para gating de submissao.
 - O caminho padrao competitivo usa `encoder=ribonanzanet2`, `backend=llama_cpp` e `ann_engine=faiss_ivfpq`.
 - FASE 2 usa roteamento deterministico:
   - template forte -> TBM;

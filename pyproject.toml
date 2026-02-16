@@ -20,6 +20,9 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
+data_lab = [
+  "zarr>=2.18",
+]
 llm = [
   "llama-cpp-python>=0.2.90",
 ]

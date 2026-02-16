@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 import subprocess
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -209,6 +211,45 @@ def _run_linearfold_pairs(
     return pairs
 
 
+def _run_viennarna_pairs(
+    *,
+    sequence: str,
+    stage: str,
+    location: str,
+) -> list[tuple[int, int, float]]:
+    try:
+        import RNA  # type: ignore
+    except Exception as exc:
+        raise_error(
+            stage,
+            location,
+            "backend viennarna indisponivel (modulo RNA ausente)",
+            impact="1",
+            examples=[f"{type(exc).__name__}:{exc}"],
+        )
+    try:
+        fc = RNA.fold_compound(sequence)
+        fc.pf()
+        bpp = fc.bpp()
+    except Exception as exc:
+        raise_error(
+            stage,
+            location,
+            "falha ao executar ViennaRNA (fold_compound/pf)",
+            impact="1",
+            examples=[f"{type(exc).__name__}:{exc}"],
+        )
+    pairs: list[tuple[int, int, float]] = []
+    length = int(len(sequence))
+    for i_1 in range(1, length + 1):
+        for j_1 in range(i_1 + 1, length + 1):
+            prob = float(bpp[i_1][j_1])
+            if prob <= 0.0:
+                continue
+            pairs.append((int(i_1), int(j_1), prob))
+    return pairs
+
+
 def _mock_pairs(sequence: str) -> list[tuple[int, int, float]]:
     length = len(sequence)
     pairs: list[tuple[int, int, float]] = []
@@ -235,7 +276,77 @@ def _load_cache(path: Path) -> list[tuple[int, int, float]]:
 def _save_cache(path: Path, pairs: list[tuple[int, int, float]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"pairs": [{"i": int(i_1), "j": int(j_1), "p": float(prob)} for i_1, j_1, prob in pairs]}
-    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + f".tmp.{uuid.uuid4().hex}")
+    tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _compute_single_target(
+    *,
+    target_id: str,
+    sequence: str,
+    backend_name: str,
+    rnafold_bin: str,
+    linearfold_bin: str,
+    cache_root: Path | None,
+    chain_separator: str,
+    stage: str,
+    location: str,
+) -> tuple[str, ThermoBppTarget]:
+    tid = str(target_id)
+    parsed = parse_sequence_with_chains(
+        sequence=str(sequence),
+        chain_separator=chain_separator,
+        stage=stage,
+        location=location,
+        target_id=tid,
+    )
+    seq = "".join(parsed.residues)
+    pairs: list[tuple[int, int, float]] = []
+    offset = 0
+    for chain_idx, chain_length in enumerate(parsed.chain_lengths):
+        chain_seq = seq[offset : offset + chain_length]
+        cpath = None if cache_root is None else _cache_path(cache_dir=cache_root, backend=f"{backend_name}_chain", sequence=chain_seq)
+        chain_pairs: list[tuple[int, int, float]]
+        if cpath is not None and cpath.exists():
+            chain_pairs = _load_cache(cpath)
+        else:
+            if backend_name == "rnafold":
+                chain_pairs = _run_rnafold_pairs(
+                    sequence=chain_seq,
+                    target_id=f"{tid}_c{chain_idx}",
+                    rnafold_bin=rnafold_bin,
+                    stage=stage,
+                    location=location,
+                )
+            elif backend_name == "linearfold":
+                chain_pairs = _run_linearfold_pairs(
+                    sequence=chain_seq,
+                    linearfold_bin=linearfold_bin,
+                    stage=stage,
+                    location=location,
+                )
+            elif backend_name == "viennarna":
+                chain_pairs = _run_viennarna_pairs(
+                    sequence=chain_seq,
+                    stage=stage,
+                    location=location,
+                )
+            else:
+                chain_pairs = _mock_pairs(chain_seq)
+            if cpath is not None:
+                _save_cache(cpath, chain_pairs)
+        for i_1, j_1, prob in chain_pairs:
+            pairs.append((int(i_1 + offset), int(j_1 + offset), float(prob)))
+        offset += chain_length
+    target = _target_pairs_to_tensors(
+        target_id=tid,
+        sequence=seq,
+        pairs_1based=pairs,
+        stage=stage,
+        location=location,
+    )
+    return tid, target
 
 
 def compute_thermo_bpp(
@@ -248,61 +359,54 @@ def compute_thermo_bpp(
     chain_separator: str,
     stage: str,
     location: str,
+    num_workers: int = 1,
 ) -> dict[str, ThermoBppTarget]:
     require_columns(targets, ["target_id", "sequence"], stage=stage, location=location, label="targets")
     backend_name = str(backend).strip().lower()
-    if backend_name not in {"rnafold", "linearfold", "mock"}:
+    if backend_name not in {"rnafold", "linearfold", "viennarna", "mock"}:
         raise_error(stage, location, "backend termoquimico BPP invalido", impact="1", examples=[backend_name])
+    if int(num_workers) <= 0:
+        raise_error(stage, location, "num_workers invalido para extracao BPP", impact="1", examples=[str(num_workers)])
     cache_root = None if cache_dir is None else Path(cache_dir)
+    rows = [(str(target_id), str(sequence)) for target_id, sequence in targets.select("target_id", "sequence").iter_rows()]
     out: dict[str, ThermoBppTarget] = {}
-    for target_id, sequence in targets.select("target_id", "sequence").iter_rows():
-        tid = str(target_id)
-        parsed = parse_sequence_with_chains(
-            sequence=str(sequence),
-            chain_separator=chain_separator,
-            stage=stage,
-            location=location,
-            target_id=tid,
-        )
-        seq = "".join(parsed.residues)
-        pairs: list[tuple[int, int, float]] = []
-        offset = 0
-        for chain_idx, chain_length in enumerate(parsed.chain_lengths):
-            chain_seq = seq[offset : offset + chain_length]
-            cpath = None if cache_root is None else _cache_path(cache_dir=cache_root, backend=f"{backend_name}_chain", sequence=chain_seq)
-            chain_pairs: list[tuple[int, int, float]]
-            if cpath is not None and cpath.exists():
-                chain_pairs = _load_cache(cpath)
-            else:
-                if backend_name == "rnafold":
-                    chain_pairs = _run_rnafold_pairs(
-                        sequence=chain_seq,
-                        target_id=f"{tid}_c{chain_idx}",
-                        rnafold_bin=rnafold_bin,
-                        stage=stage,
-                        location=location,
-                    )
-                elif backend_name == "linearfold":
-                    chain_pairs = _run_linearfold_pairs(
-                        sequence=chain_seq,
-                        linearfold_bin=linearfold_bin,
-                        stage=stage,
-                        location=location,
-                    )
-                else:
-                    chain_pairs = _mock_pairs(chain_seq)
-                if cpath is not None:
-                    _save_cache(cpath, chain_pairs)
-            for i_1, j_1, prob in chain_pairs:
-                pairs.append((int(i_1 + offset), int(j_1 + offset), float(prob)))
-            offset += chain_length
-        out[tid] = _target_pairs_to_tensors(
-            target_id=tid,
-            sequence=seq,
-            pairs_1based=pairs,
-            stage=stage,
-            location=location,
-        )
+    if int(num_workers) == 1 or len(rows) <= 1:
+        for tid, sequence in rows:
+            key, value = _compute_single_target(
+                target_id=tid,
+                sequence=sequence,
+                backend_name=backend_name,
+                rnafold_bin=rnafold_bin,
+                linearfold_bin=linearfold_bin,
+                cache_root=cache_root,
+                chain_separator=chain_separator,
+                stage=stage,
+                location=location,
+            )
+            out[key] = value
+    else:
+        completed: dict[str, ThermoBppTarget] = {}
+        with ThreadPoolExecutor(max_workers=int(num_workers), thread_name_prefix="rna3d_thermo") as executor:
+            futures = [
+                executor.submit(
+                    _compute_single_target,
+                    target_id=tid,
+                    sequence=sequence,
+                    backend_name=backend_name,
+                    rnafold_bin=rnafold_bin,
+                    linearfold_bin=linearfold_bin,
+                    cache_root=cache_root,
+                    chain_separator=chain_separator,
+                    stage=stage,
+                    location=location,
+                )
+                for tid, sequence in rows
+            ]
+            for future in as_completed(futures):
+                key, value = future.result()
+                completed[key] = value
+        for tid, _ in rows:
+            out[tid] = completed[tid]
     if not out:
         raise_error(stage, location, "nenhum alvo disponivel para extracao BPP", impact="0", examples=[])
     return out

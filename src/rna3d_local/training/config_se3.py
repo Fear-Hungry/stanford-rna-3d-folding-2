@@ -52,6 +52,7 @@ class Se3TrainConfig:
     crop_sequence_fraction: float
     gradient_accumulation_steps: int
     autocast_bfloat16: bool
+    training_protocol: str
 
 
 def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainConfig:
@@ -72,7 +73,7 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
     if graph_backend not in {"torch_sparse", "torch_geometric"}:
         raise_error(stage, location, "graph_backend invalido na config", impact="1", examples=[graph_backend])
     thermo_backend = str(payload.get("thermo_backend", "rnafold")).strip().lower()
-    if thermo_backend not in {"rnafold", "linearfold", "mock"}:
+    if thermo_backend not in {"rnafold", "linearfold", "viennarna", "mock"}:
         raise_error(stage, location, "thermo_backend invalido na config", impact="1", examples=[thermo_backend])
     msa_backend = str(payload.get("msa_backend", "mock")).strip().lower()
     if msa_backend not in {"mmseqs2", "mock"}:
@@ -124,6 +125,7 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         crop_sequence_fraction=float(payload.get("crop_sequence_fraction", 0.60)),
         gradient_accumulation_steps=int(payload.get("gradient_accumulation_steps", 16)),
         autocast_bfloat16=bool(payload.get("autocast_bfloat16", True)),
+        training_protocol=str(payload.get("training_protocol", "custom")).strip().lower(),
     )
     numeric_checks = [
         ("hidden_dim", cfg.hidden_dim),
@@ -150,6 +152,8 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         raise_error(stage, location, "config com valor invalido (<=0)", impact=str(len(bad)), examples=bad[:8])
     if cfg.learning_rate <= 0:
         raise_error(stage, location, "learning_rate invalido (<=0)", impact="1", examples=[str(cfg.learning_rate)])
+    if cfg.training_protocol not in {"custom", "local_16gb"}:
+        raise_error(stage, location, "training_protocol invalido", impact="1", examples=[str(cfg.training_protocol)])
     if cfg.radius_angstrom <= 0:
         raise_error(stage, location, "radius_angstrom invalido (<=0)", impact="1", examples=[str(cfg.radius_angstrom)])
     if cfg.fape_clamp_distance <= 0:
@@ -207,4 +211,37 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         raise_error(stage, location, "mmseqs_bin vazio na config", impact="1", examples=[cfg.mmseqs_bin])
     if cfg.msa_backend == "mmseqs2" and not cfg.mmseqs_db:
         raise_error(stage, location, "msa_backend=mmseqs2 exige mmseqs_db", impact="1", examples=[cfg.mmseqs_db])
+    if cfg.training_protocol == "local_16gb":
+        if not bool(cfg.dynamic_cropping):
+            raise_error(stage, location, "training_protocol=local_16gb exige dynamic_cropping=true", impact="1", examples=[str(cfg.dynamic_cropping)])
+        if int(cfg.crop_min_length) < 256 or int(cfg.crop_min_length) > 384:
+            raise_error(stage, location, "training_protocol=local_16gb exige crop_min_length em [256,384]", impact="1", examples=[str(cfg.crop_min_length)])
+        if int(cfg.crop_max_length) < 256 or int(cfg.crop_max_length) > 384:
+            raise_error(stage, location, "training_protocol=local_16gb exige crop_max_length em [256,384]", impact="1", examples=[str(cfg.crop_max_length)])
+        if int(cfg.crop_min_length) > int(cfg.crop_max_length):
+            raise_error(
+                stage,
+                location,
+                "training_protocol=local_16gb exige crop_min_length <= crop_max_length",
+                impact="1",
+                examples=[f"min={cfg.crop_min_length}", f"max={cfg.crop_max_length}"],
+            )
+        if not bool(cfg.autocast_bfloat16):
+            raise_error(stage, location, "training_protocol=local_16gb exige autocast_bfloat16=true", impact="1", examples=[str(cfg.autocast_bfloat16)])
+        if not bool(cfg.use_gradient_checkpointing):
+            raise_error(
+                stage,
+                location,
+                "training_protocol=local_16gb exige use_gradient_checkpointing=true",
+                impact="1",
+                examples=[str(cfg.use_gradient_checkpointing)],
+            )
+        if int(cfg.gradient_accumulation_steps) < 16 or int(cfg.gradient_accumulation_steps) > 32:
+            raise_error(
+                stage,
+                location,
+                "training_protocol=local_16gb exige gradient_accumulation_steps em [16,32]",
+                impact="1",
+                examples=[str(cfg.gradient_accumulation_steps)],
+            )
     return cfg

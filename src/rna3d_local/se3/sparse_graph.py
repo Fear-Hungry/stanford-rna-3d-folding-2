@@ -69,12 +69,14 @@ def compute_chain_relative_features(
 def _enforce_min_degree(
     *,
     src: torch.Tensor,
+    dst: torch.Tensor,
     n_nodes: int,
     stage: str,
     location: str,
 ) -> None:
     degree = torch.zeros((n_nodes,), dtype=torch.int32, device=src.device)
     degree.index_add_(0, src, torch.ones_like(src, dtype=torch.int32))
+    degree.index_add_(0, dst, torch.ones_like(dst, dtype=torch.int32))
     isolated = torch.nonzero(degree == 0, as_tuple=False).flatten()
     if int(isolated.numel()) > 0:
         examples = [str(int(item) + 1) for item in isolated[:8].tolist()]
@@ -122,7 +124,12 @@ def _build_torch_sparse_edges(
 
     cluster_edges = _build_torch_cluster()
     if cluster_edges is not None:
-        return cluster_edges
+        src_cluster, dst_cluster, dist_cluster = cluster_edges
+        degree = torch.zeros((n_nodes,), dtype=torch.int32, device=coords.device)
+        degree.index_add_(0, src_cluster, torch.ones_like(src_cluster, dtype=torch.int32))
+        degree.index_add_(0, dst_cluster, torch.ones_like(dst_cluster, dtype=torch.int32))
+        if int(torch.nonzero(degree == 0, as_tuple=False).numel()) == 0:
+            return src_cluster, dst_cluster, dist_cluster
 
     coords_cpu = coords.detach().to(device="cpu", dtype=torch.float32)
     scale = float(radius_angstrom)
@@ -260,7 +267,7 @@ def build_sparse_radius_graph(
         )
     else:
         raise_error(stage, location, "backend de grafo invalido", impact="1", examples=[backend_name])
-    _enforce_min_degree(src=src, n_nodes=n_nodes, stage=stage, location=location)
+    _enforce_min_degree(src=src, dst=dst, n_nodes=n_nodes, stage=stage, location=location)
     indices = torch.stack([src, dst], dim=0)
     adjacency = torch.sparse_coo_tensor(
         indices=indices,

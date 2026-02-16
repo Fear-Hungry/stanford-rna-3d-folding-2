@@ -90,3 +90,56 @@ def test_compute_thermo_bpp_multichain_respects_separator() -> None:
     assert target.sequence == "ACGU"
     assert int(target.paired_marginal.numel()) == 4
     assert int(target.pair_src.numel()) == 4
+
+
+def test_compute_thermo_bpp_mock_backend_parallel_consistent() -> None:
+    targets = pl.DataFrame(
+        [
+            {"target_id": "T1", "sequence": "ACGUAC", "temporal_cutoff": "2024-01-01"},
+            {"target_id": "T2", "sequence": "GGAAUU", "temporal_cutoff": "2024-01-01"},
+            {"target_id": "T3", "sequence": "AUGCAU", "temporal_cutoff": "2024-01-01"},
+        ]
+    )
+    serial = compute_thermo_bpp(
+        targets=targets,
+        backend="mock",
+        rnafold_bin="RNAfold",
+        linearfold_bin="linearfold",
+        cache_dir=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_mock_backend_parallel_consistent:serial",
+        num_workers=1,
+    )
+    parallel = compute_thermo_bpp(
+        targets=targets,
+        backend="mock",
+        rnafold_bin="RNAfold",
+        linearfold_bin="linearfold",
+        cache_dir=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_mock_backend_parallel_consistent:parallel",
+        num_workers=4,
+    )
+    assert sorted(serial.keys()) == sorted(parallel.keys())
+    for target_id in serial:
+        assert float(serial[target_id].paired_marginal.sum().item()) == float(parallel[target_id].paired_marginal.sum().item())
+
+
+def test_compute_thermo_bpp_viennarna_backend_shapes() -> None:
+    pytest.importorskip("RNA")
+    targets = pl.DataFrame([{"target_id": "T1", "sequence": "GGGAAACCC", "temporal_cutoff": "2024-01-01"}])
+    out = compute_thermo_bpp(
+        targets=targets,
+        backend="viennarna",
+        rnafold_bin="RNAfold",
+        linearfold_bin="linearfold",
+        cache_dir=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_viennarna_backend_shapes",
+    )
+    assert set(out.keys()) == {"T1"}
+    assert int(out["T1"].paired_marginal.numel()) == 9
+    assert int(out["T1"].pair_src.numel()) > 0

@@ -11,6 +11,7 @@ from .description_family import infer_description_family
 from .embedding_index import build_embedding_index
 from .ensemble.qa_ranker_se3 import rank_se3_ensemble
 from .ensemble.select_top5 import select_top5_se3
+from .evaluation import score_local_bestof5
 from .errors import PipelineError
 from .homology_eval import evaluate_homology_folds
 from .homology_folds import build_homology_folds
@@ -27,6 +28,7 @@ from .submit_readiness import evaluate_submit_readiness
 from .se3_pipeline import sample_se3_ensemble, train_se3_generator
 from .tbm import predict_tbm
 from .template_db import build_template_db
+from .training.data_lab import prepare_phase1_data_lab
 
 
 def _repo_root() -> Path:
@@ -214,6 +216,24 @@ def main(argv: list[str] | None = None) -> int:
             _print_json({"ok": True, "submission": str((repo / args.submission).resolve())})
             return 0
 
+        if args.command == "score-local-bestof5":
+            out = score_local_bestof5(
+                ground_truth_path=(repo / args.ground_truth).resolve(),
+                submission_path=(repo / args.submission).resolve(),
+                usalign_path=(repo / args.usalign_bin).resolve(),
+                score_json_path=(repo / args.score_json).resolve(),
+                report_path=(None if args.report is None else (repo / args.report).resolve()),
+            )
+            _print_json(
+                {
+                    "score": float(out.score),
+                    "n_targets": int(out.n_targets),
+                    "score_json": str(out.score_json_path),
+                    "report": str(out.report_path),
+                }
+            )
+            return 0
+
         if args.command == "submit-kaggle-notebook":
             out = submit_kaggle_notebook(
                 competition=str(args.competition),
@@ -273,6 +293,37 @@ def main(argv: list[str] | None = None) -> int:
             _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
             return 0
 
+        if args.command == "prepare-phase1-data-lab":
+            out = prepare_phase1_data_lab(
+                repo_root=repo,
+                targets_path=(repo / args.targets).resolve(),
+                pairings_path=(repo / args.pairings).resolve(),
+                chemical_features_path=(repo / args.chemical_features).resolve(),
+                labels_path=(repo / args.labels).resolve(),
+                out_dir=(repo / args.out_dir).resolve(),
+                thermo_backend=str(args.thermo_backend),
+                rnafold_bin=str(args.rnafold_bin),
+                linearfold_bin=str(args.linearfold_bin),
+                msa_backend=str(args.msa_backend),
+                mmseqs_bin=str(args.mmseqs_bin),
+                mmseqs_db=str(args.mmseqs_db),
+                chain_separator=str(args.chain_separator),
+                max_msa_sequences=int(args.max_msa_sequences),
+                max_cov_positions=int(args.max_cov_positions),
+                max_cov_pairs=int(args.max_cov_pairs),
+                num_workers=int(args.workers),
+            )
+            _print_json(
+                {
+                    "training_store": str(out.store_path),
+                    "training_store_manifest": str(out.store_manifest_path),
+                    "manifest": str(out.manifest_path),
+                    "thermo_cache_dir": str(out.thermo_cache_dir),
+                    "msa_cache_dir": str(out.msa_cache_dir),
+                }
+            )
+            return 0
+
         if args.command == "train-se3-generator":
             out = train_se3_generator(
                 repo_root=repo,
@@ -283,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=(repo / args.config).resolve(),
                 out_dir=(repo / args.out_dir).resolve(),
                 seed=int(args.seed),
+                training_store_path=(None if args.training_store is None else (repo / args.training_store).resolve()),
             )
             _print_json(
                 {

@@ -1569,3 +1569,91 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py tests/test_sequence_parser.py` verde.
   - `pytest -q` verde.
   - Treino SE(3) em CUDA com BF16 nao falha no SVD da perda estrutural.
+
+## PLAN-093 - FASE 1 Data Lab local com precompute paralelo e store lazy
+
+- Objetivo: estruturar o pre-processamento local da FASE 1 com precomputo de termodinamica e MSA em CPU multithread, empacotando treino em store binario lazy-loading para reduzir pressao de RAM.
+- Escopo:
+  - `training/thermo_2d.py`:
+    - adicionar execucao paralela por alvo com `num_workers`;
+    - tornar escrita de cache atomica para evitar corrupcao concorrente.
+  - `training/msa_covariance.py`:
+    - adicionar execucao paralela por alvo com `num_workers`;
+    - tornar escrita de cache atomica para uso concorrente.
+  - `training/dataset_se3.py`:
+    - aceitar `thermo_num_workers` e `msa_num_workers`.
+  - `training/store_zarr.py`:
+    - implementar build de `training_store.zarr` com arrays por target;
+    - implementar loader lazy `ZarrTrainingStore` para carregar um target por vez.
+  - `training/data_lab.py`:
+    - novo pipeline `prepare_phase1_data_lab` para precompute + empacotamento.
+  - `trainer_se3.py` / `se3_pipeline.py`:
+    - suportar treino com `--training-store` (lazy loading por target).
+  - CLI/Docs:
+    - novo comando `prepare-phase1-data-lab`;
+    - documentar fluxo e dependencia opcional `zarr`.
+  - Testes:
+    - cobrir consistencia paralela para BPP/MSA mock;
+    - cobrir contrato do Data Lab quando `zarr` estiver ausente/presente.
+- Criterios de aceite:
+  - `pytest -q` verde.
+  - `prepare-phase1-data-lab` falha cedo com erro acionavel se `zarr` nao estiver instalado.
+  - `train-se3-generator --training-store <...>.zarr` ativa leitura lazy por target sem quebrar testes existentes.
+
+## PLAN-094 - FASE 2 local 16GB com protocolo de treino estrito
+
+- Objetivo: consolidar o treino local da FASE 2 em contrato tecnico explicito para 16GB VRAM, evitando fallback silencioso no runtime.
+- Escopo:
+  - `training/config_se3.py`:
+    - adicionar `training_protocol` com valores `custom` e `local_16gb`;
+    - para `local_16gb`, validar obrigatoriamente:
+      - `dynamic_cropping=true`;
+      - `crop_min_length/crop_max_length` em `[256,384]`;
+      - `use_gradient_checkpointing=true`;
+      - `autocast_bfloat16=true`;
+      - `gradient_accumulation_steps` em `[16,32]`.
+  - `training/trainer_se3.py`:
+    - falhar cedo se `autocast_bfloat16=true` sem CUDA/BF16 suportado;
+    - registrar `training_protocol` no `config_effective`.
+  - `README.md`:
+    - documentar `training_protocol=local_16gb` e regras do contrato.
+  - Testes:
+    - adicionar cenarios de validacao para protocolo local 16GB em config.
+- Criterios de aceite:
+  - `pytest -q` verde.
+  - `training_protocol=local_16gb` rejeita configuracoes fora do envelope de memoria definido.
+  - runtime de treino falha cedo quando BF16 e requisitado sem suporte de hardware.
+
+## PLAN-095 - Oraculo local Best-of-5 com USalign (gate estrito de score)
+
+- Objetivo: adicionar avaliacao local com o binario oficial `USalign` para reproduzir a metrica Best-of-5 em modo estrito antes de qualquer decisao de submissao.
+- Escopo:
+  - `src/rna3d_local/evaluation/usalign_scorer.py`:
+    - implementar scorer local com parsing estrito de `ground_truth` e `submission`;
+    - converter coordenadas para PDB minimalista (C1') e calcular TM-score por alvo;
+    - aplicar agregacao Best-of-5 por alvo e media global;
+    - produzir `score.json` e relatorio detalhado por alvo;
+    - falhar cedo para contrato invalido (colunas ausentes, duplicatas, faltantes, valores nao-finitos, mismatch de chaves).
+  - `src/rna3d_local/cli_parser.py` / `src/rna3d_local/cli.py`:
+    - adicionar comando `score-local-bestof5`.
+  - Testes:
+    - incluir testes para parsing/contratos e fluxo Best-of-5 com `USalign` fake (stub executavel).
+  - Documentacao:
+    - atualizar `README.md` com fluxo de uso local do scorer.
+- Criterios de aceite:
+  - `pytest -q tests/test_usalign_scorer.py` verde.
+  - comando `python -m rna3d_local score-local-bestof5 ...` gera `score.json` e falha cedo em erros de contrato.
+  - `pytest -q` verde sem regressao.
+
+## PLAN-096 - Execucao end-to-end local com treino SE(3) e score validacao
+
+- Objetivo: executar pipeline local de treino + inferencia + export + score para medir qualidade real do candidato em ambiente com RTX 16GB.
+- Escopo:
+  - preparar artefatos de treino/inferencia locais (targets, pairings, chemical features, labels) em modo reproduzivel;
+  - executar `prepare-phase1-data-lab` e `train-se3-generator` com `training_store.zarr`;
+  - gerar candidatos (`sample/rank/select`), exportar submissao e validar contrato estrito;
+  - calcular score local Best-of-5 com USalign e registrar bloqueios de custo/tempo quando aplicavel.
+- Criterios de aceite:
+  - treino SE(3) finalizado com artefatos em `runs/.../se3_model_*`;
+  - submissao validada por `check-submission`;
+  - score local produzido (integral ou parcial explicitamente justificado) com reporte de custo.

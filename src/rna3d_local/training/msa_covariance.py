@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -64,7 +66,9 @@ def _load_cache(path: Path) -> list[tuple[int, int, float]]:
 def _save_cache(path: Path, pairs: list[tuple[int, int, float]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"pairs": [{"i": int(i_1), "j": int(j_1), "p": float(prob)} for i_1, j_1, prob in pairs]}
-    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + f".tmp.{uuid.uuid4().hex}")
+    tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
 
 
 def _map_target_alignment_to_query(qaln: str, taln: str, query_length: int) -> np.ndarray:
@@ -252,6 +256,81 @@ def _pairs_to_target(
     )
 
 
+def _compute_single_target(
+    *,
+    target_id: str,
+    sequence: str,
+    backend_name: str,
+    mmseqs_bin: str,
+    mmseqs_db: str,
+    cache_root: Path | None,
+    chain_separator: str,
+    max_msa_sequences: int,
+    max_cov_positions: int,
+    max_cov_pairs: int,
+    stage: str,
+    location: str,
+) -> tuple[str, MsaCovTarget]:
+    tid = str(target_id)
+    parsed = parse_sequence_with_chains(
+        sequence=str(sequence),
+        chain_separator=chain_separator,
+        stage=stage,
+        location=location,
+        target_id=tid,
+    )
+    joined_sequence = "".join(parsed.residues)
+    global_pairs: list[tuple[int, int, float]] = []
+    offset = 0
+    for chain_idx, chain_length in enumerate(parsed.chain_lengths):
+        chain_seq = joined_sequence[offset : offset + chain_length]
+        if cache_root is not None:
+            cpath = _cache_path(cache_dir=cache_root, backend=f"{backend_name}_chain", sequence=chain_seq)
+        else:
+            cpath = None
+        if cpath is not None and cpath.exists():
+            chain_pairs = _load_cache(cpath)
+        else:
+            if backend_name == "mock":
+                chain_pairs = _mock_pairs(chain_seq)
+            else:
+                aligned = _run_mmseqs_chain_alignments(
+                    mmseqs_bin=mmseqs_bin,
+                    mmseqs_db=mmseqs_db,
+                    chain_sequence=chain_seq,
+                    query_id=f"{tid}_c{chain_idx}",
+                    max_msa_sequences=max_msa_sequences,
+                    stage=stage,
+                    location=location,
+                )
+                chain_pairs = _covariance_pairs_from_alignment(
+                    aligned=aligned,
+                    max_cov_positions=max_cov_positions,
+                    max_cov_pairs=max_cov_pairs,
+                )
+                if not chain_pairs:
+                    raise_error(
+                        stage,
+                        location,
+                        "mmseqs2 sem pares de covariancia utilizaveis",
+                        impact="1",
+                        examples=[f"{tid}:chain={chain_idx}"],
+                    )
+            if cpath is not None:
+                _save_cache(cpath, chain_pairs)
+        for i_1, j_1, prob in chain_pairs:
+            global_pairs.append((i_1 + offset, j_1 + offset, float(prob)))
+        offset += chain_length
+    target = _pairs_to_target(
+        target_id=tid,
+        sequence=joined_sequence,
+        pairs_1based=global_pairs,
+        stage=stage,
+        location=location,
+    )
+    return tid, target
+
+
 def compute_msa_covariance(
     *,
     targets: pl.DataFrame,
@@ -265,10 +344,13 @@ def compute_msa_covariance(
     max_cov_pairs: int,
     stage: str,
     location: str,
+    num_workers: int = 1,
 ) -> dict[str, MsaCovTarget]:
     require_columns(targets, ["target_id", "sequence"], stage=stage, location=location, label="targets")
     if max_msa_sequences <= 1:
         raise_error(stage, location, "max_msa_sequences deve ser > 1", impact="1", examples=[str(max_msa_sequences)])
+    if int(num_workers) <= 0:
+        raise_error(stage, location, "num_workers invalido para extracao de MSA/covariancia", impact="1", examples=[str(num_workers)])
     if max_cov_positions <= 0 or max_cov_pairs <= 0:
         raise_error(
             stage,
@@ -281,65 +363,51 @@ def compute_msa_covariance(
     if backend_name not in {"mmseqs2", "mock"}:
         raise_error(stage, location, "msa_backend invalido", impact="1", examples=[backend_name])
     cache_root = None if cache_dir is None else Path(cache_dir)
+    rows = [(str(target_id), str(sequence)) for target_id, sequence in targets.select("target_id", "sequence").iter_rows()]
     outputs: dict[str, MsaCovTarget] = {}
-    for target_id, sequence in targets.select("target_id", "sequence").iter_rows():
-        tid = str(target_id)
-        parsed = parse_sequence_with_chains(
-            sequence=str(sequence),
-            chain_separator=chain_separator,
-            stage=stage,
-            location=location,
-            target_id=tid,
-        )
-        joined_sequence = "".join(parsed.residues)
-        global_pairs: list[tuple[int, int, float]] = []
-        offset = 0
-        for chain_idx, chain_length in enumerate(parsed.chain_lengths):
-            chain_seq = joined_sequence[offset : offset + chain_length]
-            if cache_root is not None:
-                cpath = _cache_path(cache_dir=cache_root, backend=f"{backend_name}_chain", sequence=chain_seq)
-            else:
-                cpath = None
-            if cpath is not None and cpath.exists():
-                chain_pairs = _load_cache(cpath)
-            else:
-                if backend_name == "mock":
-                    chain_pairs = _mock_pairs(chain_seq)
-                else:
-                    aligned = _run_mmseqs_chain_alignments(
-                        mmseqs_bin=mmseqs_bin,
-                        mmseqs_db=mmseqs_db,
-                        chain_sequence=chain_seq,
-                        query_id=f"{tid}_c{chain_idx}",
-                        max_msa_sequences=max_msa_sequences,
-                        stage=stage,
-                        location=location,
-                    )
-                    chain_pairs = _covariance_pairs_from_alignment(
-                        aligned=aligned,
-                        max_cov_positions=max_cov_positions,
-                        max_cov_pairs=max_cov_pairs,
-                    )
-                    if not chain_pairs:
-                        raise_error(
-                            stage,
-                            location,
-                            "mmseqs2 sem pares de covariancia utilizaveis",
-                            impact="1",
-                            examples=[f"{tid}:chain={chain_idx}"],
-                        )
-                if cpath is not None:
-                    _save_cache(cpath, chain_pairs)
-            for i_1, j_1, prob in chain_pairs:
-                global_pairs.append((i_1 + offset, j_1 + offset, float(prob)))
-            offset += chain_length
-        outputs[tid] = _pairs_to_target(
-            target_id=tid,
-            sequence=joined_sequence,
-            pairs_1based=global_pairs,
-            stage=stage,
-            location=location,
-        )
+    if int(num_workers) == 1 or len(rows) <= 1:
+        for tid, sequence in rows:
+            key, value = _compute_single_target(
+                target_id=tid,
+                sequence=sequence,
+                backend_name=backend_name,
+                mmseqs_bin=mmseqs_bin,
+                mmseqs_db=mmseqs_db,
+                cache_root=cache_root,
+                chain_separator=chain_separator,
+                max_msa_sequences=max_msa_sequences,
+                max_cov_positions=max_cov_positions,
+                max_cov_pairs=max_cov_pairs,
+                stage=stage,
+                location=location,
+            )
+            outputs[key] = value
+    else:
+        completed: dict[str, MsaCovTarget] = {}
+        with ThreadPoolExecutor(max_workers=int(num_workers), thread_name_prefix="rna3d_msa") as executor:
+            futures = [
+                executor.submit(
+                    _compute_single_target,
+                    target_id=tid,
+                    sequence=sequence,
+                    backend_name=backend_name,
+                    mmseqs_bin=mmseqs_bin,
+                    mmseqs_db=mmseqs_db,
+                    cache_root=cache_root,
+                    chain_separator=chain_separator,
+                    max_msa_sequences=max_msa_sequences,
+                    max_cov_positions=max_cov_positions,
+                    max_cov_pairs=max_cov_pairs,
+                    stage=stage,
+                    location=location,
+                )
+                for tid, sequence in rows
+            ]
+            for future in as_completed(futures):
+                key, value = future.result()
+                completed[key] = value
+        for tid, _ in rows:
+            outputs[tid] = completed[tid]
     if not outputs:
         raise_error(stage, location, "nenhum alvo para extracao de MSA/covariancia", impact="0", examples=[])
     return outputs

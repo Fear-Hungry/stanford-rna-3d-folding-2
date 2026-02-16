@@ -173,3 +173,71 @@ def test_config_fails_when_all_structural_weights_are_zero(tmp_path) -> None:
             stage="TEST",
             location="tests/test_se3_losses.py:test_config_fails_when_all_structural_weights_are_zero",
         )
+
+
+def test_config_local_16gb_fails_for_invalid_accumulation(tmp_path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "hidden_dim": 16,
+                "num_layers": 1,
+                "ipa_heads": 4,
+                "diffusion_steps": 4,
+                "flow_steps": 4,
+                "epochs": 1,
+                "learning_rate": 1e-3,
+                "method": "diffusion",
+                "thermo_backend": "mock",
+                "msa_backend": "mock",
+                "training_protocol": "local_16gb",
+                "dynamic_cropping": True,
+                "crop_min_length": 256,
+                "crop_max_length": 384,
+                "use_gradient_checkpointing": True,
+                "autocast_bfloat16": True,
+                "gradient_accumulation_steps": 8,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="gradient_accumulation_steps"):
+        load_se3_train_config(
+            config,
+            stage="TEST",
+            location="tests/test_se3_losses.py:test_config_local_16gb_fails_for_invalid_accumulation",
+        )
+
+
+def test_config_local_16gb_accepts_expected_window(tmp_path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "hidden_dim": 16,
+                "num_layers": 1,
+                "ipa_heads": 4,
+                "diffusion_steps": 4,
+                "flow_steps": 4,
+                "epochs": 1,
+                "learning_rate": 1e-3,
+                "method": "diffusion",
+                "thermo_backend": "mock",
+                "msa_backend": "mock",
+                "training_protocol": "local_16gb",
+                "dynamic_cropping": True,
+                "crop_min_length": 256,
+                "crop_max_length": 384,
+                "use_gradient_checkpointing": True,
+                "autocast_bfloat16": True,
+                "gradient_accumulation_steps": 16,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_se3_train_config(
+        config,
+        stage="TEST",
+        location="tests/test_se3_losses.py:test_config_local_16gb_accepts_expected_window",
+    )
+    assert cfg.training_protocol == "local_16gb"

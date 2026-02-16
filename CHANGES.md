@@ -691,3 +691,133 @@ Log append-only de mudancas implementadas.
   - `pytest -q` -> `63 passed`
 - Riscos conhecidos / follow-ups:
   - O alinhamento Kabsch do TM-core agora roda em `float32`, reduzindo risco de erro BF16 ao custo de overhead pequeno no treinamento.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-093
+
+- Data UTC: `2026-02-16T15:16:34Z`
+- Plano: `PLAN-093`
+- Resumo:
+  - FASE 1 do treino local foi estruturada em pipeline dedicado:
+    - novo comando `prepare-phase1-data-lab` para precomputar BPP + MSA e empacotar `training_store.zarr`;
+    - cache de termo/MSA passou a suportar paralelismo por alvo com `num_workers` e escrita atomica de cache;
+    - treino SE(3) agora aceita `--training-store` e carrega um target por vez via `ZarrTrainingStore` (lazy loading).
+  - Foi adicionado modulo de store lazy:
+    - `training/store_zarr.py` (build + loader de `training_store.zarr`);
+    - `training/data_lab.py` (orquestracao da fase 1 local).
+  - CLI e documentacao atualizadas para fluxo de pre-processamento local com 16 threads.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `src/rna3d_local/training/msa_covariance.py`
+  - `src/rna3d_local/training/dataset_se3.py`
+  - `src/rna3d_local/training/store_zarr.py`
+  - `src/rna3d_local/training/data_lab.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/se3_pipeline.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `README.md`
+  - `pyproject.toml`
+  - `tests/test_thermo_2d.py`
+  - `tests/test_msa_covariance.py`
+  - `tests/test_phase1_data_lab.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_thermo_2d.py tests/test_msa_covariance.py tests/test_phase1_data_lab.py` -> `10 passed`
+  - `pytest -q tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_sequence_parser.py tests/test_se3_losses.py` -> `15 passed`
+  - `pytest -q` -> `66 passed`
+- Riscos conhecidos / follow-ups:
+  - `prepare-phase1-data-lab` exige dependencia opcional `zarr`; sem ela o comando falha cedo com erro acionavel.
+  - O fluxo ainda depende de tuning empirico de `workers` e parametros MMseqs2 para equilibrar throughput de CPU e I/O.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-094
+
+- Data UTC: `2026-02-16T15:20:23Z`
+- Plano: `PLAN-094`
+- Resumo:
+  - Foi introduzido `training_protocol` na config SE(3), com suporte a:
+    - `custom` (comportamento livre);
+    - `local_16gb` (contrato estrito para treino local com 16GB VRAM).
+  - Regras obrigatorias do protocolo `local_16gb`:
+    - `dynamic_cropping=true`;
+    - `crop_min_length/crop_max_length` em `[256,384]`;
+    - `use_gradient_checkpointing=true`;
+    - `autocast_bfloat16=true`;
+    - `gradient_accumulation_steps` em `[16,32]`.
+  - Runtime do treino agora falha cedo quando BF16 e exigido sem suporte (sem fallback silencioso para CPU/FP32).
+  - `training_protocol` passou a ser persistido em `config_effective`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `README.md`
+  - `tests/test_se3_losses.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_se3_losses.py tests/test_se3_pipeline.py tests/test_se3_memory.py` -> `14 passed`
+  - `pytest -q` -> `68 passed`
+- Riscos conhecidos / follow-ups:
+  - Em ambientes CPU-only, configs com `autocast_bfloat16=true` agora falham cedo por contrato; para depuracao sem GPU, usar `training_protocol=custom` e `autocast_bfloat16=false`.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-095
+
+- Data UTC: `2026-02-16T15:37:52Z`
+- Plano: `PLAN-095`
+- Resumo:
+  - Foi implementado o oraculo local de score Best-of-5 com USalign:
+    - novo modulo `evaluation/usalign_scorer.py` com parsing estrito de `ground_truth` e `submission`;
+    - conversao para PDB minimalista (C1') e agregacao Best-of-5 por alvo;
+    - geracao de `score.json` e relatorio por alvo para auditoria local.
+  - Foi adicionado novo comando CLI:
+    - `score-local-bestof5 --ground-truth ... --submission ... --usalign-bin ... --score-json ... [--report ...]`.
+  - Foram adicionados testes dedicados com binario USalign fake para validar:
+    - fluxo de sucesso;
+    - falha de contrato por mismatch de chaves;
+    - compatibilidade de ground truth em formato `target_id+resid` com `x_1/y_1/z_1`.
+  - README atualizado com comando de score local e observacao operacional.
+- Arquivos principais tocados:
+  - `src/rna3d_local/evaluation/__init__.py`
+  - `src/rna3d_local/evaluation/usalign_scorer.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_usalign_scorer.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_usalign_scorer.py` -> `3 passed`
+  - `pytest -q` -> `71 passed`
+- Riscos conhecidos / follow-ups:
+  - O parser de output do USalign prioriza `-outfmt 2` e fallback por regex `TM-score`; em upgrade de formato do binario, convem manter teste de contrato com fixture real do executavel oficial.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-096
+
+- Data UTC: `2026-02-16T16:25:07Z`
+- Plano: `PLAN-096`
+- Resumo:
+  - Execucao end-to-end local foi rodada com treino SE(3) e score local:
+    - preparo de dados locais para treino/inferencia em `runs/20260216_full_local_run/`;
+    - `prepare-phase1-data-lab` + `train-se3-generator` (subset controlado de 256 targets, store lazy zarr);
+    - `sample-se3-ensemble` + `rank-se3-ensemble` + `select-top5-se3`;
+    - `export-submission` + `check-submission` em modo estrito.
+  - Ajustes tecnicos para viabilizar execucao no ambiente atual:
+    - `store_zarr.py`: compatibilidade com API de `zarr` v3 em `create_dataset`;
+    - `sparse_graph.py`: robustez de conectividade minima em grafos esparsos dirigidos;
+    - `usalign_scorer.py`: alinhamento com `-atom \" C1'\"` e timeout default ampliado para scorer local.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/store_zarr.py`
+  - `src/rna3d_local/se3/sparse_graph.py`
+  - `src/rna3d_local/evaluation/usalign_scorer.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_phase1_data_lab.py` -> `1 passed`
+  - `pytest -q tests/test_se3_memory.py::test_train_and_sample_se3_with_linear_memory_config tests/test_se3_memory.py::test_torch_geometric_backend_contract` -> `2 passed`
+  - `pytest -q tests/test_usalign_scorer.py` -> `3 passed`
+  - `pytest -q` -> `71 passed`
+- Riscos conhecidos / follow-ups:
+  - Score local Best-of-5 completo em todos os 28 alvos pode exceder janela operacional por custo do USalign em alvos especificos; manter medicao parcial explicita e/ou paralelizar por alvo em iteracao futura.

@@ -883,3 +883,236 @@ Log append-only de experimentos executados.
   - O protocolo de treino para 16GB permanece ativo e o caminho BF16 deixou de quebrar no TM-core.
 - Proximos passos:
   - Executar treino completo local em GPU com persistencia em `runs/` e comparar score local vs baseline antes de qualquer submissao Kaggle.
+
+## PLAN-093
+
+### 2026-02-16T15:16:34Z - marcusvinicius/Codex (fase 1 data lab + store lazy zarr)
+
+- Objetivo/hipotese:
+  - Estruturar pre-processamento local (termodinamica + MSA) em CPU multithread e empacotar treino em store lazy para reduzir consumo de RAM no carregamento de dados.
+- Comparacao:
+  - Baseline: extração BPP/MSA sequencial e grafo de treino carregado integralmente em memoria.
+  - Novo: BPP/MSA com `num_workers` + cache atomico, store `training_store.zarr` e treino opcional com `--training-store` (1 target por vez).
+- Comandos executados:
+  - `pytest -q tests/test_thermo_2d.py tests/test_msa_covariance.py tests/test_phase1_data_lab.py`
+  - `pytest -q tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_sequence_parser.py tests/test_se3_losses.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - Novo comando:
+    - `prepare-phase1-data-lab --workers 16`
+  - Novo caminho de treino:
+    - `train-se3-generator --training-store <...>/training_store.zarr`
+  - Dependencia opcional:
+    - `zarr` (falha cedo quando ausente).
+- Parametros/hiperparametros:
+  - Testes de paralelismo mock rodados com `num_workers=4`.
+  - Data lab de teste:
+    - `thermo_backend=mock`
+    - `msa_backend=mock`
+    - `max_msa_sequences=16`
+    - `max_cov_positions=64`
+    - `max_cov_pairs=512`
+- Seeds:
+  - N/A (validacao funcional de pipeline/cache/store; sem treino estocastico completo neste ciclo).
+- Versao de codigo/dados:
+  - `git commit`: `1f77f26` + modificacoes locais nao commitadas do `PLAN-093`.
+  - Dados sinteticos em `tmp_path` para os testes.
+- Artefatos:
+  - Novo modulo: `src/rna3d_local/training/data_lab.py`.
+  - Novo modulo: `src/rna3d_local/training/store_zarr.py`.
+  - Novo teste: `tests/test_phase1_data_lab.py`.
+- Metricas/score/custo:
+  - `pytest -q tests/test_thermo_2d.py tests/test_msa_covariance.py tests/test_phase1_data_lab.py` -> `10 passed in 0.79s`
+  - `pytest -q tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_sequence_parser.py tests/test_se3_losses.py` -> `15 passed in 2.68s`
+  - `pytest -q` -> `66 passed in 3.56s`
+- Conclusao:
+  - FASE 1 local ficou operacional em contrato estrito para precompute paralelo e empacotamento lazy com zarr.
+- Proximos passos:
+  - Instalar `zarr` no ambiente de treino e executar `prepare-phase1-data-lab` em dataset real para medir throughput de CPU/I/O com `workers=16`.
+
+## PLAN-094
+
+### 2026-02-16T15:20:23Z - marcusvinicius/Codex (protocolo local_16gb estrito no treino FASE 2)
+
+- Objetivo/hipotese:
+  - Formalizar o protocolo de treino local da FASE 2 para 16GB VRAM e remover fallback silencioso em BF16 runtime.
+- Comparacao:
+  - Baseline: knobs de treino existiam, mas sem um protocolo unico validado e sem bloqueio explicito de BF16 sem suporte.
+  - Novo: `training_protocol=local_16gb` com envelope de parametros estrito + fail-fast de BF16 no runtime.
+- Comandos executados:
+  - `pytest -q tests/test_se3_losses.py tests/test_se3_pipeline.py tests/test_se3_memory.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - Novo campo de config: `training_protocol` (`custom` | `local_16gb`).
+  - `local_16gb` exige:
+    - `dynamic_cropping=true`
+    - `crop_min_length/crop_max_length` em `[256,384]`
+    - `use_gradient_checkpointing=true`
+    - `autocast_bfloat16=true`
+    - `gradient_accumulation_steps` em `[16,32]`.
+- Parametros/hiperparametros:
+  - Teste negativo: `gradient_accumulation_steps=8` em `local_16gb` (deve falhar).
+  - Teste positivo: `gradient_accumulation_steps=16` em `local_16gb`.
+- Seeds:
+  - Seeds de suite padrao dos testes de pipeline (`123`, `17`, `7`) nos cenarios de treino curto.
+- Versao de codigo/dados:
+  - `git commit`: `1f77f26` + modificacoes locais nao commitadas do `PLAN-094`.
+  - Dados sinteticos em `tmp_path` para os testes.
+- Artefatos:
+  - Nao houve treino completo em `runs/` neste ciclo (validacao de contrato/integração).
+- Metricas/score/custo:
+  - `pytest -q tests/test_se3_losses.py tests/test_se3_pipeline.py tests/test_se3_memory.py` -> `14 passed in 2.83s`
+  - `pytest -q` -> `68 passed in 3.65s`
+- Conclusao:
+  - O protocolo FASE 2 para 16GB ficou codificado e auditavel, com falha cedo para cenarios BF16 sem suporte.
+- Proximos passos:
+  - Rodar treino completo local com `training_protocol=local_16gb` e store lazy (`--training-store`) para medir estabilidade/throughput em workload real.
+
+## PLAN-095
+
+### 2026-02-16T15:37:52Z - marcusvinicius/Codex (oraculo local Best-of-5 com USalign)
+
+- Objetivo/hipotese:
+  - Reproduzir localmente a metrica Best-of-5 do Kaggle com USalign para gate estrito de submissao.
+- Comparacao:
+  - Baseline: repositorio sem scorer local oficial do Best-of-5 baseado em USalign.
+  - Novo: comando dedicado `score-local-bestof5` gerando `score.json` + relatorio por alvo.
+- Comandos executados:
+  - `pytest -q tests/test_usalign_scorer.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - `score-local-bestof5` requer:
+    - `--ground-truth`
+    - `--submission`
+    - `--usalign-bin`
+    - `--score-json`
+    - `--report` opcional.
+  - Contratos aceitos no ground truth:
+    - `ID + x/y/z` ou
+    - `target_id+resid + x_1/y_1/z_1`.
+- Parametros/hiperparametros:
+  - `timeout_seconds` default do scorer: `120`.
+  - Avaliacao fixa em 5 modelos (`x_1..z_5`) por contrato Best-of-5.
+- Seeds:
+  - N/A (avaliacao deterministica com binario externo + fixture de teste).
+- Versao de codigo/dados:
+  - `git commit`: `1f77f26` + modificacoes locais nao commitadas do `PLAN-095`.
+  - Dados sinteticos em `tmp_path` nos testes.
+- Artefatos:
+  - Novo modulo: `src/rna3d_local/evaluation/usalign_scorer.py`.
+  - Novo teste: `tests/test_usalign_scorer.py`.
+- Metricas/score/custo:
+  - `pytest -q tests/test_usalign_scorer.py` -> `3 passed in 1.02s`
+  - `pytest -q` -> `71 passed in 3.83s`
+- Conclusao:
+  - O gate de score local Best-of-5 com USalign ficou disponivel em modo estrito e auditavel.
+- Proximos passos:
+  - Executar `score-local-bestof5` com binario USalign oficial compilado no host e integrar o `score.json` ao gate `evaluate-submit-readiness` antes de submeter notebook.
+
+## PLAN-096
+
+### 2026-02-16T16:25:07Z - marcusvinicius/Codex (execucao local treino+inferencia+score)
+
+- Objetivo/hipotese:
+  - Rodar pipeline local completo com treino SE(3) e medir score local do candidato exportado.
+- Comparacao:
+  - Baseline: sem score local reproduzivel no ambiente atual apos reboot.
+  - Novo: execucao controlada com artefatos em `runs/20260216_full_local_run/`.
+- Comandos executados:
+  - Preparacao de dados:
+    - geracao de `train_targets_256.csv`, `pairings_train_256.parquet`, `chemical_train_256.parquet`, `train_labels_256.parquet`, `pairings_test.parquet`, `chemical_test.parquet`.
+  - Pipeline:
+    - `python -m rna3d_local prepare-phase1-data-lab --targets runs/20260216_full_local_run/train_targets_256.csv --pairings runs/20260216_full_local_run/pairings_train_256.parquet --chemical-features runs/20260216_full_local_run/chemical_train_256.parquet --labels runs/20260216_full_local_run/train_labels_256.parquet --out-dir runs/20260216_full_local_run/phase1_data_lab_256 --thermo-backend mock --msa-backend mock --workers 16`
+    - `python -m rna3d_local train-se3-generator --targets runs/20260216_full_local_run/train_targets_256.csv --pairings runs/20260216_full_local_run/pairings_train_256.parquet --chemical-features runs/20260216_full_local_run/chemical_train_256.parquet --labels runs/20260216_full_local_run/train_labels_256.parquet --config runs/20260216_full_local_run/config_train_256.json --out-dir runs/20260216_full_local_run/se3_model_256 --seed 123 --training-store runs/20260216_full_local_run/phase1_data_lab_256/training_store.zarr`
+    - `python -m rna3d_local sample-se3-ensemble --model-dir runs/20260216_full_local_run/se3_model_256 --targets runs/20260216_full_local_run/test_targets.csv --pairings runs/20260216_full_local_run/pairings_test.parquet --chemical-features runs/20260216_full_local_run/chemical_test.parquet --out runs/20260216_full_local_run/se3_candidates.parquet --method diffusion --n-samples 20 --seed 123`
+    - `python -m rna3d_local rank-se3-ensemble --candidates runs/20260216_full_local_run/se3_candidates.parquet --out runs/20260216_full_local_run/se3_ranked.parquet --diversity-lambda 0.35`
+    - `python -m rna3d_local select-top5-se3 --ranked runs/20260216_full_local_run/se3_ranked.parquet --out runs/20260216_full_local_run/se3_top5.parquet --n-models 5 --diversity-lambda 0.35`
+    - `python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/20260216_full_local_run/se3_top5.parquet --out runs/20260216_full_local_run/submission.csv`
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_full_local_run/submission.csv`
+  - Score local:
+    - tentativa integral (28 alvos) interrompida por custo/timeout de USalign em alvos especificos;
+    - score parcial executado com sucesso em 10 alvos curtos:
+      - `python -m rna3d_local score-local-bestof5 --ground-truth runs/20260216_full_local_run/validation_labels_short10.csv --submission runs/20260216_full_local_run/submission_short10.csv --usalign-bin src/rna3d_local/evaluation/USalign --score-json runs/20260216_full_local_run/score_short10.json --report runs/20260216_full_local_run/score_report_short10.json`
+- Configuracao efetiva:
+  - `config_train_256.json`:
+    - `training_protocol=local_16gb`
+    - `autocast_bfloat16=true`
+    - `use_gradient_checkpointing=true`
+    - `gradient_accumulation_steps=16`
+    - `epochs=1`
+    - `radius_angstrom=1000.0`
+    - `max_neighbors=32`
+    - `thermo_backend=mock`
+    - `msa_backend=mock`.
+- Parametros/hiperparametros:
+  - treino em subset limpo de `256` targets (`11162` residuos);
+  - inferencia em `28` targets de validacao.
+- Seeds:
+  - `seed=123` (treino e amostragem).
+- Versao de codigo/dados:
+  - `git commit`: `1f77f26` + modificacoes locais nao commitadas do `PLAN-096`.
+  - dados: `input/stanford-rna-3d-folding-2/*`.
+- Artefatos:
+  - `runs/20260216_full_local_run/se3_model_256/metrics.json`
+  - `runs/20260216_full_local_run/se3_top5.parquet`
+  - `runs/20260216_full_local_run/submission.csv`
+  - `runs/20260216_full_local_run/score_short10.json`
+  - `runs/20260216_full_local_run/score_report_short10.json`.
+- Metricas/score/custo:
+  - treino: `ELAPSED=0:37.36`, `RAM_KB=2364760` (comando cronometrado).
+  - amostragem: `ELAPSED=0:07.34`.
+  - score local parcial (10 alvos curtos): `0.04344`.
+  - score local integral (28 alvos): bloqueado por custo de USalign em alvos especificos na janela operacional.
+- Conclusao:
+  - Pipeline tecnico executa ponta-a-ponta e gera submissao valida, mas a qualidade atual e baixa no recorte pontuado (`0.04344`) e nao caracteriza desempenho competitivo.
+- Proximos passos:
+  - substituir backends `mock` por sinais reais (BPP/MSA/quimica) e retreinar com budget maior;
+  - paralelizar scoring USalign por alvo para viabilizar score integral em prazo pratico.
+
+### 2026-02-16T17:27:40Z - marcusvinicius/Codex (retreino VRNA 1200 + gate de submit)
+
+- Objetivo/hipotese:
+  - Reexecutar treino/inferencia com `thermo_backend=viennarna` e medir se o score local sobe no recorte curto.
+- Comparacao:
+  - Baseline: `score_short10=0.04330` (modelo `se3_model_1200_e4`, backend mock).
+  - Novo: `score_short10=0.04543` (modelo `se3_model_1200_vrna_e4`, backend ViennaRNA).
+- Comandos executados:
+  - Treino (VRNA):
+    - `python -m rna3d_local train-se3-generator --targets runs/20260216_full_local_run/train_targets_1200.csv --pairings runs/20260216_full_local_run/pairings_train_1200_vrna.parquet --chemical-features runs/20260216_full_local_run/chemical_train_1200_vrna.parquet --labels runs/20260216_full_local_run/train_labels_1200.parquet --config runs/20260216_full_local_run/config_train_1200_vrna_e4.json --out-dir runs/20260216_full_local_run/se3_model_1200_vrna_e4 --seed 123 --training-store runs/20260216_full_local_run/phase1_data_lab_1200_vrna/training_store.zarr`
+  - Pipeline:
+    - `python -m rna3d_local sample-se3-ensemble --model-dir runs/20260216_full_local_run/se3_model_1200_vrna_e4 --targets runs/20260216_full_local_run/test_targets.csv --pairings runs/20260216_full_local_run/pairings_test_vrna.parquet --chemical-features runs/20260216_full_local_run/chemical_test_vrna.parquet --out runs/20260216_full_local_run/se3_candidates_1200_vrna_e4.parquet --method diffusion --n-samples 20 --seed 123`
+    - `python -m rna3d_local rank-se3-ensemble --candidates runs/20260216_full_local_run/se3_candidates_1200_vrna_e4.parquet --out runs/20260216_full_local_run/se3_ranked_1200_vrna_e4.parquet --diversity-lambda 0.35`
+    - `python -m rna3d_local select-top5-se3 --ranked runs/20260216_full_local_run/se3_ranked_1200_vrna_e4.parquet --out runs/20260216_full_local_run/se3_top5_1200_vrna_e4.parquet --n-models 5 --diversity-lambda 0.35`
+    - `python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/20260216_full_local_run/se3_top5_1200_vrna_e4.parquet --out runs/20260216_full_local_run/submission_1200_vrna_e4.csv`
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_full_local_run/submission_1200_vrna_e4.csv`
+  - Score local:
+    - tentativa integral 28 alvos iniciada e abortada por custo alto em alvos longos (USalign em `9J09`).
+    - recorte curto:
+      - `python -m rna3d_local score-local-bestof5 --ground-truth runs/20260216_full_local_run/validation_labels_short10.csv --submission runs/20260216_full_local_run/submission_1200_vrna_e4_short10.csv --usalign-bin src/rna3d_local/evaluation/USalign --score-json runs/20260216_full_local_run/score_1200_vrna_e4_short10.json --report runs/20260216_full_local_run/score_1200_vrna_e4_short10_report.json`
+  - Gate:
+    - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_full_local_run/submission_1200_vrna_e4.csv --score-json runs/20260216_full_local_run/score_1200_vrna_e4_short10.json --baseline-score 0.23171 --report runs/20260216_full_local_run/readiness_1200_vrna_e4_short10_vs_023171.json --allow-disallow`
+- Configuracao efetiva:
+  - `config_train_1200_vrna_e4.json` com `epochs=4`, `sequence_tower=mamba_like`, `autocast_bfloat16=true`, `use_gradient_checkpointing=true`, `gradient_accumulation_steps=16`, `thermo_backend=viennarna`, `msa_backend=mock`.
+- Parametros/hiperparametros:
+  - treino em `1200` targets; inferencia em `28` targets.
+  - amostragem `n_samples=20`; selecao `n_models=5`.
+- Seeds:
+  - `seed=123`.
+- Versao de codigo/dados:
+  - `git commit`: `1f77f26` + modificacoes locais nao commitadas do `PLAN-096`.
+  - dados: `input/stanford-rna-3d-folding-2/*`.
+- Artefatos:
+  - `runs/20260216_full_local_run/se3_model_1200_vrna_e4/metrics.json`
+  - `runs/20260216_full_local_run/submission_1200_vrna_e4.csv`
+  - `runs/20260216_full_local_run/score_1200_vrna_e4_short10.json`
+  - `runs/20260216_full_local_run/readiness_1200_vrna_e4_short10_vs_023171.json`.
+- Metricas/score/custo:
+  - treino VRNA e4: finalizado em ~`17m` (monitorado por processo local).
+  - amostragem: `ELAPSED=0:24.23`, `RAM_KB=1931632`.
+  - score local curto (10 alvos): `0.04543` (vs baseline curto `0.23171`).
+  - gate de submit: `allowed=false`.
+- Conclusao:
+  - Houve ganho marginal sobre mock (`0.04330 -> 0.04543`), mas ainda muito abaixo do melhor candidato local curto; submissao bloqueada por regra de melhoria estrita.
+- Proximos passos:
+  - concluir treino longo (`epochs=30`) ja iniciado em background e repetir pipeline+score curto+gate;
+  - para score integral (28 alvos), reduzir custo do scorer (timeout/parallelismo por alvo) antes de novo ciclo.

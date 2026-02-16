@@ -35,6 +35,7 @@ def train_se3_generator(
     config_path: Path,
     out_dir: Path,
     seed: int,
+    training_store_path: Path | None = None,
 ) -> TrainSe3Result:
     return train_se3_generator_impl(
         repo_root=repo_root,
@@ -45,6 +46,7 @@ def train_se3_generator(
         config_path=config_path,
         out_dir=out_dir,
         seed=seed,
+        training_store_path=training_store_path,
     )
 
 

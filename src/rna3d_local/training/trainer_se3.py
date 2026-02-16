@@ -20,6 +20,7 @@ from ..utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 from .config_se3 import Se3TrainConfig, load_se3_train_config
 from .dataset_se3 import load_training_graphs
 from .losses_se3 import compute_structural_loss_terms
+from .store_zarr import ZarrTrainingStore
 
 
 @dataclass(frozen=True)
@@ -297,31 +298,49 @@ def train_se3_generator(
     config_path: Path,
     out_dir: Path,
     seed: int,
+    training_store_path: Path | None = None,
 ) -> TrainSe3Result:
     stage = "TRAIN_SE3"
     location = "src/rna3d_local/training/trainer_se3.py:train_se3_generator"
     cfg = load_se3_train_config(config_path, stage=stage, location=location)
-    graphs = load_training_graphs(
-        targets_path=targets_path,
-        pairings_path=pairings_path,
-        chemical_features_path=chemical_features_path,
-        labels_path=labels_path,
-        thermo_backend=cfg.thermo_backend,
-        rnafold_bin=cfg.rnafold_bin,
-        linearfold_bin=cfg.linearfold_bin,
-        thermo_cache_dir=(None if cfg.thermo_cache_dir is None else (repo_root / cfg.thermo_cache_dir).resolve()),
-        msa_backend=cfg.msa_backend,
-        mmseqs_bin=cfg.mmseqs_bin,
-        mmseqs_db=cfg.mmseqs_db,
-        msa_cache_dir=(None if cfg.msa_cache_dir is None else (repo_root / cfg.msa_cache_dir).resolve()),
-        chain_separator=cfg.chain_separator,
-        max_msa_sequences=cfg.max_msa_sequences,
-        max_cov_positions=cfg.max_cov_positions,
-        max_cov_pairs=cfg.max_cov_pairs,
-        stage=stage,
-        location=location,
-    )
-    max_target_len = max(int(item.node_features.shape[0]) for item in graphs)
+    graphs: list | None = None
+    store: ZarrTrainingStore | None = None
+    if training_store_path is None:
+        graphs = load_training_graphs(
+            targets_path=targets_path,
+            pairings_path=pairings_path,
+            chemical_features_path=chemical_features_path,
+            labels_path=labels_path,
+            thermo_backend=cfg.thermo_backend,
+            rnafold_bin=cfg.rnafold_bin,
+            linearfold_bin=cfg.linearfold_bin,
+            thermo_cache_dir=(None if cfg.thermo_cache_dir is None else (repo_root / cfg.thermo_cache_dir).resolve()),
+            msa_backend=cfg.msa_backend,
+            mmseqs_bin=cfg.mmseqs_bin,
+            mmseqs_db=cfg.mmseqs_db,
+            msa_cache_dir=(None if cfg.msa_cache_dir is None else (repo_root / cfg.msa_cache_dir).resolve()),
+            chain_separator=cfg.chain_separator,
+            max_msa_sequences=cfg.max_msa_sequences,
+            max_cov_positions=cfg.max_cov_positions,
+            max_cov_pairs=cfg.max_cov_pairs,
+            stage=stage,
+            location=location,
+        )
+        graph_count = int(len(graphs))
+        max_target_len = max(int(item.node_features.shape[0]) for item in graphs)
+        input_dim = int(graphs[0].node_features.shape[1])
+    else:
+        store = ZarrTrainingStore(
+            store_path=training_store_path,
+            manifest_path=training_store_path.parent / "training_store_manifest.json",
+            stage=stage,
+            location=location,
+        )
+        graph_count = int(len(store))
+        max_target_len = int(store.max_target_length)
+        input_dim = int(store.input_dim)
+        if graph_count <= 0:
+            raise_error(stage, location, "store zarr sem targets para treino", impact="0", examples=[str(training_store_path)])
     if (not bool(cfg.dynamic_cropping)) and max_target_len > int(cfg.crop_max_length):
         raise_error(
             stage,
@@ -330,7 +349,6 @@ def train_se3_generator(
             impact="1",
             examples=[f"max_target_len={max_target_len}", f"crop_max_length={cfg.crop_max_length}"],
         )
-    input_dim = int(graphs[0].node_features.shape[1])
     if input_dim <= 0:
         raise_error(stage, location, "input_dim invalido para treino", impact="1", examples=[str(input_dim)])
 
@@ -387,7 +405,32 @@ def train_se3_generator(
         diffusion.to(device)
     if flow is not None:
         flow.to(device)
-    autocast_enabled = bool(cfg.autocast_bfloat16 and device.type == "cuda" and bool(torch.cuda.is_bf16_supported()))
+    if bool(cfg.autocast_bfloat16):
+        if device.type != "cuda":
+            raise_error(
+                stage,
+                location,
+                "autocast_bfloat16 exige treino em CUDA; fallback silencioso para CPU e proibido",
+                impact="1",
+                examples=[str(device.type)],
+            )
+        if not bool(torch.cuda.is_bf16_supported()):
+            raise_error(
+                stage,
+                location,
+                "autocast_bfloat16 habilitado, mas GPU nao suporta BF16",
+                impact="1",
+                examples=[torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cuda_unavailable"],
+            )
+    autocast_enabled = bool(cfg.autocast_bfloat16 and device.type == "cuda")
+    if cfg.training_protocol == "local_16gb" and device.type != "cuda":
+        raise_error(
+            stage,
+            location,
+            "training_protocol=local_16gb exige GPU CUDA",
+            impact="1",
+            examples=[str(device.type)],
+        )
     accumulation_steps = int(cfg.gradient_accumulation_steps)
     rng = torch.Generator(device="cpu")
     rng.manual_seed(int(seed))
@@ -409,7 +452,8 @@ def train_se3_generator(
         epoch_crop_length = 0.0
         epoch_crop_count = 0
         optimizer.zero_grad(set_to_none=True)
-        for graph_index, graph in enumerate(graphs):
+        for graph_index in range(graph_count):
+            graph = graphs[graph_index] if graphs is not None else store.load_graph(graph_index)  # type: ignore[union-attr]
             prepared = _prepare_training_tensors(
                 graph=graph,
                 cfg=cfg,
@@ -483,7 +527,7 @@ def train_se3_generator(
                     loss_generative = loss_generative + flow.forward_loss(h=h_fused, x_cond=x_coarse, x_true=coords_true)
                 loss = loss_structural + loss_generative
             (loss / float(accumulation_steps)).backward()
-            should_step = ((graph_index + 1) % int(accumulation_steps) == 0) or (graph_index == (len(graphs) - 1))
+            should_step = ((graph_index + 1) % int(accumulation_steps) == 0) or (graph_index == (graph_count - 1))
             if should_step:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -493,12 +537,12 @@ def train_se3_generator(
             epoch_tm += float(structural_terms.tm.detach().cpu().item())
             epoch_clash += float(structural_terms.clash.detach().cpu().item())
             epoch_generative += float(loss_generative.detach().cpu().item())
-        loss_trace.append(epoch_loss / float(len(graphs)))
-        loss_mse_trace.append(epoch_mse / float(len(graphs)))
-        loss_fape_trace.append(epoch_fape / float(len(graphs)))
-        loss_tm_trace.append(epoch_tm / float(len(graphs)))
-        loss_clash_trace.append(epoch_clash / float(len(graphs)))
-        loss_generative_trace.append(epoch_generative / float(len(graphs)))
+        loss_trace.append(epoch_loss / float(graph_count))
+        loss_mse_trace.append(epoch_mse / float(graph_count))
+        loss_fape_trace.append(epoch_fape / float(graph_count))
+        loss_tm_trace.append(epoch_tm / float(graph_count))
+        loss_clash_trace.append(epoch_clash / float(graph_count))
+        loss_generative_trace.append(epoch_generative / float(graph_count))
         crop_length_mean_trace.append(epoch_crop_length / float(max(epoch_crop_count, 1)))
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -538,6 +582,7 @@ def train_se3_generator(
         "mmseqs_bin": cfg.mmseqs_bin,
         "mmseqs_db": cfg.mmseqs_db,
         "msa_cache_dir": cfg.msa_cache_dir,
+        "training_store_path": (None if training_store_path is None else rel_or_abs(training_store_path, repo_root)),
         "chain_separator": cfg.chain_separator,
         "chain_break_offset": cfg.chain_break_offset,
         "max_msa_sequences": cfg.max_msa_sequences,
@@ -559,6 +604,7 @@ def train_se3_generator(
         "gradient_accumulation_steps": int(cfg.gradient_accumulation_steps),
         "autocast_bfloat16": bool(cfg.autocast_bfloat16),
         "autocast_bfloat16_runtime_enabled": bool(autocast_enabled),
+        "training_protocol": str(cfg.training_protocol),
         "train_device": str(device.type),
         "seed": int(seed),
     }
@@ -567,7 +613,7 @@ def train_se3_generator(
         paths["metrics"],
         {
             "created_utc": utc_now_iso(),
-            "n_targets": len(graphs),
+            "n_targets": int(graph_count),
             "epochs": cfg.epochs,
             "loss_final": loss_trace[-1],
             "loss_mse_final": loss_mse_trace[-1],
@@ -585,10 +631,15 @@ def train_se3_generator(
             "crop_length_mean_trace": [float(item) for item in crop_length_mean_trace],
         },
     )
-    chemical_source_counts: dict[str, int] = {}
-    for graph in graphs:
-        source = str(graph.chem_source)
-        chemical_source_counts[source] = int(chemical_source_counts.get(source, 0) + 1)
+    if graphs is not None:
+        chemical_source_counts: dict[str, int] = {}
+        for graph in graphs:
+            source = str(graph.chem_source)
+            chemical_source_counts[source] = int(chemical_source_counts.get(source, 0) + 1)
+        n_residues_total = int(sum(len(item.resids) for item in graphs))
+    else:
+        chemical_source_counts = store.chemical_source_counts  # type: ignore[union-attr]
+        n_residues_total = int(store.n_residues_total)  # type: ignore[union-attr]
     manifest_payload = {
         "created_utc": utc_now_iso(),
         "paths": {
@@ -598,11 +649,12 @@ def train_se3_generator(
             "labels": rel_or_abs(labels_path, repo_root),
             "config": rel_or_abs(config_path, repo_root),
             "model_dir": rel_or_abs(out_dir, repo_root),
+            "training_store": (None if training_store_path is None else rel_or_abs(training_store_path, repo_root)),
         },
         "params": effective_config_payload,
         "stats": {
-            "n_targets": len(graphs),
-            "n_residues_total": int(sum(len(item.resids) for item in graphs)),
+            "n_targets": int(graph_count),
+            "n_residues_total": int(n_residues_total),
             "chemical_mapping_source_counts": chemical_source_counts,
         },
         "sha256": {
