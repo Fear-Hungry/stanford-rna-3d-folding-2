@@ -996,3 +996,72 @@ Log append-only de mudancas implementadas.
   - `pytest -q` -> `79 passed`
 - Riscos conhecidos / follow-ups:
   - As receitas em `experiments/recipes/` assumem a presenca de artefatos/modelos offline (ex.: encoder TorchScript, quickstart Ribonanza, MMseqs DB, Phase2 assets); ausencias agora falham cedo por contrato.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-102
+
+- Data UTC: `2026-02-16T20:21:03Z`
+- Plano: `PLAN-102`
+- Resumo:
+  - Adicionado fetch estrito de assets pre-treinados para uso offline:
+    - novo comando `fetch-pretrained-assets` baixa artefatos (via Kaggle Dataset e/ou HTTP com URLs de fallback) e gera `assets/runtime/fetch_manifest.json`.
+    - inclui pre-flight de espaco em disco (fail-fast) e valida sha256 quando informado.
+  - Documentacao e hygiene de assets:
+    - adicionados `assets/README.md` e `assets/SOURCES.md`;
+    - binarios em `assets/models/`, `assets/wheels/`, `assets/encoders/`, `assets/runtime/` ignorados no git.
+  - Testes unitarios do downloader (sem rede): fallback e sha256 mismatch.
+- Arquivos principais tocados:
+  - `.gitignore`
+  - `assets/README.md`
+  - `assets/SOURCES.md`
+  - `src/rna3d_local/assets_fetch.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `README.md`
+  - `tests/test_assets_fetch.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `82 passed`
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-074 (wheelhouse offline robusto p/ Kaggle py312)
+
+- Data UTC: `2026-02-16T21:40:36Z`
+- Plano: `PLAN-074`
+- Resumo:
+  - `build-wheelhouse` agora suporta fallback **sem silent failure** quando um pacote nao possui wheel no PyPI:
+    - tenta `pip download --only-binary`,
+    - se falhar, executa `pip wheel --no-deps` e aceita apenas wheel **universal** (`py3-none-any`).
+  - Pinos ajustados para compatibilidade com Python 3.12 (Kaggle):
+    - `rdkit==2024.3.2` (em vez de `2024.9.5`, sem wheel cp312 no PyPI),
+    - `tmtools==0.3.0` (em vez de `0.0.3`, versao inexistente no PyPI).
+  - Manifest do wheelhouse agora inclui `audit` por requisito (download vs build).
+  - Documentacao de assets atualizada com comando de wheelhouse e observacao do `fairscale`.
+  - Testes novos cobrindo fallback e erro quando wheel nao e universal.
+- Arquivos principais tocados:
+  - `src/rna3d_local/wheelhouse.py`
+  - `tests/test_wheelhouse.py`
+  - `assets/README.md`
+  - `assets/SOURCES.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `86 passed`
+  - `python -m rna3d_local build-wheelhouse --wheels-dir assets/wheels --python-version 3.12` -> `ok` (gera `assets/runtime/wheelhouse_manifest.json`)
+  - `python -m rna3d_local build-phase2-assets --assets-dir assets` -> `ok` (gera `assets/runtime/manifest.json`)
+- Riscos conhecidos / follow-ups:
+  - `chai_lab` declara `rdkit~=2024.9.5`; no Kaggle instalamos com `--no-deps` e fornecemos `rdkit==2024.3.2` para garantir wheel cp312.
+- Riscos conhecidos / follow-ups:
+  - Downloads podem ser multi-GB (Boltz/Chai/RNAPro); o comando falha cedo se faltar espaco.
+  - RNAPro em HF/NGC pode ser gated; o fetch atual usa espelho via Kaggle Dataset e exige registro de termos/licenca em `assets/SOURCES.md`.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-102 (addendum)
+
+- Data UTC: `2026-02-16T20:51:19Z`
+- Plano: `PLAN-102`
+- Resumo:
+  - `fetch-pretrained-assets` agora imprime payload completo (itens + tamanhos) e evita re-download de datasets Kaggle quando os arquivos esperados ja existem.
+  - Hash (sha256) e tamanho real agora sao calculados para arquivos baixados via Kaggle Dataset (ex.: RibonanzaNet2 e RNAPro).
+- Arquivos principais tocados:
+  - `src/rna3d_local/assets_fetch.py`
+  - `src/rna3d_local/cli.py`
+- Validacao local executada:
+  - `pytest -q` -> `82 passed`

@@ -136,6 +136,27 @@ def build_parser() -> argparse.ArgumentParser:
     assets.add_argument("--assets-dir", required=True)
     assets.add_argument("--manifest", default=None)
 
+    fetch = subparsers.add_parser("fetch-pretrained-assets", help="Fetch pretrained/offline assets (weights) for Phase1/2")
+    fetch.add_argument("--assets-dir", required=True)
+    fetch.add_argument("--include", action="append", choices=["ribonanzanet2", "boltz1", "chai1", "rnapro"], required=True)
+    fetch.add_argument("--dry-run", action="store_true")
+    fetch.add_argument("--timeout-seconds", type=int, default=60)
+    fetch.add_argument("--max-bytes", type=int, default=None)
+
+    cfg = subparsers.add_parser("write-phase2-model-configs", help="Write config.json entrypoints for phase2 offline model dirs")
+    cfg.add_argument("--assets-dir", required=True)
+    cfg.add_argument("--chain-separator", default="|")
+    cfg.add_argument("--manifest", default=None)
+
+    wh = subparsers.add_parser("build-wheelhouse", help="Build offline wheelhouse for Kaggle (download wheels)")
+    wh.add_argument("--wheels-dir", required=True)
+    wh.add_argument("--python-version", default="3.12")
+    wh.add_argument("--platform", default="manylinux2014_x86_64")
+    wh.add_argument("--profile", choices=["phase2"], default="phase2")
+    wh.add_argument("--no-project-wheel", action="store_true")
+    wh.add_argument("--timeout-seconds", type=int, default=60 * 60)
+    wh.add_argument("--manifest", default=None)
+
     rna = subparsers.add_parser("predict-rnapro-offline", help="Run RNAPro offline inference")
     rna.add_argument("--model-dir", required=True)
     rna.add_argument("--targets", required=True)

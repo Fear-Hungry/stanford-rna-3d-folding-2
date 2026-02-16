@@ -21,6 +21,8 @@ python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/
 python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/tbm/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --score-json runs/tbm/score.json --report runs/tbm/score_report.json
 
 # Fase 2 (assets + modelos offline + roteamento hibrido)
+python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2 --dry-run
+python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2 --include boltz1
 python -m rna3d_local build-phase2-assets --assets-dir assets
 python -m rna3d_local predict-rnapro-offline --model-dir assets/models/rnapro --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/rnapro.parquet --n-models 5
 python -m rna3d_local predict-chai1-offline --model-dir assets/models/chai1 --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/chai1.parquet --n-models 5

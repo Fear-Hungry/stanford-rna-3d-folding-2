@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .assets_fetch import fetch_pretrained_assets
 from .boltz1_offline import predict_boltz1_offline
 from .chai1_offline import predict_chai1_offline
 from .chemical_features import prepare_chemical_features
@@ -21,6 +22,7 @@ from .hybrid_select import select_top5_hybrid
 from .minimization import minimize_ensemble
 from .pairings import derive_pairings_from_chemical
 from .phase2_assets import build_phase2_assets_manifest
+from .phase2_configs import write_phase2_model_configs
 from .rnapro_offline import predict_rnapro_offline
 from .reranker import score_template_reranker, train_template_reranker
 from .retrieval_latent import retrieve_templates_latent
@@ -31,6 +33,7 @@ from .se3_pipeline import sample_se3_ensemble, train_se3_generator
 from .tbm import predict_tbm
 from .template_db import build_template_db
 from .training.data_lab import prepare_phase1_data_lab
+from .wheelhouse import build_wheelhouse
 
 
 def _repo_root() -> Path:
@@ -271,6 +274,44 @@ def main(argv: list[str] | None = None) -> int:
                 manifest_path=None if args.manifest is None else (repo / args.manifest).resolve(),
             )
             _print_json({"manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "fetch-pretrained-assets":
+            out = fetch_pretrained_assets(
+                repo_root=repo,
+                assets_dir=(repo / args.assets_dir).resolve(),
+                include=list(args.include),
+                dry_run=bool(args.dry_run),
+                timeout_seconds=int(args.timeout_seconds),
+                max_bytes=None if args.max_bytes is None else int(args.max_bytes),
+            )
+            payload = dict(out.payload)
+            payload["manifest"] = str(out.manifest_path)
+            _print_json(payload)
+            return 0
+
+        if args.command == "write-phase2-model-configs":
+            out = write_phase2_model_configs(
+                repo_root=repo,
+                assets_dir=(repo / args.assets_dir).resolve(),
+                chain_separator=str(args.chain_separator),
+                manifest_path=None if args.manifest is None else (repo / args.manifest).resolve(),
+            )
+            _print_json({"manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "build-wheelhouse":
+            out = build_wheelhouse(
+                repo_root=repo,
+                wheels_dir=(repo / args.wheels_dir).resolve(),
+                python_version=str(args.python_version),
+                platform=str(args.platform),
+                profile=str(args.profile),
+                include_project_wheel=not bool(args.no_project_wheel),
+                timeout_seconds=int(args.timeout_seconds),
+                manifest_path=None if args.manifest is None else (repo / args.manifest).resolve(),
+            )
+            _print_json({"wheels_dir": str(out.wheels_dir), "manifest": str(out.manifest_path)})
             return 0
 
         if args.command == "predict-rnapro-offline":

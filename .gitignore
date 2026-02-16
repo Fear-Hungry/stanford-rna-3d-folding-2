@@ -7,6 +7,8 @@ __pycache__/
 
 # Editable installs / build artifacts
 *.egg-info/
+/build/
+/dist/
 
 # Data (never commit competition artifacts)
 /input/
@@ -21,3 +23,9 @@ __pycache__/
 
 # Local artifacts (generated outside source tree)
 /external_templates.csv
+
+# Offline model assets (never commit weights/wheels)
+/assets/models/
+/assets/wheels/
+/assets/encoders/
+/assets/runtime/

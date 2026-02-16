@@ -1762,3 +1762,17 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `python -m rna3d_local derive-pairings-from-chemical --chemical-features <...> --out <...>` gera parquet com schema estrito.
   - `score-local-bestof5` ignora sentinelas `-1e18` do ground_truth sem crash.
   - `pytest -q` verde.
+
+## PLAN-102 - Fetch de assets pre-treinados (Fase 1/2 offline)
+
+- Objetivo: baixar e organizar pesos/artefatos pre-treinados (sem internet no Kaggle) com proveniencia e fail-fast.
+- Escopo:
+  - CLI `fetch-pretrained-assets` para:
+    - baixar RibonanzaNet2 (via Kaggle Dataset) para uso como encoder/embeddings;
+    - baixar pesos oficiais quando publicos (Boltz / Chai) e/ou via Kaggle Dataset quando gated;
+    - registrar fontes/licencas em `assets/SOURCES.md` e gerar manifest com `build-phase2-assets`.
+  - Hygiene:
+    - ignorar binarios em `assets/models`, `assets/wheels`, `assets/encoders`, `assets/runtime` no git.
+- Criterios de aceite:
+  - `python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2 --dry-run` imprime plano de download (arquivos + tamanhos).
+  - Testes unitarios para downloader (fallback + sha256 mismatch) sem usar rede.
