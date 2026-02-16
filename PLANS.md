@@ -1432,3 +1432,140 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `minimize-ensemble` preserva contrato de chaves (`target_id/model_id/resid`) e escreve saida valida para `export-submission`.
   - `backend=openmm` sem dependencia instalada falha cedo com erro acionavel.
   - Fluxo documentado no README com minimizacao entre selecao Top-5 e export.
+
+## PLAN-087 - Roteamento hibrido anti-OOM + grafo esparso sem distancia densa
+
+- Objetivo: evitar OOM de VRAM para alvos longos (`L <= 5500`) reforcando roteamento para SE(3) e removendo caminho de distancias densas no grafo esparso.
+- Escopo:
+  - `hybrid_router.py`:
+    - adicionar fallback obrigatorio de alvos ultralongos (default `>1500`) para `generative_se3`;
+    - bloquear uso de Chai-1/Boltz-1 como fonte primaria nesses alvos;
+    - aplicar limpeza agressiva de memoria (`gc.collect`, `torch.cuda.empty_cache`) apos selecao de fonte fundacional.
+  - `se3/sparse_graph.py`:
+    - remover construcao por `torch.cdist` chunk-vs-all;
+    - substituir por busca de vizinhos esparsa baseada em particionamento espacial (sem matriz densa NxN);
+    - manter limite de raio e `max_neighbors` por no.
+  - `se3/sequence_tower.py`:
+    - reforcar caminho de atencao para usar SDPA com kernel Flash em CUDA quando disponivel;
+    - manter suporte a `mamba_like` e checkpointing.
+  - Atualizar CLI/manifest onde necessario para thresholds novos.
+  - Cobrir com testes de roteamento ultralongo e contratos anti-OOM.
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos/atualizados.
+  - Alvos `L > 1500` entram obrigatoriamente em `generative_se3` (ou falham cedo sem cobertura SE(3)).
+  - `build_sparse_radius_graph` nao usa matriz de distancia densa para backend `torch_sparse`.
+  - Sequencia com `tower_type=flash` segue SDPA otimizada em CUDA sem regressao dos fluxos atuais.
+
+## PLAN-088 - IPA com frame local de RNA ancorado em D-ribose
+
+- Objetivo: alinhar o modulo IPA a biofisica de RNA, substituindo vies proteico por referencial local baseado em proxies de P, C4' e N1/N9.
+- Escopo:
+  - `se3/geometry.py`:
+    - implementar construcao de frame local RNA por residuo usando:
+      - coordenada C1' prevista;
+      - direcao de backbone local;
+      - classificacao purina/pirimidina a partir da base;
+      - proxies de P, C4' e N1/N9 com fallback numericamente estavel.
+    - manter contrato fail-fast para shapes invalidos.
+  - `se3/ipa_backbone.py`:
+    - integrar frame local RNA no calculo de mensagens:
+      - deltas de aresta transformados para coordenadas locais do resíduo fonte;
+      - bias adicional orientacional no score de atencao;
+      - atualizacao coordenada no frame local e retorno ao frame global.
+    - recalcular frame a cada camada usando coordenadas correntes (compatível com dinamica generativa).
+  - Preservar compatibilidade com treino/inferencia atuais sem alterar contratos de entrada/saida de alto nivel.
+  - Cobrir com testes de estabilidade/regressao no pipeline SE(3) para evitar quebra funcional.
+- Criterios de aceite:
+  - `pytest -q` verde com testes SE(3) existentes.
+  - IPA passa a usar frame local RNA (nao somente deslocamento global bruto).
+  - Funcoes de geometria falham cedo para entradas invalidas e permanecem numericamente estaveis.
+
+## PLAN-089 - Best-of-5 com amostragem ampla, pre-filtro e medoides por cluster
+
+- Objetivo: aumentar robustez do envio Best-of-5 evitando cinco decoys da mesma bacia energetica atraves de amostragem ampla, eliminacao de cauda fraca e selecao de medoides estruturalmente distintos.
+- Escopo:
+  - `generative/sampler.py`:
+    - adicionar amostragem rapida orientada a ODE (DPM-like para diffusion e integrador de 2a ordem para flow);
+    - manter contratos estritos de `method`, `n_samples` e saida finita;
+    - preservar determinismo por `seed`.
+  - `ensemble/diversity.py`:
+    - implementar distancia estrutural aproximada (1 - cosseno em representacao centrada);
+    - adicionar clustering Max-Min Distance e extracao de medoides por cluster;
+    - expor utilitarios para pre-filtro por score e deteccao de colisao estrutural.
+  - `ensemble/select_top5.py`:
+    - aplicar pre-filtro deterministico removendo 50% piores por score penalizado por clash;
+    - selecionar Top-5 como medoides de clusters distintos (com fallback estrito apenas quando numero de clusters efetivos < 5);
+    - registrar diagnosticos no manifest (`n_candidates`, `n_after_prune`, `cluster_count`, `selected_ids`).
+  - Cobrir com testes de comportamento:
+    - selecao diversa em targets com modos estruturais distintos;
+    - bloqueio fail-fast para cobertura insuficiente apos pre-filtro;
+    - regressao da pipeline SE(3) sem quebra de contrato.
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos e regressao da pipeline.
+  - `select-top5-se3` nao retorna 5 amostras da mesma bacia quando houver diversidade estrutural disponivel.
+  - pre-filtro 50% e clustering/medoides aparecem no manifest para auditoria.
+
+## PLAN-090 - Clash loss exponencial + minimizacao com restraints fortes
+
+- Objetivo: reforcar consistencia termodinamica no pos-processamento e no treino estrutural, penalizando sobreposicoes sub-2.0A de forma explosiva e restringindo relaxacao para preservar macro-topologia.
+- Escopo:
+  - `training/losses_se3.py`:
+    - manter FAPE no composto estrutural;
+    - substituir componente de clash para forma exponencial (`expm1`) em pares nao-covalentes;
+    - aplicar reforco extra para regioes sub-2.0A;
+    - preservar calculo chunked e contratos fail-fast.
+  - `minimization.py`:
+    - adicionar position restraints harmonicas fortes no backend OpenMM ancoradas nas coordenadas iniciais;
+    - limitar minimizacao a budget curto (<=100 iteracoes) por contrato;
+    - manter fail-fast para backend `pyrosetta` indisponivel/full-atom.
+  - `cli_parser.py`/`cli.py`:
+    - ajustar defaults e superficie de argumentos para restraints sem romper contrato.
+  - Atualizar testes de loss/minimizacao para cobrir:
+    - explosao de penalidade em colisao severa;
+    - bloqueio de iteracoes >100;
+    - aplicacao de restraints no caminho OpenMM (quando dependencia existir).
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos/atualizados de loss e minimizacao.
+  - colisao nao-covalente severa (<2.0A) gera clash loss substancialmente maior que colisao leve.
+  - `minimize-ensemble` bloqueia configuracoes fora do budget e registra parametros de restraint no manifest.
+
+## PLAN-091 - Positional encoding 1D multicadeia com salto absoluto
+
+- Objetivo: codificar quebras biologicas de cadeia no eixo 1D com separacao absoluta para evitar confusao entre continuidade covalente e proximidade sequencial entre cadeias.
+- Escopo:
+  - `se3/sequence_parser.py`:
+    - incluir indice posicional 1D por residuo no parse multicadeia;
+    - aplicar salto artificial de `+1000` ao iniciar cada nova cadeia;
+    - falhar cedo para `chain_break_offset_1d <= 0`.
+  - `se3/graph_builder.py`:
+    - propagar indice 1D parseado para `TargetGraph.residue_index` no lugar do `arange` contiguo.
+  - Testes:
+    - validar salto 1D em sequencias multicadeia;
+    - validar continuidade em cadeia unica;
+    - validar erro de contrato para offset invalido.
+- Criterios de aceite:
+  - `pytest -q` verde com novos testes de parser.
+  - `TargetGraph.residue_index` passa a refletir salto absoluto entre cadeias.
+  - `parse_sequence_with_chains` falha cedo para offset invalido com mensagem acionavel.
+
+## PLAN-092 - Protocolo de treino local 16GB VRAM com BF16 estavel
+
+- Objetivo: habilitar treino local robusto em GPU de 16GB via crop dinamico, BF16, checkpointing e batch virtual, garantindo estabilidade numerica no calculo estrutural.
+- Escopo:
+  - `training/config_se3.py`:
+    - adicionar knobs de `dynamic_cropping`, limites de crop, fracao sequencial, `gradient_accumulation_steps` e `autocast_bfloat16`;
+    - validar contratos dos novos parametros.
+  - `training/trainer_se3.py`:
+    - aplicar recorte dinamico espacial+sequencial durante o treino;
+    - manter gradient accumulation e checkpointing do backbone SE(3);
+    - registrar `crop_length_mean_trace` e configuracao efetiva.
+  - `training/losses_se3.py`:
+    - estabilizar Kabsch/TM-core em `float32` com autocast desabilitado no trecho SVD para evitar erro BF16 em CUDA.
+  - `se3/ipa_backbone.py`:
+    - manter softmax segmentado estavel em `float32` no caminho BF16.
+  - `README.md`:
+    - documentar defaults e parametros do protocolo de treino.
+- Criterios de aceite:
+  - `pytest -q tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py tests/test_sequence_parser.py` verde.
+  - `pytest -q` verde.
+  - Treino SE(3) em CUDA com BF16 nao falha no SVD da perda estrutural.

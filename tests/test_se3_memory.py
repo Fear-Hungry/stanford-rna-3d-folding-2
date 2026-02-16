@@ -99,6 +99,31 @@ def test_torch_geometric_backend_contract() -> None:
     assert int(graph.src.numel()) > 0
 
 
+def test_torch_sparse_backend_does_not_use_dense_cdist(monkeypatch) -> None:
+    def _raise_cdist(*_args, **_kwargs):
+        raise AssertionError("torch.cdist nao deve ser chamado no backend torch_sparse")
+
+    monkeypatch.setattr(torch, "cdist", _raise_cdist)
+    coords = torch.stack(
+        [
+            torch.arange(0, 24, dtype=torch.float32) * 2.8,
+            torch.sin(torch.arange(0, 24, dtype=torch.float32) * 0.2),
+            torch.cos(torch.arange(0, 24, dtype=torch.float32) * 0.2),
+        ],
+        dim=1,
+    )
+    graph = build_sparse_radius_graph(
+        coords=coords,
+        radius_angstrom=15.0,
+        max_neighbors=6,
+        backend="torch_sparse",
+        chunk_size=8,
+        stage="TEST",
+        location="tests/test_se3_memory.py:test_torch_sparse_backend_does_not_use_dense_cdist",
+    )
+    assert int(graph.src.numel()) > 0
+
+
 def test_train_and_sample_se3_with_linear_memory_config(tmp_path: Path) -> None:
     targets = tmp_path / "targets.csv"
     pairings = tmp_path / "pairings.parquet"

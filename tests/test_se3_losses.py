@@ -72,6 +72,51 @@ def test_structural_loss_terms_clash_penalizes_overlap() -> None:
     assert float(terms.fape.item()) > 0.0
 
 
+def test_structural_loss_terms_clash_exponential_is_stronger_below_2a() -> None:
+    x_true = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0],
+            [9.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    chain_index = torch.tensor([0, 0, 0, 0], dtype=torch.long)
+    residue_index = torch.tensor([0, 1, 2, 3], dtype=torch.long)
+    x_pred_mild = x_true.clone()
+    x_pred_mild[0] = torch.tensor([7.10, 0.0, 0.0], dtype=torch.float32)
+    x_pred_severe = x_true.clone()
+    x_pred_severe[0] = torch.tensor([8.30, 0.0, 0.0], dtype=torch.float32)
+    mild = compute_structural_loss_terms(
+        x_pred=x_pred_mild,
+        x_true=x_true,
+        chain_index=chain_index,
+        residue_index=residue_index,
+        fape_clamp_distance=10.0,
+        fape_length_scale=10.0,
+        vdw_min_distance=2.1,
+        vdw_repulsion_power=4,
+        loss_chunk_size=2,
+        stage="TEST",
+        location="tests/test_se3_losses.py:test_structural_loss_terms_clash_exponential_is_stronger_below_2a:mild",
+    )
+    severe = compute_structural_loss_terms(
+        x_pred=x_pred_severe,
+        x_true=x_true,
+        chain_index=chain_index,
+        residue_index=residue_index,
+        fape_clamp_distance=10.0,
+        fape_length_scale=10.0,
+        vdw_min_distance=2.1,
+        vdw_repulsion_power=4,
+        loss_chunk_size=2,
+        stage="TEST",
+        location="tests/test_se3_losses.py:test_structural_loss_terms_clash_exponential_is_stronger_below_2a:severe",
+    )
+    assert float(severe.clash.item()) > float(mild.clash.item())
+
+
 def test_structural_loss_terms_fail_for_invalid_chunk_size() -> None:
     coords = torch.tensor(
         [

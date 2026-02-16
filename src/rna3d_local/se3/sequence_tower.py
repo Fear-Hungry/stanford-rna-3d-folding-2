@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -29,7 +31,17 @@ class _FlashAttentionBlock(nn.Module):
         q = qkv[:, :, 0].permute(0, 2, 1, 3)
         k = qkv[:, :, 1].permute(0, 2, 1, 3)
         v = qkv[:, :, 2].permute(0, 2, 1, 3)
-        attn = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
+        if bool(q.is_cuda):
+            sdp_context = torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False)
+        else:
+            sdp_context = nullcontext()
+        try:
+            with sdp_context:
+                attn = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "flash attention indisponivel para SequenceTower; use tower_type=mamba_like para evitar OOM em sequencias longas"
+            ) from exc
         attn = attn.permute(0, 2, 1, 3).reshape(h.shape[0], h.shape[1], self.hidden_dim)
         x = residual + self.out(attn)
         x = x + self.ff(self.norm_ff(x))

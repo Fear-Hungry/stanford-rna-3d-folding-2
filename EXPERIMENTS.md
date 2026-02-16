@@ -651,3 +651,235 @@ Log append-only de experimentos executados.
   - Minimizacao pos-inferencia integrada com contrato estrito para uso no fluxo pre-submit.
 - Proximos passos:
   - Rodar benchmark local com scorer por alvo (antes/depois da minimizacao) para calibrar `max_iterations` e forcas no budget de tempo Kaggle.
+
+## PLAN-087
+
+### 2026-02-16T14:21:25Z - marcusvinicius/Codex (roteamento anti-OOM + grafo sem distancia densa)
+
+- Objetivo/hipotese:
+  - Evitar OOM de VRAM em alvos longos forçando roteamento para SE(3) e removendo caminho de matriz de distancias densa no backend esparso.
+- Comparacao:
+  - Baseline: roteador podia enviar alvos longos para fontes fundacionais e backend `torch_sparse` usava `torch.cdist` chunk-vs-all.
+  - Novo: fallback ultralongo obrigatorio para `generative_se3` + busca de vizinhos espacial sem NxN denso.
+- Comandos executados:
+  - `pytest -q tests/test_phase2_hybrid.py tests/test_se3_memory.py tests/test_se3_pipeline.py`
+  - `pytest -q`
+  - `python -m rna3d_local build-hybrid-candidates --help`
+- Configuracao efetiva:
+  - Novo parametro de roteamento:
+    - `ultra_long_seq_threshold` (default `1500`)
+  - `hybrid_router` marca no routing:
+    - `target_length`
+    - `ultralong_fallback`
+  - `torch_sparse`:
+    - prioriza `torch_cluster.radius_graph` quando disponivel;
+    - fallback explicito para particionamento espacial por celulas sem matriz densa.
+- Parametros/hiperparametros:
+  - Testes de roteamento ultralongo com `ultra_long_seq_threshold=1500`.
+  - Teste de contrato anti-denso com monkeypatch em `torch.cdist` para garantir que backend `torch_sparse` nao invoca `cdist`.
+- Seeds:
+  - N/A (roteamento/grafo deterministico para mesmo input).
+- Versao de codigo/dados:
+  - `git commit`: `efbcb7c`
+  - Dados sinteticos em `tmp_path`.
+- Artefatos:
+  - Manifest de roteamento agora registra `ultra_long_seq_threshold`.
+  - README com comando de roteamento atualizado (`--ultra-long-seq-threshold`).
+- Metricas/score/custo:
+  - `pytest -q tests/test_phase2_hybrid.py tests/test_se3_memory.py tests/test_se3_pipeline.py` -> `13 passed in 2.67s`
+  - `pytest -q` -> `52 passed in 2.80s`
+  - CLI com nova flag validada em help.
+- Conclusao:
+  - Fluxo anti-OOM implementado no roteador e no grafo esparso, com fail-fast quando SE(3) ultralongo nao estiver disponivel.
+- Proximos passos:
+  - Medir tempo total de inferencia em lote de alvos longos (L~5500) para calibrar `radius_angstrom`, `max_neighbors` e threshold ultralongo sob budget Kaggle.
+
+## PLAN-088
+
+### 2026-02-16T14:30:51Z - marcusvinicius/Codex (IPA com frame local RNA + estabilizacao de gradiente TM-core)
+
+- Objetivo/hipotese:
+  - Alinhar o IPA a um referencial local de RNA (proxy `P/C4'/N1/N9`) e remover instabilidade de gradiente observada no treino curto do pipeline SE(3).
+- Comparacao:
+  - Baseline: IPA sem frame local RNA explicito e perda TM-core com gradiente direto via `svd`.
+  - Novo: IPA com frame local por camada + viés orientacional local + TM-core com rotação Kabsch calculada em `no_grad`.
+- Comandos executados:
+  - `pytest -q tests/test_ipa_geometry.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - `IpaBackbone` com `base_features` obrigatorio (A/C/G/U) para inferir purina/pirimidina.
+  - Frame local recalculado por camada em `build_rna_local_frames`.
+  - Viés orientacional limitado por `0.1 * tanh(...)` para estabilidade numerica.
+- Parametros/hiperparametros:
+  - Proxies de frame local: `p_distance=2.2`, `c4_distance=1.5`, `n_distance=1.4`.
+  - Mistura da atualização coordenada no IPA:
+    - `0.5 * displacement_frame_local + 0.5 * displacement_global`.
+- Seeds:
+  - Testes de pipeline reutilizam seeds de suite (`123`, `17`, `7`).
+- Versao de codigo/dados:
+  - `git commit`: `efbcb7c` + modificacoes locais nao commitadas do `PLAN-088`.
+  - Dados sinteticos dos testes em `tmp_path`.
+- Artefatos:
+  - Novo teste: `tests/test_ipa_geometry.py`.
+  - Sem novos artefatos em `runs/` (execucao de validacao tecnica, nao treino longo).
+- Metricas/score/custo:
+  - `pytest -q tests/test_ipa_geometry.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py` -> `14 passed in 1.86s`
+  - `pytest -q` -> `55 passed in 2.58s`
+- Conclusao:
+  - IPA passou a usar frame local RNA de forma explicita sem regressao na suite local, e a instabilidade de gradiente nao-finito em treino curto foi removida.
+- Proximos passos:
+  - Rodar treino local completo com budget real para medir impacto em score local por alvo orphan vs baseline.
+
+## PLAN-089
+
+### 2026-02-16T14:36:41Z - marcusvinicius/Codex (best-of-5 com pre-filtro + clustering max-min)
+
+- Objetivo/hipotese:
+  - Aumentar chance de acerto Best-of-5 evitando envio de decoys redundantes da mesma bacia e reforcando diversidade estrutural apos poda dos piores candidatos.
+- Comparacao:
+  - Baseline: selecao Top-5 por score com penalidade gulosa simples de similaridade.
+  - Novo: pre-filtro 50% (score ajustado por clash) + clustering Max-Min + medoides por cluster distinto.
+- Comandos executados:
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_se3_pipeline.py`
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_ipa_geometry.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - `sample-se3-ensemble --n-samples` default alterado para `24`.
+  - `sampler.py`:
+    - diffusion: rotina DPM-like com malha reduzida adaptada ao budget;
+    - flow: integrador Heun com passos reduzidos.
+  - `select-top5-se3`:
+    - `keep_fraction=0.50`;
+    - penalizacao de clash no pre-filtro (`adjusted_score = final_score - 0.40 * clash_ratio`).
+- Parametros/hiperparametros:
+  - `lambda_diversity=0.35` nos testes de estrategia.
+  - `n_models=5`.
+  - `n_samples=24` para validacao da amostragem mista diffusion/flow.
+- Seeds:
+  - `base_seed=123` no teste do sampler.
+  - `torch.manual_seed(7)` no setup do teste do sampler.
+- Versao de codigo/dados:
+  - `git commit`: `efbcb7c` + modificacoes locais nao commitadas do `PLAN-089`.
+  - Dados sinteticos em `tmp_path` para os testes de selecao.
+- Artefatos:
+  - Novo teste: `tests/test_best_of5_strategy.py`.
+  - Manifest de selecao (`select_top5_se3_manifest.json`) agora inclui estatisticas de pre-filtro e clustering.
+- Metricas/score/custo:
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_se3_pipeline.py` -> `6 passed in 1.40s`
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_ipa_geometry.py` -> `13 passed in 2.05s`
+  - `pytest -q` -> `58 passed in 2.78s`
+- Conclusao:
+  - Fluxo Best-of-5 passou a forcar diversidade estrutural por medoides de clusters distintos apos poda de baixa qualidade, com regressao local verde.
+- Proximos passos:
+  - Rodar benchmark local com scorer por alvo para medir ganho de diversidade no Top-5 vs baseline guloso.
+
+## PLAN-090
+
+### 2026-02-16T14:40:38Z - marcusvinicius/Codex (clash exponencial + minimizacao curta com restraints)
+
+- Objetivo/hipotese:
+  - Reforcar consistencia fisica local sem destruir a topologia global, punindo contatos sub-2.0A com gradiente mais agressivo e restringindo relaxacao pos-inferencia.
+- Comparacao:
+  - Baseline: clash loss por potencia simples e minimizacao sem restraints explicitas.
+  - Novo: clash loss exponencial + termo critico sub-2.0A, e minimizacao com restraints harmonicas fortes no backbone C1'.
+- Comandos executados:
+  - `pytest -q tests/test_se3_losses.py tests/test_minimization.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - `losses_se3`:
+    - `penalty_main = expm1(alpha * penetration)`
+    - `penalty_critical = expm1((2.5*alpha) * penetration_sub2A)`
+  - `minimize-ensemble`:
+    - contrato de budget: `max_iterations <= 100`;
+    - parametro novo: `position_restraint_k` (default CLI `800.0`);
+    - default CLI de `max_iterations` ajustado para `80`.
+- Parametros/hiperparametros:
+  - Testes de loss usam `vdw_min_distance=2.1`, `vdw_repulsion_power=4`.
+  - Testes de minimizacao usam `position_restraint_k=800.0`.
+- Seeds:
+  - N/A (validacao funcional deterministica de contrato; sem treino estocastico neste ciclo).
+- Versao de codigo/dados:
+  - `git commit`: `efbcb7c` + modificacoes locais nao commitadas do `PLAN-090`.
+  - Dados sinteticos em `tmp_path` nos testes.
+- Artefatos:
+  - `minimize_ensemble_manifest.json` agora inclui `position_restraint_k`.
+  - `predictions` minimizadas agora incluem coluna `refinement_position_restraint_k`.
+- Metricas/score/custo:
+  - `pytest -q tests/test_se3_losses.py tests/test_minimization.py` -> `9 passed in 0.81s`
+  - `pytest -q` -> `60 passed in 2.82s`
+- Conclusao:
+  - Penalizacao de clash ficou mais severa para choques esterequimicos graves e a minimizacao passou a operar em modo conservador de topologia com restraints explicitas.
+- Proximos passos:
+  - Rodar benchmark local de score por alvo para calibrar `position_restraint_k` e a severidade efetiva do termo critico sub-2.0A.
+
+## PLAN-091
+
+### 2026-02-16T14:43:23Z - marcusvinicius/Codex (multichain com salto absoluto no encoding 1D)
+
+- Objetivo/hipotese:
+  - Tornar a quebra de cadeia um separador absoluto no eixo posicional 1D para evitar que atencao/modelo trate cadeias independentes como continuidade fosfodiester.
+- Comparacao:
+  - Baseline: `residue_index` contiguo (`arange`) no `TargetGraph`.
+  - Novo: `residue_index` derivado do parser com salto `+1000` entre cadeias.
+- Comandos executados:
+  - `pytest -q tests/test_sequence_parser.py tests/test_se3_pipeline.py tests/test_msa_covariance.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - `parse_sequence_with_chains(..., chain_break_offset_1d=1000)` default.
+  - `graph_builder` passou a consumir `parsed.residue_position_index_1d`.
+- Parametros/hiperparametros:
+  - Salto absoluto entre cadeias: `+1000`.
+- Seeds:
+  - N/A (mudanca deterministica de parsing/indice).
+- Versao de codigo/dados:
+  - `git commit`: `efbcb7c` + modificacoes locais nao commitadas do `PLAN-091`.
+  - Dados sinteticos de teste em `tmp_path`.
+- Artefatos:
+  - Novo teste: `tests/test_sequence_parser.py`.
+- Metricas/score/custo:
+  - `pytest -q tests/test_sequence_parser.py tests/test_se3_pipeline.py tests/test_msa_covariance.py` -> `9 passed in 1.29s`
+  - `pytest -q` -> `63 passed in 2.53s`
+- Conclusao:
+  - O pipeline passa a carregar encoding 1D multicadeia com separacao absoluta desde o parse, mantendo regressao local verde.
+- Proximos passos:
+  - Medir impacto no score local de alvos multicadeia para ajustar opcionalmente o tamanho do salto (se necessario).
+
+## PLAN-092
+
+### 2026-02-16T14:52:39Z - marcusvinicius/Codex (protocolo de treino 16GB + fix BF16 no TM-core)
+
+- Objetivo/hipotese:
+  - Viabilizar treino local SE(3) em 16GB VRAM com crop dinamico + BF16 + checkpointing + accumulation sem quebrar perda estrutural.
+- Comparacao:
+  - Baseline: treino com autocast BF16 acionado, mas falha no TM-core por `torch.linalg.svd` em BF16 CUDA.
+  - Novo: Kabsch/TM-core forcado para `float32` com autocast desabilitado localmente no trecho SVD.
+- Comandos executados:
+  - `pytest -q tests/test_se3_pipeline.py::test_train_sample_rank_select_se3_pipeline tests/test_se3_pipeline.py::test_train_sample_se3_with_multichain_sequence tests/test_se3_memory.py::test_train_and_sample_se3_with_linear_memory_config`
+  - `pytest -q tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py tests/test_sequence_parser.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - Treino SE(3) com:
+    - `dynamic_cropping=true`, `crop_min_length=256`, `crop_max_length=384`;
+    - `autocast_bfloat16=true`;
+    - `use_gradient_checkpointing=true`;
+    - `gradient_accumulation_steps=16`.
+  - Perda estrutural:
+    - Kabsch/TM-core em `float32` no bloco SVD.
+- Parametros/hiperparametros:
+  - `crop_sequence_fraction=0.60`
+  - `loss_chunk_size` conforme config de treino ativa.
+- Seeds:
+  - Seeds de teste da suite (`123`, `17`, `7`) nos cenarios de pipeline/treino curto.
+- Versao de codigo/dados:
+  - `git commit`: `efbcb7c` + modificacoes locais nao commitadas do `PLAN-092`.
+  - Dados sinteticos de teste em `tmp_path`.
+- Artefatos:
+  - Nao houve treino completo com persistencia em `runs/` neste ciclo (apenas validacao tecnica).
+- Metricas/score/custo:
+  - Suite alvo de regressao: `3 passed in 2.34s`.
+  - Suite SE(3) ampliada: `15 passed in 2.71s`.
+  - Suite completa: `63 passed in 3.51s`.
+- Conclusao:
+  - O protocolo de treino para 16GB permanece ativo e o caminho BF16 deixou de quebrar no TM-core.
+- Proximos passos:
+  - Executar treino completo local em GPU com persistencia em `runs/` e comparar score local vs baseline antes de qualquer submissao Kaggle.

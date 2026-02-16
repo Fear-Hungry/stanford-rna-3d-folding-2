@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -34,17 +35,30 @@ def _validate_coords(*, x_pred: torch.Tensor, x_true: torch.Tensor, stage: str, 
 
 
 def _kabsch_align(*, mobile: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    mobile_center = mobile - mobile.mean(dim=0, keepdim=True)
-    target_center = target - target.mean(dim=0, keepdim=True)
-    cov = mobile_center.transpose(0, 1) @ target_center
-    u, _, vh = torch.linalg.svd(cov, full_matrices=False)
-    v = vh.transpose(0, 1)
-    d = torch.det(v @ u.transpose(0, 1))
-    sign = torch.where(d < 0.0, torch.tensor(-1.0, dtype=mobile.dtype, device=mobile.device), torch.tensor(1.0, dtype=mobile.dtype, device=mobile.device))
-    correction = torch.eye(3, dtype=mobile.dtype, device=mobile.device)
-    correction[2, 2] = sign
-    rotation = v @ correction @ u.transpose(0, 1)
-    return (mobile_center @ rotation.transpose(0, 1)) + target.mean(dim=0, keepdim=True)
+    autocast_context = (
+        torch.autocast(device_type=mobile.device.type, enabled=False)
+        if mobile.device.type in {"cuda", "cpu"}
+        else nullcontext()
+    )
+    with autocast_context:
+        mobile_fp32 = mobile.to(dtype=torch.float32)
+        target_fp32 = target.to(dtype=torch.float32)
+        mobile_center = mobile_fp32 - mobile_fp32.mean(dim=0, keepdim=True)
+        target_center = target_fp32 - target_fp32.mean(dim=0, keepdim=True)
+        with torch.no_grad():
+            cov = mobile_center.detach().transpose(0, 1) @ target_center.detach()
+            u, _, vh = torch.linalg.svd(cov, full_matrices=False)
+            v = vh.transpose(0, 1)
+            d = torch.det(v @ u.transpose(0, 1))
+            sign = torch.where(
+                d < 0.0,
+                torch.tensor(-1.0, dtype=torch.float32, device=mobile.device),
+                torch.tensor(1.0, dtype=torch.float32, device=mobile.device),
+            )
+            correction = torch.eye(3, dtype=torch.float32, device=mobile.device)
+            correction[2, 2] = sign
+            rotation = v @ correction @ u.transpose(0, 1)
+        return (mobile_center @ rotation.transpose(0, 1)) + target_fp32.mean(dim=0, keepdim=True)
 
 
 def _fape_chunked(
@@ -76,7 +90,7 @@ def _fape_chunked(
 
 def _tm_core_loss(*, x_pred: torch.Tensor, x_true: torch.Tensor) -> torch.Tensor:
     aligned = _kabsch_align(mobile=x_pred, target=x_true)
-    dist = torch.linalg.norm(aligned - x_true, dim=-1)
+    dist = torch.linalg.norm(aligned - x_true.to(dtype=torch.float32), dim=-1)
     length = int(dist.shape[0])
     if length <= 15:
         d0 = 0.5
@@ -99,6 +113,9 @@ def _clash_loss_chunked(
     index_all = torch.arange(count, dtype=torch.long, device=x_pred.device)
     total = x_pred.new_tensor(0.0)
     denom = x_pred.new_tensor(0.0)
+    alpha = float(repulsion_power)
+    critical_alpha = float(repulsion_power) * 2.5
+    critical_distance = 2.0
     for start in range(0, count, int(chunk_size)):
         end = min(count, start + int(chunk_size))
         idx = torch.arange(start, end, dtype=torch.long, device=x_pred.device)
@@ -110,9 +127,15 @@ def _clash_loss_chunked(
         upper = idx.unsqueeze(1) < index_all.unsqueeze(0)
         mask = upper & (~is_covalent)
         if bool(mask.any()):
-            penetration = torch.clamp(float(min_distance) - dist[mask], min=0.0)
-            total = total + torch.sum(torch.pow(penetration, int(repulsion_power)))
-            denom = denom + torch.tensor(float(penetration.numel()), dtype=x_pred.dtype, device=x_pred.device)
+            pair_dist = dist[mask]
+            penetration = torch.clamp(float(min_distance) - pair_dist, min=0.0)
+            critical_penetration = torch.clamp(float(critical_distance) - pair_dist, min=0.0)
+            active = (penetration > 0.0) | (critical_penetration > 0.0)
+            if bool(active.any()):
+                penalty_main = torch.expm1(torch.clamp(alpha * penetration[active], max=50.0))
+                penalty_critical = torch.expm1(torch.clamp(critical_alpha * critical_penetration[active], max=50.0))
+                total = total + torch.sum(penalty_main + penalty_critical)
+                denom = denom + torch.tensor(float(active.sum().item()), dtype=x_pred.dtype, device=x_pred.device)
     if float(denom.item()) <= 0.0:
         return x_pred.new_tensor(0.0)
     return total / denom

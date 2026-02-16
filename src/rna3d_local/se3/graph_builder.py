@@ -65,6 +65,7 @@ def _sequence_rows(targets: pl.DataFrame, *, chain_separator: str, stage: str, l
                 {
                     "target_id": tid,
                     "resid": int(idx),
+                    "residue_index_1d": int(parsed.residue_position_index_1d[idx - 1]),
                     "resname": base,
                     "chain_index": int(parsed.chain_index[idx - 1]),
                     "base_a": vec[0],
@@ -224,7 +225,7 @@ def build_target_graphs(
         )
         coords_init = _build_init_coords(int(rows.height))
         chain_index_tensor = torch.tensor(rows.get_column("chain_index").to_numpy(), dtype=torch.long)
-        residue_index_tensor = torch.arange(int(rows.height), dtype=torch.long)
+        residue_index_tensor = torch.tensor(rows.get_column("residue_index_1d").to_numpy(), dtype=torch.long)
         coords_true: torch.Tensor | None = None
         if labels_cast is not None:
             target_labels = labels_cast.filter(pl.col("target_id") == tid).sort("resid")

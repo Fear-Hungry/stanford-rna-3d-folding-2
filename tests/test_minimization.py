@@ -46,12 +46,13 @@ def test_minimize_ensemble_mock_preserves_contract(tmp_path: Path) -> None:
         angle_target_deg=120.0,
         vdw_min_distance_angstrom=2.1,
         vdw_epsilon=0.2,
+        position_restraint_k=800.0,
         openmm_platform=None,
     )
     refined = pl.read_parquet(result.predictions_path)
     assert refined.height == 16
     assert refined.get_column("target_id").n_unique() == 2
-    assert set(["target_id", "model_id", "resid", "resname", "x", "y", "z", "refinement_backend", "refinement_steps"]).issubset(set(refined.columns))
+    assert set(["target_id", "model_id", "resid", "resname", "x", "y", "z", "refinement_backend", "refinement_steps", "refinement_position_restraint_k"]).issubset(set(refined.columns))
     assert refined.filter(pl.col("refinement_backend") != "mock").height == 0
     key_dup = refined.group_by(["target_id", "model_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
     assert key_dup.height == 0
@@ -77,6 +78,7 @@ def test_minimize_ensemble_fails_on_duplicate_key(tmp_path: Path) -> None:
             angle_target_deg=120.0,
             vdw_min_distance_angstrom=2.1,
             vdw_epsilon=0.2,
+            position_restraint_k=800.0,
             openmm_platform=None,
         )
 
@@ -97,5 +99,27 @@ def test_minimize_ensemble_pyrosetta_backend_fails_actionable(tmp_path: Path) ->
             angle_target_deg=120.0,
             vdw_min_distance_angstrom=2.1,
             vdw_epsilon=0.2,
+            position_restraint_k=800.0,
+            openmm_platform=None,
+        )
+
+
+def test_minimize_ensemble_fails_when_iterations_exceed_budget(tmp_path: Path) -> None:
+    pred = tmp_path / "pred.parquet"
+    _write_predictions(pred)
+    with pytest.raises(PipelineError, match="max_iterations deve ser <= 100"):
+        minimize_ensemble(
+            repo_root=tmp_path,
+            predictions_path=pred,
+            out_path=tmp_path / "out.parquet",
+            backend="mock",
+            max_iterations=120,
+            bond_length_angstrom=5.9,
+            bond_force_k=60.0,
+            angle_force_k=8.0,
+            angle_target_deg=120.0,
+            vdw_min_distance_angstrom=2.1,
+            vdw_epsilon=0.2,
+            position_restraint_k=800.0,
             openmm_platform=None,
         )

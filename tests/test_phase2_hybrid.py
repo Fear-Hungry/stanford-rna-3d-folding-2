@@ -272,3 +272,104 @@ def test_readiness_gate_blocks_non_improvement(tmp_path: Path) -> None:
             report_path=tmp_path / "readiness.json",
             fail_on_disallow=True,
         )
+
+
+def test_phase2_router_ultralong_forces_se3_fallback(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    _write_csv(
+        targets,
+        [
+            {"target_id": "TLONG", "sequence": ("A" * 1601), "ligand_SMILES": ""},
+        ],
+    )
+    retrieval = tmp_path / "retrieval.parquet"
+    pl.DataFrame([{"target_id": "TLONG", "final_score": 0.99}]).write_parquet(retrieval)
+    tbm = tmp_path / "tbm.parquet"
+    se3 = tmp_path / "se3.parquet"
+    rows = []
+    for model_id in range(1, 6):
+        for resid, base in enumerate("AA", start=1):
+            rows.append(
+                {
+                    "target_id": "TLONG",
+                    "model_id": model_id,
+                    "resid": resid,
+                    "resname": base,
+                    "x": float(model_id + resid),
+                    "y": float(model_id + resid + 1),
+                    "z": float(model_id + resid + 2),
+                    "source": "tbm",
+                    "confidence": 0.91,
+                }
+            )
+    pl.DataFrame(rows).write_parquet(tbm)
+    se3_rows = []
+    for model_id in range(1, 6):
+        for resid, base in enumerate("AA", start=1):
+            se3_rows.append(
+                {
+                    "target_id": "TLONG",
+                    "model_id": model_id,
+                    "resid": resid,
+                    "resname": base,
+                    "x": float(model_id + resid + 10),
+                    "y": float(model_id + resid + 11),
+                    "z": float(model_id + resid + 12),
+                    "source": "generative_se3",
+                    "confidence": 0.85,
+                }
+            )
+    pl.DataFrame(se3_rows).write_parquet(se3)
+
+    out = build_hybrid_candidates(
+        repo_root=tmp_path,
+        targets_path=targets,
+        retrieval_path=retrieval,
+        tbm_path=tbm,
+        out_path=tmp_path / "hybrid_candidates.parquet",
+        routing_path=tmp_path / "routing.parquet",
+        template_score_threshold=0.65,
+        ultra_long_seq_threshold=1500,
+        rnapro_path=None,
+        chai1_path=None,
+        boltz1_path=None,
+        se3_path=se3,
+    )
+    routing = pl.read_parquet(out.routing_path)
+    assert routing.item(0, "route_rule") == "ultralong->generative_se3"
+    assert routing.item(0, "primary_source") == "generative_se3"
+    candidates = pl.read_parquet(out.candidates_path)
+    assert candidates.filter(pl.col("source") != "generative_se3").height == 0
+
+
+def test_phase2_router_ultralong_fails_without_se3(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    _write_csv(
+        targets,
+        [
+            {"target_id": "TLONG", "sequence": ("A" * 1601), "ligand_SMILES": ""},
+        ],
+    )
+    retrieval = tmp_path / "retrieval.parquet"
+    pl.DataFrame([{"target_id": "TLONG", "final_score": 0.99}]).write_parquet(retrieval)
+    tbm = tmp_path / "tbm.parquet"
+    pl.DataFrame(
+        [
+            {"target_id": "TLONG", "model_id": 1, "resid": 1, "resname": "A", "x": 1.0, "y": 2.0, "z": 3.0, "source": "tbm", "confidence": 0.9},
+        ]
+    ).write_parquet(tbm)
+    with pytest.raises(PipelineError, match="ultralongo exige se3_path"):
+        build_hybrid_candidates(
+            repo_root=tmp_path,
+            targets_path=targets,
+            retrieval_path=retrieval,
+            tbm_path=tbm,
+            out_path=tmp_path / "hybrid_candidates.parquet",
+            routing_path=tmp_path / "routing.parquet",
+            template_score_threshold=0.65,
+            ultra_long_seq_threshold=1500,
+            rnapro_path=None,
+            chai1_path=None,
+            boltz1_path=None,
+            se3_path=None,
+        )

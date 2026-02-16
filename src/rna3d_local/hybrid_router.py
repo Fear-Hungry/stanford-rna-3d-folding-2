@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,27 @@ class HybridCandidatesResult:
     candidates_path: Path
     routing_path: Path
     manifest_path: Path
+
+
+def _aggressive_foundation_offload(*, model: object | None, stage: str, location: str, context: str) -> None:
+    if model is not None:
+        to_fn = getattr(model, "to", None)
+        if callable(to_fn):
+            try:
+                to_fn("cpu")
+            except Exception as exc:  # noqa: BLE001
+                raise_error(stage, location, "falha ao mover modelo para cpu no offload", impact="1", examples=[f"{context}:{type(exc).__name__}:{exc}"])
+        del model
+    gc.collect()
+    try:
+        import torch  # type: ignore
+    except Exception:
+        return
+    if bool(torch.cuda.is_available()):
+        try:
+            torch.cuda.empty_cache()
+        except Exception as exc:  # noqa: BLE001
+            raise_error(stage, location, "falha ao liberar cache CUDA no offload", impact="1", examples=[f"{context}:{type(exc).__name__}:{exc}"])
 
 
 def _default_confidence_for_source(source: str) -> float:
@@ -123,6 +145,7 @@ def build_hybrid_candidates(
     out_path: Path,
     routing_path: Path,
     template_score_threshold: float,
+    ultra_long_seq_threshold: int = 1500,
     rnapro_path: Path | None,
     chai1_path: Path | None,
     boltz1_path: Path | None,
@@ -132,6 +155,8 @@ def build_hybrid_candidates(
     location = "src/rna3d_local/hybrid_router.py:build_hybrid_candidates"
     if template_score_threshold < 0.0:
         raise_error(stage, location, "template_score_threshold invalido (>=0)", impact="1", examples=[str(template_score_threshold)])
+    if int(ultra_long_seq_threshold) <= 0:
+        raise_error(stage, location, "ultra_long_seq_threshold deve ser > 0", impact="1", examples=[str(ultra_long_seq_threshold)])
 
     targets = load_targets_with_contract(targets_path=targets_path, stage=stage, location=location)
     retrieval = read_table(retrieval_path, stage=stage, location=location)
@@ -147,12 +172,30 @@ def build_hybrid_candidates(
 
     candidate_parts: list[pl.DataFrame] = []
     routing_rows: list[dict[str, object]] = []
-    for row in targets.select("target_id", "ligand_SMILES").iter_rows(named=True):
+    for row in targets.select("target_id", "sequence", "ligand_SMILES").iter_rows(named=True):
         tid = str(row["target_id"])
+        sequence = str(row["sequence"])
+        target_length = int(len(sequence))
+        ultralong = bool(target_length > int(ultra_long_seq_threshold))
         has_ligand = len(str(row["ligand_SMILES"]).strip()) > 0
         score = float(target_scores.get(tid, 0.0))
         template_strong = score >= float(template_score_threshold)
-        if template_strong and (tid in tbm_targets):
+        if ultralong:
+            rule = "ultralong->generative_se3"
+            primary_source = "generative_se3"
+            if se3 is None:
+                raise_error(stage, location, "alvo ultralongo exige se3_path", impact="1", examples=[f"{tid}:L={target_length}"])
+            primary_df = se3.filter(pl.col("target_id") == tid)
+            if primary_df.height == 0:
+                raise_error(
+                    stage,
+                    location,
+                    "alvo ultralongo sem cobertura em se3",
+                    impact="1",
+                    examples=[f"{tid}:L={target_length}", "forneca --se3 com cobertura completa"],
+                )
+            _aggressive_foundation_offload(model=None, stage=stage, location=location, context=f"{tid}:ultralong_fallback")
+        elif template_strong and (tid in tbm_targets):
             rule = "template->tbm"
             primary_source = "tbm"
             primary_df = tbm.filter(pl.col("target_id") == tid)
@@ -193,20 +236,26 @@ def build_hybrid_candidates(
                 raise_error(stage, location, "rota orfao exige chai1_path e boltz1_path", impact="1", examples=[tid])
             primary_df = _build_chai_boltz_ensemble_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
 
+        if primary_source in {"boltz1", "chai1", "chai1_boltz1_ensemble", "rnapro"}:
+            _aggressive_foundation_offload(model=None, stage=stage, location=location, context=f"{tid}:{primary_source}")
+
         if primary_df.height == 0:
             raise_error(stage, location, "fonte primaria sem cobertura do alvo", impact="1", examples=[f"{tid}:{primary_source}"])
         primary_df = primary_df.with_columns(pl.lit(rule).alias("route_rule"))
         candidate_parts.append(primary_df)
 
-        if rnapro is not None:
+        if (not ultralong) and (rnapro is not None):
             rn = rnapro.filter(pl.col("target_id") == tid)
             if rn.height > 0:
                 rn = rn.with_columns(pl.lit(rule).alias("route_rule"))
                 candidate_parts.append(rn)
+                _aggressive_foundation_offload(model=None, stage=stage, location=location, context=f"{tid}:supplemental_rnapro")
 
         routing_rows.append(
             {
                 "target_id": tid,
+                "target_length": int(target_length),
+                "ultralong_fallback": bool(ultralong),
                 "template_score": score,
                 "template_strong": bool(template_strong),
                 "has_ligand": bool(has_ligand),
@@ -227,7 +276,10 @@ def build_hybrid_candidates(
         manifest_path,
         {
             "created_utc": utc_now_iso(),
-            "params": {"template_score_threshold": float(template_score_threshold)},
+            "params": {
+                "template_score_threshold": float(template_score_threshold),
+                "ultra_long_seq_threshold": int(ultra_long_seq_threshold),
+            },
             "paths": {
                 "targets": rel_or_abs(targets_path, repo_root),
                 "retrieval": rel_or_abs(retrieval_path, repo_root),

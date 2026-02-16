@@ -5,30 +5,32 @@ import math
 import torch
 from torch import nn
 
+from .geometry import build_rna_local_frames
 from .sparse_graph import build_sparse_radius_graph, compute_chain_relative_features, lookup_sparse_pair_bias
 
 
 def _segment_softmax(logits: torch.Tensor, src: torch.Tensor, node_count: int) -> torch.Tensor:
+    logits_work = logits.to(dtype=torch.float32)
     heads = int(logits.shape[0])
     edge_count = int(logits.shape[1])
     src_expand = src.unsqueeze(0).expand(heads, edge_count)
     if hasattr(torch.Tensor, "scatter_reduce_"):
-        max_per_node = torch.full((heads, node_count), float("-inf"), dtype=logits.dtype, device=logits.device)
-        max_per_node.scatter_reduce_(1, src_expand, logits, reduce="amax", include_self=True)
-        centered = logits - max_per_node.gather(1, src_expand)
+        max_per_node = torch.full((heads, node_count), float("-inf"), dtype=logits_work.dtype, device=logits.device)
+        max_per_node.scatter_reduce_(1, src_expand, logits_work, reduce="amax", include_self=True)
+        centered = logits_work - max_per_node.gather(1, src_expand)
         exp_vals = torch.exp(centered)
-        sum_per_node = torch.zeros((heads, node_count), dtype=logits.dtype, device=logits.device)
+        sum_per_node = torch.zeros((heads, node_count), dtype=logits_work.dtype, device=logits.device)
         sum_per_node.scatter_add_(1, src_expand, exp_vals)
         denom = torch.clamp(sum_per_node.gather(1, src_expand), min=1e-9)
-        return exp_vals / denom
-    out = torch.zeros_like(logits)
+        return (exp_vals / denom).to(dtype=logits.dtype)
+    out = torch.zeros_like(logits_work)
     for head in range(heads):
-        logits_head = logits[head]
+        logits_head = logits_work[head]
         for node in range(node_count):
             mask = src == node
             if bool(mask.any()):
                 out[head, mask] = torch.softmax(logits_head[mask], dim=0)
-    return out
+    return out.to(dtype=logits.dtype)
 
 class IpaBlock(nn.Module):
     def __init__(self, hidden_dim: int, heads: int) -> None:
@@ -48,6 +50,7 @@ class IpaBlock(nn.Module):
         self.chem_bias = nn.Linear(1, heads)
         self.rel_bias = nn.Linear(1, heads)
         self.chain_break_bias = nn.Linear(1, heads)
+        self.orientation_bias = nn.Linear(3, heads)
         self.coord_gate = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
@@ -68,14 +71,22 @@ class IpaBlock(nn.Module):
         chem_edge_bias: torch.Tensor,
         relative_offset: torch.Tensor,
         chain_break_mask: torch.Tensor,
+        frames: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         node_count = int(h.shape[0])
+        if frames.ndim != 3 or int(frames.shape[0]) != node_count or int(frames.shape[1]) != 3 or int(frames.shape[2]) != 3:
+            raise ValueError(f"frames com shape invalido para IpaBlock: {tuple(frames.shape)}")
         q = self.query(h).view(node_count, self.heads, self.head_dim)
         k = self.key(h).view(node_count, self.heads, self.head_dim)
         v = self.value(h).view(node_count, self.heads, self.head_dim)
         q_src = q.index_select(0, src)
         k_dst = k.index_select(0, dst)
         v_dst = v.index_select(0, dst)
+        edge_delta = x.index_select(0, dst) - x.index_select(0, src)
+        src_frames = frames.index_select(0, src)
+        edge_local_delta = torch.einsum("eij,ej->ei", src_frames.transpose(1, 2), edge_delta)
+        edge_local_norm = torch.clamp(torch.linalg.norm(edge_local_delta, dim=-1, keepdim=True), min=1e-6)
+        edge_local_unit = edge_local_delta / edge_local_norm
         logits = torch.einsum("ehd,ehd->he", q_src, k_dst) / math.sqrt(float(self.head_dim))
         bias = self.dist_bias((distances * distances).unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
         bpp_term = self.bpp_bias(bpp_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
@@ -83,20 +94,33 @@ class IpaBlock(nn.Module):
         chem_term = self.chem_bias(chem_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
         rel_term = self.rel_bias(relative_offset.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
         chain_term = self.chain_break_bias(chain_break_mask.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        weights = _segment_softmax(logits=logits - bias + bpp_term + msa_term + chem_term + rel_term + chain_term, src=src, node_count=node_count)
+        orientation_term = (0.1 * torch.tanh(self.orientation_bias(edge_local_unit.to(dtype=h.dtype)))).transpose(0, 1)
+        weights = _segment_softmax(
+            logits=logits - bias + bpp_term + msa_term + chem_term + rel_term + chain_term + orientation_term,
+            src=src,
+            node_count=node_count,
+        )
         weighted_v = v_dst * weights.transpose(0, 1).unsqueeze(-1).to(dtype=v_dst.dtype)
         h_update = torch.zeros((node_count, self.heads, self.head_dim), dtype=h.dtype, device=h.device)
         h_update.index_add_(0, src, weighted_v.to(dtype=h.dtype))
         h_update = h_update.reshape(node_count, self.hidden_dim)
         h_out = h + self.out(h_update)
         weights_mean = weights.mean(dim=0)
-        displacement = torch.zeros((node_count, 3), dtype=x.dtype, device=x.device)
-        displacement.index_add_(
+        displacement_local = torch.zeros((node_count, 3), dtype=x.dtype, device=x.device)
+        displacement_local.index_add_(
             0,
             src,
-            (x.index_select(0, dst) - x.index_select(0, src)) * weights_mean.unsqueeze(-1).to(dtype=x.dtype),
+            edge_local_delta * weights_mean.unsqueeze(-1).to(dtype=x.dtype),
         )
-        x_out = x + (self.coord_gate(h_out) * displacement)
+        displacement_global_raw = torch.zeros((node_count, 3), dtype=x.dtype, device=x.device)
+        displacement_global_raw.index_add_(
+            0,
+            src,
+            edge_delta * weights_mean.unsqueeze(-1).to(dtype=x.dtype),
+        )
+        displacement_global = torch.einsum("nij,nj->ni", frames, displacement_local)
+        displacement_global = 0.5 * displacement_global + 0.5 * displacement_global_raw
+        x_out = x + (self.coord_gate(h_out) * displacement_global)
         return h_out, x_out
 
 
@@ -137,13 +161,17 @@ class IpaBackbone(nn.Module):
         msa_pair_src: torch.Tensor,
         msa_pair_dst: torch.Tensor,
         msa_pair_prob: torch.Tensor,
+        base_features: torch.Tensor,
         residue_index: torch.Tensor,
         chain_index: torch.Tensor,
         chem_exposure: torch.Tensor,
         chain_break_offset: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if base_features.ndim != 2 or int(base_features.shape[0]) != int(node_features.shape[0]) or int(base_features.shape[1]) < 4:
+            raise ValueError(f"base_features com shape invalido para IpaBackbone: {tuple(base_features.shape)}")
         h = self.input_proj(node_features)
         x = coords
+        base_features_layer = base_features.to(device=x.device, dtype=x.dtype)
         for layer in self.layers:
             graph = build_sparse_radius_graph(
                 coords=x,
@@ -179,6 +207,7 @@ class IpaBackbone(nn.Module):
                 chain_index=chain_index.to(device=graph.src.device),
                 chain_break_offset=int(chain_break_offset),
             )
+            frames, _p_proxy, _c4_proxy, _n_proxy = build_rna_local_frames(c1_coords=x, base_features=base_features_layer)
             h, x = layer(
                 h,
                 x,
@@ -190,5 +219,6 @@ class IpaBackbone(nn.Module):
                 chem_edge_bias=chem_edge_bias,
                 relative_offset=relative_offset,
                 chain_break_mask=chain_break_mask,
+                frames=frames,
             )
         return self.norm(h), x

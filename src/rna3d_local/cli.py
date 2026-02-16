@@ -340,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
                 out_path=(repo / args.out).resolve(),
                 routing_path=(repo / args.routing_out).resolve(),
                 template_score_threshold=float(args.template_score_threshold),
+                ultra_long_seq_threshold=int(args.ultra_long_seq_threshold),
                 rnapro_path=None if args.rnapro is None else (repo / args.rnapro).resolve(),
                 chai1_path=None if args.chai1 is None else (repo / args.chai1).resolve(),
                 boltz1_path=None if args.boltz1 is None else (repo / args.boltz1).resolve(),
@@ -377,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                 angle_target_deg=float(args.angle_target_deg),
                 vdw_min_distance_angstrom=float(args.vdw_min_distance_angstrom),
                 vdw_epsilon=float(args.vdw_epsilon),
+                position_restraint_k=float(args.position_restraint_k),
                 openmm_platform=None if args.openmm_platform is None else str(args.openmm_platform),
             )
             _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})

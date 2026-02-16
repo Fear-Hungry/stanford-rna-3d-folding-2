@@ -46,6 +46,12 @@ class Se3TrainConfig:
     vdw_min_distance: float
     vdw_repulsion_power: int
     loss_chunk_size: int
+    dynamic_cropping: bool
+    crop_min_length: int
+    crop_max_length: int
+    crop_sequence_fraction: float
+    gradient_accumulation_steps: int
+    autocast_bfloat16: bool
 
 
 def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainConfig:
@@ -112,6 +118,12 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         vdw_min_distance=float(payload.get("vdw_min_distance", 2.1)),
         vdw_repulsion_power=int(payload.get("vdw_repulsion_power", 4)),
         loss_chunk_size=int(payload.get("loss_chunk_size", 256)),
+        dynamic_cropping=bool(payload.get("dynamic_cropping", True)),
+        crop_min_length=int(payload.get("crop_min_length", 256)),
+        crop_max_length=int(payload.get("crop_max_length", 384)),
+        crop_sequence_fraction=float(payload.get("crop_sequence_fraction", 0.60)),
+        gradient_accumulation_steps=int(payload.get("gradient_accumulation_steps", 16)),
+        autocast_bfloat16=bool(payload.get("autocast_bfloat16", True)),
     )
     numeric_checks = [
         ("hidden_dim", cfg.hidden_dim),
@@ -129,6 +141,9 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         ("max_cov_pairs", cfg.max_cov_pairs),
         ("vdw_repulsion_power", cfg.vdw_repulsion_power),
         ("loss_chunk_size", cfg.loss_chunk_size),
+        ("crop_min_length", cfg.crop_min_length),
+        ("crop_max_length", cfg.crop_max_length),
+        ("gradient_accumulation_steps", cfg.gradient_accumulation_steps),
     ]
     bad = [name for name, value in numeric_checks if int(value) <= 0]
     if bad:
@@ -145,6 +160,18 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         raise_error(stage, location, "vdw_min_distance invalido (<=0)", impact="1", examples=[str(cfg.vdw_min_distance)])
     if cfg.vdw_repulsion_power <= 1:
         raise_error(stage, location, "vdw_repulsion_power deve ser > 1", impact="1", examples=[str(cfg.vdw_repulsion_power)])
+    if cfg.crop_min_length < 2:
+        raise_error(stage, location, "crop_min_length deve ser >= 2", impact="1", examples=[str(cfg.crop_min_length)])
+    if cfg.crop_max_length < cfg.crop_min_length:
+        raise_error(
+            stage,
+            location,
+            "crop_max_length deve ser >= crop_min_length",
+            impact="1",
+            examples=[f"min={cfg.crop_min_length}", f"max={cfg.crop_max_length}"],
+        )
+    if cfg.crop_sequence_fraction <= 0.0 or cfg.crop_sequence_fraction > 1.0:
+        raise_error(stage, location, "crop_sequence_fraction deve estar em (0,1]", impact="1", examples=[str(cfg.crop_sequence_fraction)])
     loss_weights = {
         "loss_weight_mse": cfg.loss_weight_mse,
         "loss_weight_fape": cfg.loss_weight_fape,

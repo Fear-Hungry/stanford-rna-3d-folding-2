@@ -97,34 +97,77 @@ def _build_torch_sparse_edges(
     location: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     n_nodes = int(coords.shape[0])
-    node_index = torch.arange(n_nodes, device=coords.device)
+
+    def _build_torch_cluster() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        try:
+            from torch_cluster import radius_graph as torch_cluster_radius_graph  # type: ignore
+        except Exception:
+            return None
+        try:
+            edge_index = torch_cluster_radius_graph(coords, r=float(radius_angstrom), loop=False, max_num_neighbors=int(max_neighbors))
+        except Exception as exc:  # noqa: BLE001
+            raise_error(
+                stage,
+                location,
+                "torch_cluster.radius_graph falhou no backend torch_sparse",
+                impact="1",
+                examples=[f"{type(exc).__name__}:{exc}"],
+            )
+        if int(edge_index.numel()) == 0:
+            return None
+        src = edge_index[0].to(dtype=torch.long, device=coords.device)
+        dst = edge_index[1].to(dtype=torch.long, device=coords.device)
+        distances = torch.linalg.norm(coords.index_select(0, src) - coords.index_select(0, dst), dim=-1).to(dtype=torch.float32)
+        return src, dst, distances
+
+    cluster_edges = _build_torch_cluster()
+    if cluster_edges is not None:
+        return cluster_edges
+
+    coords_cpu = coords.detach().to(device="cpu", dtype=torch.float32)
+    scale = float(radius_angstrom)
+    cell_coords = torch.floor(coords_cpu / scale).to(dtype=torch.int64)
+    cell_map: dict[tuple[int, int, int], list[int]] = {}
+    for index, cell in enumerate(cell_coords.tolist()):
+        key = (int(cell[0]), int(cell[1]), int(cell[2]))
+        cell_map.setdefault(key, []).append(int(index))
+    offsets = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)]
+
     src_parts: list[torch.Tensor] = []
     dst_parts: list[torch.Tensor] = []
     dist_parts: list[torch.Tensor] = []
-    for start in range(0, n_nodes, int(chunk_size)):
-        end = min(n_nodes, start + int(chunk_size))
-        local = coords[start:end]
-        distances_chunk = torch.cdist(local, coords)
-        for local_row in range(int(end - start)):
-            src_idx = int(start + local_row)
-            distances_row = distances_chunk[local_row]
-            mask = (distances_row <= float(radius_angstrom)) & (node_index != src_idx)
-            neighbors = torch.nonzero(mask, as_tuple=False).flatten()
-            if int(neighbors.numel()) == 0:
-                continue
-            neighbor_dist = distances_row.index_select(0, neighbors)
-            if int(neighbors.numel()) > int(max_neighbors):
-                keep = torch.topk(neighbor_dist, k=int(max_neighbors), largest=False).indices
-                neighbors = neighbors.index_select(0, keep)
-                neighbor_dist = neighbor_dist.index_select(0, keep)
-            src_parts.append(torch.full((int(neighbors.numel()),), src_idx, dtype=torch.long, device=coords.device))
-            dst_parts.append(neighbors.to(dtype=torch.long, device=coords.device))
-            dist_parts.append(neighbor_dist.to(dtype=torch.float32, device=coords.device))
+    for src_idx in range(n_nodes):
+        cell = cell_coords[src_idx].tolist()
+        neighbor_ids: list[int] = []
+        for dx, dy, dz in offsets:
+            key = (int(cell[0] + dx), int(cell[1] + dy), int(cell[2] + dz))
+            neighbor_ids.extend(cell_map.get(key, []))
+        if not neighbor_ids:
+            continue
+        unique_ids = [idx for idx in dict.fromkeys(neighbor_ids) if idx != src_idx]
+        if not unique_ids:
+            continue
+        candidates = torch.tensor(unique_ids, dtype=torch.long, device=coords.device)
+        deltas = coords.index_select(0, candidates) - coords[src_idx].unsqueeze(0)
+        distances = torch.sqrt(torch.clamp(torch.sum(deltas * deltas, dim=-1), min=1e-8))
+        keep_mask = distances <= float(radius_angstrom)
+        if not bool(keep_mask.any()):
+            continue
+        kept_candidates = candidates[keep_mask]
+        kept_distances = distances[keep_mask]
+        if int(kept_candidates.numel()) > int(max_neighbors):
+            keep_order = torch.topk(kept_distances, k=int(max_neighbors), largest=False).indices
+            kept_candidates = kept_candidates.index_select(0, keep_order)
+            kept_distances = kept_distances.index_select(0, keep_order)
+        src_parts.append(torch.full((int(kept_candidates.numel()),), int(src_idx), dtype=torch.long, device=coords.device))
+        dst_parts.append(kept_candidates.to(dtype=torch.long, device=coords.device))
+        dist_parts.append(kept_distances.to(dtype=torch.float32, device=coords.device))
+
     if not src_parts:
         raise_error(
             stage,
             location,
-            "grafo 3d esparso sem arestas; ajuste radius_angstrom/max_neighbors",
+            "grafo 3d esparso sem arestas; ajuste radius_angstrom/max_neighbors/coords",
             impact=str(n_nodes),
             examples=[f"radius={radius_angstrom}", f"max_neighbors={max_neighbors}"],
         )

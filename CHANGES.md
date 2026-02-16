@@ -498,3 +498,196 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - `backend=openmm` depende da biblioteca OpenMM no ambiente Kaggle/local; ausencia gera erro de contrato.
   - `backend=pyrosetta` permanece bloqueado para input C1' only (necessita entrada full-atom para `rna_minimize`).
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-087
+
+- Data UTC: `2026-02-16T14:21:25Z`
+- Plano: `PLAN-087`
+- Resumo:
+  - `build-hybrid-candidates` recebeu fallback obrigatorio para alvos ultralongos (`L > threshold`) roteando exclusivamente para `generative_se3`.
+  - Adicionada limpeza agressiva de memoria para fontes fundacionais no roteador:
+    - `gc.collect()`
+    - `torch.cuda.empty_cache()` quando CUDA ativa.
+  - Novo parametro de roteamento:
+    - `--ultra-long-seq-threshold` (default `1500`) exposto no CLI e registrado em manifest.
+  - `sparse_graph.py` removido do caminho com `torch.cdist` chunk-vs-all no backend `torch_sparse`.
+  - Novo caminho esparso:
+    - usa `torch_cluster.radius_graph` quando disponivel;
+    - senao usa particionamento espacial por celulas (sem matriz densa NxN) com cutoff e `max_neighbors`.
+  - `sequence_tower.py` reforcado para usar SDPA com kernel Flash em CUDA (`enable_math=False`) e erro acionavel quando indisponivel (orienta `mamba_like`).
+  - README atualizado com threshold ultralongo e observacao de grafo sem matriz densa.
+- Arquivos principais tocados:
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `src/rna3d_local/se3/sparse_graph.py`
+  - `src/rna3d_local/se3/sequence_tower.py`
+  - `tests/test_phase2_hybrid.py`
+  - `tests/test_se3_memory.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_phase2_hybrid.py tests/test_se3_memory.py tests/test_se3_pipeline.py` -> `13 passed`
+  - `pytest -q` -> `52 passed`
+  - `python -m rna3d_local build-hybrid-candidates --help` -> flag `--ultra-long-seq-threshold` presente.
+- Riscos conhecidos / follow-ups:
+  - O fallback ultralongo exige cobertura de `--se3`; sem cobertura o pipeline falha cedo por contrato.
+  - Busca espacial por celulas troca VRAM por custo de CPU/Python; para `L` extremo pode exigir tuning de `radius_angstrom/max_neighbors`.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-088
+
+- Data UTC: `2026-02-16T14:30:51Z`
+- Plano: `PLAN-088`
+- Resumo:
+  - `geometry.py` foi refatorado para construir frame local de RNA por resíduo com proxies de `P`, `C4'` e `N1/N9` a partir de `C1'` + identidade de base (purina/pirimidina).
+  - `ipa_backbone.py` passou a recalcular frames locais por camada com as coordenadas correntes e usar deltas de aresta no frame local para:
+    - viés orientacional no score de atenção;
+    - atualização coordenada com mistura frame-local + deslocamento global.
+  - `trainer_se3.py` passou a injetar `base_features` (A/C/G/U) no `IpaBackbone` para orientar o frame local RNA.
+  - `losses_se3.py` recebeu estabilização do alinhamento Kabsch (rotação calculada em `no_grad`) para evitar gradientes não finitos em casos degenerados.
+  - Novos testes de contrato/estabilidade adicionados para geometria e IPA.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/geometry.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/training/losses_se3.py`
+  - `tests/test_ipa_geometry.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_ipa_geometry.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py` -> `14 passed`
+  - `pytest -q` -> `55 passed`
+- Riscos conhecidos / follow-ups:
+  - O frame local usa proxies geometricos de `P/C4'/N1/N9` derivados de `C1'`; calibracao de distancias proxy pode ser ajustada apos benchmark local com alvos reais.
+  - O viés orientacional foi limitado (`tanh` + escala) para estabilidade; tuning adicional pode ser necessario em treino longo.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-089
+
+- Data UTC: `2026-02-16T14:36:41Z`
+- Plano: `PLAN-089`
+- Resumo:
+  - `sampler.py` recebeu amostragem rapida por solver ODE:
+    - diffusion com passo DPM-like em malha reduzida;
+    - flow com integrador Heun de 2a ordem;
+    - validacao fail-fast de shape e finitude por sample.
+  - `diversity.py` foi expandido com:
+    - distancia estrutural aproximada (`1 - cosseno`);
+    - estimativa de clash ratio por grade espacial;
+    - pre-filtro de 50% piores via score ajustado;
+    - clustering Max-Min e selecao de medoides por cluster.
+  - `select_top5.py` agora:
+    - exige `qa_score` e `final_score` nao nulos;
+    - elimina 50% piores candidatos por target;
+    - seleciona Top-5 como medoides de clusters distintos;
+    - registra diagnosticos de pre-filtro/clustering no manifest.
+  - `cli_parser.py` atualizou default de `sample-se3-ensemble --n-samples` para `24`.
+  - Testes novos de estrategia Best-of-5 adicionados.
+- Arquivos principais tocados:
+  - `src/rna3d_local/generative/sampler.py`
+  - `src/rna3d_local/ensemble/diversity.py`
+  - `src/rna3d_local/ensemble/select_top5.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `tests/test_best_of5_strategy.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_se3_pipeline.py` -> `6 passed`
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_ipa_geometry.py` -> `13 passed`
+  - `pytest -q` -> `58 passed`
+- Riscos conhecidos / follow-ups:
+  - A distancia estrutural aproximada usada no clustering (cosseno de vetor centrado) e proxy de TM-score; vale calibrar contra US-align local para validar correlacao em alvos longos.
+  - O pre-filtro em 50% pode remover modos raros quando o QA local estiver mal calibrado; manter monitoramento por target no manifest.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-090
+
+- Data UTC: `2026-02-16T14:40:38Z`
+- Plano: `PLAN-090`
+- Resumo:
+  - `training/losses_se3.py` recebeu clash loss exponencial:
+    - penalidade principal com `expm1(alpha * penetration)` para pares nao-covalentes;
+    - reforco critico adicional para distancias sub-`2.0A`;
+    - calculo mantido em modo chunked, sem matriz densa global.
+  - `minimization.py` recebeu restraints harmonicas fortes na minimizacao:
+    - OpenMM usa `CustomExternalForce` ancorada nas coordenadas iniciais;
+    - caminho `mock` passou a aplicar ancoragem progressiva para preservar macro-topologia;
+    - contrato novo limita `max_iterations <= 100`.
+  - `minimize_ensemble` agora exige `position_restraint_k > 0`, registra parametro no manifest e adiciona coluna `refinement_position_restraint_k`.
+  - CLI atualizada:
+    - `--max-iterations` default para `80`;
+    - novo argumento `--position-restraint-k` (default `800.0`).
+  - README atualizada com exemplos alinhados ao novo contrato de relaxacao curta com restraints.
+  - Testes expandidos para clash exponencial e budget de iteracoes.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/losses_se3.py`
+  - `src/rna3d_local/minimization.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_se3_losses.py`
+  - `tests/test_minimization.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_se3_losses.py tests/test_minimization.py` -> `9 passed`
+  - `pytest -q` -> `60 passed`
+- Riscos conhecidos / follow-ups:
+  - O backend `pyrosetta` permanece fail-fast para input C1' only (full-atom ainda necessario).
+  - A intensidade de `position_restraint_k` pode requerer ajuste por familia de alvo para equilibrar remocao de clash vs rigidez global.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-091
+
+- Data UTC: `2026-02-16T14:43:23Z`
+- Plano: `PLAN-091`
+- Resumo:
+  - `parse_sequence_with_chains` passou a gerar indice posicional 1D por residuo com salto absoluto ao trocar de cadeia:
+    - novo campo `residue_position_index_1d` em `ParsedSequence`;
+    - salto default de `+1000` em cada chain break;
+    - validacao fail-fast para `chain_break_offset_1d <= 0`.
+  - `graph_builder` passou a usar o indice 1D do parser para `TargetGraph.residue_index`, substituindo o `arange` contiguo.
+  - Novos testes adicionados para contrato do parser multicadeia.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sequence_parser.py`
+  - `src/rna3d_local/se3/graph_builder.py`
+  - `tests/test_sequence_parser.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_sequence_parser.py tests/test_se3_pipeline.py tests/test_msa_covariance.py` -> `9 passed`
+  - `pytest -q` -> `63 passed`
+- Riscos conhecidos / follow-ups:
+  - O salto 1D agora e explicito no parser e somado ao `chain_break_offset` ja aplicado em features relativas; calibracao fina pode ser feita em benchmark local para evitar separacao excessiva em targets com muitas cadeias.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-092
+
+- Data UTC: `2026-02-16T14:52:39Z`
+- Plano: `PLAN-092`
+- Resumo:
+  - Protocolo de treino local para 16GB VRAM consolidado com:
+    - recorte dinamico (sequencia + espacial),
+    - mixed precision BF16,
+    - gradient checkpointing no backbone SE(3),
+    - gradient accumulation para batch virtual.
+  - Correcao critica de estabilidade numerica:
+    - `training/losses_se3.py` passou a executar Kabsch/TM-core em `float32` com autocast desabilitado no trecho de SVD;
+    - elimina erro CUDA `svd_cuda_gesvdjBatched not implemented for BFloat16`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/training/losses_se3.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_se3_pipeline.py::test_train_sample_rank_select_se3_pipeline tests/test_se3_pipeline.py::test_train_sample_se3_with_multichain_sequence tests/test_se3_memory.py::test_train_and_sample_se3_with_linear_memory_config` -> `3 passed`
+  - `pytest -q tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py tests/test_sequence_parser.py` -> `15 passed`
+  - `pytest -q` -> `63 passed`
+- Riscos conhecidos / follow-ups:
+  - O alinhamento Kabsch do TM-core agora roda em `float32`, reduzindo risco de erro BF16 ao custo de overhead pequeno no treinamento.

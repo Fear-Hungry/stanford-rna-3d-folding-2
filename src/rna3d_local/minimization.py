@@ -34,10 +34,13 @@ def _minimize_mock(
     max_iterations: int,
     bond_length_angstrom: float,
     vdw_min_distance_angstrom: float,
+    position_restraint_k: float,
 ) -> np.ndarray:
     device = torch.device("cpu")
     x = torch.tensor(coords_angstrom, dtype=torch.float32, device=device).clone()
+    x0 = x.clone()
     residues = torch.tensor(residue_index, dtype=torch.long, device=device)
+    restraint_weight = min(0.40, max(0.05, float(position_restraint_k) / (float(position_restraint_k) + 2000.0)))
     if int(x.shape[0]) <= 1:
         return x.detach().cpu().numpy()
     for _ in range(int(max_iterations)):
@@ -67,6 +70,7 @@ def _minimize_mock(
                 push = 0.2 * penetration * (delta / dist)
                 x[i] = x[i] - push
                 x[j] = x[j] + push
+        x = x + (float(restraint_weight) * (x0 - x))
     return x.detach().cpu().numpy()
 
 
@@ -81,6 +85,7 @@ def _minimize_openmm(
     angle_target_deg: float,
     vdw_min_distance_angstrom: float,
     vdw_epsilon: float,
+    position_restraint_k: float,
     openmm_platform: str | None,
     stage: str,
     location: str,
@@ -127,6 +132,19 @@ def _minimize_openmm(
         repulsion.addExclusion(int(i), int(j))
     system.addForce(repulsion)
 
+    coords_nm = np.asarray(coords_angstrom, dtype=np.float64) * 0.1
+    restraint_force = mm.CustomExternalForce("0.5*k*((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
+    restraint_force.addGlobalParameter("k", float(position_restraint_k))
+    restraint_force.addPerParticleParameter("x0")
+    restraint_force.addPerParticleParameter("y0")
+    restraint_force.addPerParticleParameter("z0")
+    for atom_idx in range(count):
+        restraint_force.addParticle(
+            int(atom_idx),
+            [float(coords_nm[atom_idx, 0]), float(coords_nm[atom_idx, 1]), float(coords_nm[atom_idx, 2])],
+        )
+    system.addForce(restraint_force)
+
     integrator = mm.VerletIntegrator(0.001 * unit.picoseconds)
     if openmm_platform is None or str(openmm_platform).strip() == "":
         context = mm.Context(system, integrator)
@@ -136,7 +154,6 @@ def _minimize_openmm(
         except Exception as exc:
             raise_error(stage, location, "openmm_platform invalido", impact="1", examples=[f"{openmm_platform}:{type(exc).__name__}"])
         context = mm.Context(system, integrator, platform)
-    coords_nm = np.asarray(coords_angstrom, dtype=np.float64) * 0.1
     context.setPositions(coords_nm * unit.nanometer)
     try:
         mm.LocalEnergyMinimizer.minimize(context, tolerance=10.0, maxIterations=int(max_iterations))
@@ -182,6 +199,7 @@ def minimize_ensemble(
     angle_target_deg: float,
     vdw_min_distance_angstrom: float,
     vdw_epsilon: float,
+    position_restraint_k: float,
     openmm_platform: str | None,
 ) -> MinimizeEnsembleResult:
     stage = "MINIMIZE_ENSEMBLE"
@@ -191,6 +209,8 @@ def minimize_ensemble(
         raise_error(stage, location, "backend de minimizacao invalido", impact="1", examples=[str(backend)])
     if int(max_iterations) <= 0:
         raise_error(stage, location, "max_iterations deve ser > 0", impact="1", examples=[str(max_iterations)])
+    if int(max_iterations) > 100:
+        raise_error(stage, location, "max_iterations deve ser <= 100 para relaxacao curta", impact="1", examples=[str(max_iterations)])
     if float(bond_length_angstrom) <= 0.0:
         raise_error(stage, location, "bond_length_angstrom invalido", impact="1", examples=[str(bond_length_angstrom)])
     if float(bond_force_k) <= 0.0:
@@ -203,6 +223,8 @@ def minimize_ensemble(
         raise_error(stage, location, "vdw_min_distance_angstrom invalido", impact="1", examples=[str(vdw_min_distance_angstrom)])
     if float(vdw_epsilon) <= 0.0:
         raise_error(stage, location, "vdw_epsilon invalido", impact="1", examples=[str(vdw_epsilon)])
+    if float(position_restraint_k) <= 0.0:
+        raise_error(stage, location, "position_restraint_k invalido", impact="1", examples=[str(position_restraint_k)])
 
     pred = read_table(predictions_path, stage=stage, location=location)
     require_columns(pred, ["target_id", "model_id", "resid", "resname", "x", "y", "z"], stage=stage, location=location, label="predictions_long")
@@ -235,6 +257,7 @@ def minimize_ensemble(
                 max_iterations=int(max_iterations),
                 bond_length_angstrom=float(bond_length_angstrom),
                 vdw_min_distance_angstrom=float(vdw_min_distance_angstrom),
+                position_restraint_k=float(position_restraint_k),
             )
         elif backend_name == "openmm":
             minimized = _minimize_openmm(
@@ -247,6 +270,7 @@ def minimize_ensemble(
                 angle_target_deg=float(angle_target_deg),
                 vdw_min_distance_angstrom=float(vdw_min_distance_angstrom),
                 vdw_epsilon=float(vdw_epsilon),
+                position_restraint_k=float(position_restraint_k),
                 openmm_platform=openmm_platform,
                 stage=stage,
                 location=location,
@@ -268,6 +292,7 @@ def minimize_ensemble(
                 pl.Series("z", minimized[:, 2]),
                 pl.lit(str(backend_name)).alias("refinement_backend"),
                 pl.lit(int(max_iterations)).alias("refinement_steps"),
+                pl.lit(float(position_restraint_k)).alias("refinement_position_restraint_k"),
             ]
         )
         out_parts.append(out_part)
@@ -294,6 +319,7 @@ def minimize_ensemble(
                 "angle_target_deg": float(angle_target_deg),
                 "vdw_min_distance_angstrom": float(vdw_min_distance_angstrom),
                 "vdw_epsilon": float(vdw_epsilon),
+                "position_restraint_k": float(position_restraint_k),
                 "openmm_platform": None if openmm_platform is None else str(openmm_platform),
             },
             "stats": {

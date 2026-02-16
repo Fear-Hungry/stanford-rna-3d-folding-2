@@ -15,7 +15,7 @@ python -m rna3d_local retrieve-templates-latent --template-index data/derived/te
 python -m rna3d_local train-template-reranker --candidates runs/retrieval/retrieval_candidates.parquet --chemical-features runs/chem/chemical_features.parquet --out-dir runs/reranker
 python -m rna3d_local score-template-reranker --candidates runs/retrieval/retrieval_candidates.parquet --chemical-features runs/chem/chemical_features.parquet --model runs/reranker/model.pt --config runs/reranker/config.json --out runs/reranker/reranked.parquet
 python -m rna3d_local predict-tbm --retrieval runs/reranker/reranked.parquet --templates data/derived/template_db/templates.parquet --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/tbm/predictions.parquet --n-models 5
-python -m rna3d_local minimize-ensemble --predictions runs/tbm/predictions.parquet --out runs/tbm/predictions_minimized.parquet --backend openmm --max-iterations 120 --bond-length-angstrom 5.9 --vdw-min-distance-angstrom 2.1
+python -m rna3d_local minimize-ensemble --predictions runs/tbm/predictions.parquet --out runs/tbm/predictions_minimized.parquet --backend openmm --max-iterations 80 --bond-length-angstrom 5.9 --vdw-min-distance-angstrom 2.1 --position-restraint-k 800.0
 python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/tbm/predictions_minimized.parquet --out runs/tbm/submission.csv
 python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/tbm/submission.csv
 
@@ -24,9 +24,9 @@ python -m rna3d_local build-phase2-assets --assets-dir assets
 python -m rna3d_local predict-rnapro-offline --model-dir assets/models/rnapro --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/rnapro.parquet --n-models 5
 python -m rna3d_local predict-chai1-offline --model-dir assets/models/chai1 --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/chai1.parquet --n-models 5
 python -m rna3d_local predict-boltz1-offline --model-dir assets/models/boltz1 --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/boltz1.parquet --n-models 5
-python -m rna3d_local build-hybrid-candidates --targets input/stanford-rna-3d-folding-2/test_sequences.csv --retrieval runs/retrieval/retrieval_candidates.parquet --tbm runs/tbm/predictions.parquet --rnapro runs/phase2/rnapro.parquet --chai1 runs/phase2/chai1.parquet --boltz1 runs/phase2/boltz1.parquet --se3 runs/se3/top5.parquet --out runs/phase2/hybrid_candidates.parquet --routing-out runs/phase2/routing.parquet --template-score-threshold 0.65
+python -m rna3d_local build-hybrid-candidates --targets input/stanford-rna-3d-folding-2/test_sequences.csv --retrieval runs/retrieval/retrieval_candidates.parquet --tbm runs/tbm/predictions.parquet --rnapro runs/phase2/rnapro.parquet --chai1 runs/phase2/chai1.parquet --boltz1 runs/phase2/boltz1.parquet --se3 runs/se3/top5.parquet --out runs/phase2/hybrid_candidates.parquet --routing-out runs/phase2/routing.parquet --template-score-threshold 0.65 --ultra-long-seq-threshold 1500
 python -m rna3d_local select-top5-hybrid --candidates runs/phase2/hybrid_candidates.parquet --out runs/phase2/hybrid_top5.parquet --n-models 5
-python -m rna3d_local minimize-ensemble --predictions runs/phase2/hybrid_top5.parquet --out runs/phase2/hybrid_top5_minimized.parquet --backend openmm --max-iterations 120 --bond-length-angstrom 5.9 --vdw-min-distance-angstrom 2.1
+python -m rna3d_local minimize-ensemble --predictions runs/phase2/hybrid_top5.parquet --out runs/phase2/hybrid_top5_minimized.parquet --backend openmm --max-iterations 80 --bond-length-angstrom 5.9 --vdw-min-distance-angstrom 2.1 --position-restraint-k 800.0
 python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/phase2/hybrid_top5_minimized.parquet --out runs/phase2/submission.csv
 python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/phase2/submission.csv --score-json runs/phase2/score.json --baseline-score 0.0 --report runs/phase2/readiness.json
 
@@ -45,6 +45,7 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - `graph_backend`:
   - `torch_sparse`: radius graph com `torch.sparse` e processamento em chunks (`graph_chunk_size`);
   - `torch_geometric`: usa `torch_geometric.nn.radius_graph` (falha cedo se dependencias extras nao estiverem instaladas).
+  - `torch_sparse` evita matriz de distancias densa NxN e usa busca de vizinhos espacial (ou `torch_cluster.radius_graph` quando disponivel).
 - `thermo_backend`:
   - `rnafold`: usa ViennaRNA (`RNAfold -p`) para extrair BPP do ensemble de Boltzmann;
   - `linearfold`: executa `linearfold --bpp` para obter pares/probabilidades;
@@ -100,7 +101,13 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
   "fape_length_scale": 10.0,
   "vdw_min_distance": 2.1,
   "vdw_repulsion_power": 4,
-  "loss_chunk_size": 256
+  "loss_chunk_size": 256,
+  "dynamic_cropping": true,
+  "crop_min_length": 256,
+  "crop_max_length": 384,
+  "crop_sequence_fraction": 0.60,
+  "gradient_accumulation_steps": 16,
+  "autocast_bfloat16": true
 }
 ```
 
@@ -111,9 +118,11 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - `build-homology-folds` aplica estratificacao de dominio por padrao (falha cedo sem fonte de dominio valida).
 - `evaluate-homology-folds` prioriza score de orphans com ponderacao explicita (`orphan_weight`) e exige classificacao orphan valida.
 - `minimize-ensemble` deve ser executado antes de `export-submission`; `backend=openmm` falha cedo se dependencia/plataforma estiver indisponivel.
+- `minimize-ensemble` roda em regime curto (`max_iterations <= 100`) com restraints harmonicas fortes (`position_restraint_k`) para preservar macro-topologia.
 - O caminho padrao competitivo usa `encoder=ribonanzanet2`, `backend=llama_cpp` e `ann_engine=faiss_ivfpq`.
 - FASE 2 usa roteamento deterministico:
   - template forte -> TBM;
+  - alvos ultralongos (`L > --ultra-long-seq-threshold`) -> `generative_se3` obrigatorio;
   - template/órfão fraco com `--se3` -> `generative_se3`;
   - orfao sem ligante -> ensemble `chai1_boltz1_ensemble`;
   - alvo com `ligand_SMILES` -> Boltz-1 primario;
