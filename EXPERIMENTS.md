@@ -470,3 +470,184 @@ Log append-only de experimentos executados.
   - Sondagem quimica integrada ao branch SE(3) com fail-fast de cobertura e origem de sinal rastreavel por manifest.
 - Proximos passos:
   - Rodar benchmark local com alvos reais ricos em pseudoknot para medir ganho de score e custo computacional.
+
+## PLAN-083
+
+### 2026-02-16T13:28:01Z - marcusvinicius/Codex (folds por homologia com clustering restrito)
+
+- Objetivo/hipotese:
+  - Evitar falsa generalizacao de Random K-Folds removendo vazamento de homologia estrutural entre folds.
+- Comparacao:
+  - Baseline: splits sem garantia de isolamento por cluster homologo.
+  - Novo: splits por cluster com identidade/cobertura restritas e checagem explicita de leakage.
+- Comandos executados:
+  - `pytest -q tests/test_homology_folds.py tests/test_chemical_mapping.py tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py`
+  - `pytest -q`
+  - `python -m rna3d_local --help`
+- Configuracao efetiva:
+  - Novo comando: `build-homology-folds`.
+  - Backends: `mmseqs2`, `cdhit_est`, `mock`.
+  - Defaults competitivos:
+    - `identity_threshold=0.40`
+    - `coverage_threshold=0.80`
+    - `n_folds=5`
+- Parametros/hiperparametros:
+  - Teste de integracao com `backend=mock`, `identity_threshold=0.85`, `coverage_threshold=0.80`, `n_folds=2`.
+  - Teste de contrato com backend ausente:
+    - `backend=mmseqs2`, `mmseqs_bin=/bin/nao_existe_mmseqs`.
+- Seeds:
+  - N/A (split deterministico sem treino estocastico).
+- Versao de codigo/dados:
+  - `git commit`: `da4391c`
+  - Dados sinteticos para testes em `tmp_path`.
+- Artefatos:
+  - `clusters.parquet`, `train_folds.parquet`, `homology_folds_manifest.json`.
+  - `manifest.stats.max_folds_per_cluster_train` como criterio de leakage.
+- Metricas/score/custo:
+  - `pytest -q tests/test_homology_folds.py ...` -> `23 passed in 2.09s`
+  - `pytest -q` -> `38 passed in 2.08s`
+  - CLI sem regressao.
+- Conclusao:
+  - Folds homologo-estritos implementados com fail-fast para contratos/binarios e bloqueio de leakage por cluster.
+- Proximos passos:
+  - Rodar experimento comparativo oficial (Random K-Folds vs homology folds) com score local para quantificar risco de private-LB drop.
+
+## PLAN-084
+
+### 2026-02-16T13:36:32Z - marcusvinicius/Codex (estratificacao de dominio + prioridade orphan)
+
+- Objetivo/hipotese:
+  - Reduzir risco de private-LB drop garantindo representatividade topologica por dominio nos folds e priorizando explicitamente desempenho em alvos orphan.
+- Comparacao:
+  - Baseline: folds por homologia sem estratificacao de dominio e sem relatorio orphan-prioritario.
+  - Novo: folds por cluster + dominio (estrito) e avaliacao com `priority_score` ponderado por orphan.
+- Comandos executados:
+  - `pytest -q tests/test_homology_folds.py tests/test_homology_eval.py tests/test_phase2_hybrid.py`
+  - `pytest -q`
+  - `python -m rna3d_local --help`
+- Configuracao efetiva:
+  - `build-homology-folds`:
+    - `strict_domain_stratification=true` por padrao;
+    - fontes de dominio: `--domain-labels` ou `--domain-column` ou `--description-column`.
+  - `evaluate-homology-folds`:
+    - entrada de metricas por alvo;
+    - classificacao orphan por `--orphan-labels` ou `--retrieval`;
+    - defaults: `orphan_score_threshold=0.65`, `orphan_weight=0.70`.
+- Parametros/hiperparametros:
+  - Teste de estratificacao: `identity_threshold=0.95`, `coverage_threshold=0.80`, `n_folds=2`, dominio inferido por descricao.
+  - Teste de prioridade orphan: score por alvo com classificador orphan por `final_score < 0.65`.
+- Seeds:
+  - N/A (split/relatorio deterministico, sem treino estocastico).
+- Versao de codigo/dados:
+  - `git commit`: `da4391c`
+  - Dados sinteticos de teste em `tmp_path`.
+- Artefatos:
+  - Novo modulo `src/rna3d_local/homology_eval.py`.
+  - `train_folds.parquet` com `domain_label`.
+  - `homology_folds_manifest.json` com diagnosticos por dominio.
+  - Relatorio JSON de `evaluate-homology-folds` com `priority_score`.
+- Metricas/score/custo:
+  - `pytest -q tests/test_homology_folds.py tests/test_homology_eval.py tests/test_phase2_hybrid.py` -> `11 passed in 0.87s`
+  - `pytest -q` -> `42 passed in 2.12s`
+  - CLI sem regressao de superficie (`build-homology-folds`, `evaluate-homology-folds` visiveis).
+- Conclusao:
+  - Estratificacao de dominio e avaliacao orphan-prioritaria foram integradas com fail-fast, mantendo isolamento por homologia.
+- Proximos passos:
+  - Rodar benchmark local real com metricas por alvo (baseline vs novo) para calibrar `orphan_weight` e thresholds por dominio.
+
+## PLAN-085
+
+### 2026-02-16T13:41:30Z - marcusvinicius/Codex (loss FAPE + TM-core + Clash no treino SE(3))
+
+- Objetivo/hipotese:
+  - Melhorar alinhamento topologico ao scorer US-align/TM-score reduzindo dependencia de RMSD/MSE puro e penalizando colisao atomica nao-covalente.
+- Comparacao:
+  - Baseline: loss principal `MSE(coords)` + perdas gerativas (diffusion/flow).
+  - Novo: loss estrutural composta `w_mse*MSE + w_fape*FAPE + w_tm*(1-TM_core) + w_clash*Clash` + perdas gerativas.
+- Comandos executados:
+  - `pytest -q tests/test_se3_losses.py tests/test_se3_pipeline.py tests/test_se3_memory.py`
+  - `pytest -q`
+  - `python -m rna3d_local --help`
+- Configuracao efetiva:
+  - Novos campos em `config_se3`:
+    - `loss_weight_mse`, `loss_weight_fape`, `loss_weight_tm`, `loss_weight_clash`
+    - `fape_clamp_distance`, `fape_length_scale`
+    - `vdw_min_distance`, `vdw_repulsion_power`
+    - `loss_chunk_size`
+  - Defaults adicionados:
+    - `loss_weight_mse=0.0`
+    - `loss_weight_fape=1.0`
+    - `loss_weight_tm=1.0`
+    - `loss_weight_clash=5.0`
+    - `fape_clamp_distance=10.0`
+    - `fape_length_scale=10.0`
+    - `vdw_min_distance=2.1`
+    - `vdw_repulsion_power=4`
+    - `loss_chunk_size=256`
+- Parametros/hiperparametros:
+  - FAPE calculado em blocos (`loss_chunk_size`) para limitar pico de RAM.
+  - Clash loss ignora pares covalentes (mesma cadeia com `|i-j| <= 1`) e aplica repulsao por potencia configuravel.
+  - TM-core usa alinhamento diferenciavel por Kabsch + score robusto por residuo.
+- Seeds:
+  - Testes de treino/inferencia mantidos com seeds existentes (`123`, `17`, `7`).
+- Versao de codigo/dados:
+  - `git commit`: `da4391c`
+  - Dados sinteticos de teste em `tmp_path`.
+- Artefatos:
+  - Novo modulo `src/rna3d_local/training/losses_se3.py`.
+  - `metrics.json` de treino agora inclui traces e valores finais por componente de loss.
+- Metricas/score/custo:
+  - `pytest -q tests/test_se3_losses.py tests/test_se3_pipeline.py tests/test_se3_memory.py` -> `10 passed in 1.97s`
+  - `pytest -q` -> `46 passed in 2.17s`
+  - CLI sem regressao de comandos.
+- Conclusao:
+  - Loss estrutural alinhada ao core topologico e fisica estereoquimica integrada com contratos estritos.
+- Proximos passos:
+  - Calibrar pesos de loss por benchmark local de score por alvo (especialmente orphans e alvos flexiveis longos).
+
+## PLAN-086
+
+### 2026-02-16T14:00:43Z - marcusvinicius/Codex (minimizacao energetica pos-inferencia)
+
+- Objetivo/hipotese:
+  - Elevar robustez de TM-score pre-submit reduzindo clashes e distorcoes locais residuais via minimizacao geometrica rapida nos 5 modelos finais.
+- Comparacao:
+  - Baseline: export/submissao direta a partir de `top5` sem refinamento fisico.
+  - Novo: passo intermediario `minimize-ensemble` antes de `export-submission`.
+- Comandos executados:
+  - `pytest -q tests/test_minimization.py tests/test_phase2_hybrid.py tests/test_description_and_submission.py`
+  - `python -m rna3d_local --help`
+  - `python -m rna3d_local minimize-ensemble --help`
+  - `pytest -q`
+- Configuracao efetiva:
+  - Novo comando `minimize-ensemble` com backend:
+    - `openmm` (default)
+    - `pyrosetta`
+    - `mock` (teste local)
+  - Parametros default:
+    - `max_iterations=120`
+    - `bond_length_angstrom=5.9`
+    - `bond_force_k=60.0`
+    - `angle_force_k=8.0`
+    - `angle_target_deg=120.0`
+    - `vdw_min_distance_angstrom=2.1`
+    - `vdw_epsilon=0.20`
+- Parametros/hiperparametros:
+  - OpenMM: bond stretching + angle regularization + repulsao curta distancia (`step(sigma-r)*(sigma/r)^12`), com exclusao de pares covalentes.
+  - Mock: suavizacao deterministica + ajuste de bonds + empurrao repulsivo para pares nao-covalentes.
+- Seeds:
+  - N/A (minimizacao deterministica para mesmo input/config; sem treino estocastico).
+- Versao de codigo/dados:
+  - `git commit`: `da4391c`
+  - Dados sinteticos em `tmp_path` para testes de contrato.
+- Artefatos:
+  - Novo modulo `src/rna3d_local/minimization.py`.
+  - Manifest de refinamento: `minimize_ensemble_manifest.json` com `shift_max_angstrom` e `shift_mean_angstrom`.
+- Metricas/score/custo:
+  - `pytest -q tests/test_minimization.py tests/test_phase2_hybrid.py tests/test_description_and_submission.py` -> `9 passed in 0.87s`
+  - `pytest -q` -> `49 passed in 2.36s`
+  - CLI sem regressao e com novo comando de minimizacao.
+- Conclusao:
+  - Minimizacao pos-inferencia integrada com contrato estrito para uso no fluxo pre-submit.
+- Proximos passos:
+  - Rodar benchmark local com scorer por alvo (antes/depois da minimizacao) para calibrar `max_iterations` e forcas no budget de tempo Kaggle.

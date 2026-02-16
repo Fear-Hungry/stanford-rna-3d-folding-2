@@ -351,3 +351,150 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - O sinal `quickstart_only` em inferencia nao usa coordenadas PDB; calibracao de pesos/escala ainda requer benchmark com dados reais.
   - Medicao dedicada de impacto em pseudoknots complexos (score local) ainda pendente antes de promover para caminho competitivo principal.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-083
+
+- Data UTC: `2026-02-16T13:28:01Z`
+- Plano: `PLAN-083`
+- Resumo:
+  - Implementado construtor de folds anti-leakage por homologia em `homology_folds.py` com thresholds configuraveis de identidade/cobertura.
+  - Backends suportados:
+    - `mmseqs2` (`easy-cluster`);
+    - `cdhit_est` (`cd-hit-est`);
+    - `mock` para testes locais.
+  - Fluxo agora agrupa conjuntamente:
+    - sequencias de treino;
+    - sequencias PDB/homologas.
+  - Atribuicao de folds feita por cluster (nunca por amostra), com validacao estrita para impedir cluster em multiplos folds.
+  - Novo comando CLI `build-homology-folds` exposto em `rna3d_local`.
+  - Artefatos gerados:
+    - `clusters.parquet`
+    - `train_folds.parquet`
+    - `homology_folds_manifest.json` com `max_folds_per_cluster_train`.
+  - Documentacao atualizada com uso do comando de folds homologo na validacao local.
+- Arquivos principais tocados:
+  - `src/rna3d_local/homology_folds.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_homology_folds.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_homology_folds.py tests/test_chemical_mapping.py tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py` -> `23 passed`
+  - `pytest -q` -> `38 passed`
+  - `python -m rna3d_local --help` -> comando `build-homology-folds` presente.
+- Riscos conhecidos / follow-ups:
+  - `backend=mmseqs2|cdhit_est` depende de binarios instalados e, no caso mmseqs2, da base de homologos disponivel no ambiente.
+  - Benchmark de impacto no score local (delta vs Random K-Folds) ainda pendente para calibrar melhor `identity_threshold`/`coverage_threshold`.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-084
+
+- Data UTC: `2026-02-16T13:36:32Z`
+- Plano: `PLAN-084`
+- Resumo:
+  - `build-homology-folds` agora aplica estratificacao de dominio por padrao (modo estrito) sem quebrar isolamento por cluster.
+  - Fonte de dominio suportada com fail-fast:
+    - arquivo explicito (`--domain-labels`);
+    - coluna no treino (`--domain-column`);
+    - inferencia deterministica por `--description-column`.
+  - Validacao de cobertura de dominio por fold passou a usar limite maximo factivel por dominio (limitado por numero de clusters do dominio), bloqueando distribuicoes subotimas.
+  - `train_folds.parquet` agora inclui `domain_label`; manifest passou a registrar:
+    - `domain_counts_train`;
+    - `domain_fold_coverage_train`;
+    - `domain_fold_coverage_train_max_possible`;
+    - `domain_counts_by_fold_train`.
+  - Novo comando `evaluate-homology-folds` para avaliacao com prioridade de orphans:
+    - recebe metricas por alvo;
+    - classifica orphan por labels explicitos ou score de retrieval;
+    - calcula `priority_score` ponderado por `orphan_weight`.
+  - Documentacao atualizada com comandos de estratificacao e avaliacao orphan-prioritaria.
+- Arquivos principais tocados:
+  - `src/rna3d_local/homology_folds.py`
+  - `src/rna3d_local/homology_eval.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_homology_folds.py`
+  - `tests/test_homology_eval.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_homology_folds.py tests/test_homology_eval.py tests/test_phase2_hybrid.py` -> `11 passed`
+  - `pytest -q` -> `42 passed`
+  - `python -m rna3d_local --help` -> comandos `build-homology-folds` e `evaluate-homology-folds` presentes.
+- Riscos conhecidos / follow-ups:
+  - A qualidade da estratificacao depende da cobertura/qualidade do campo de dominio (`domain_label`/`description`); descricoes muito vagas tendem a gerar `unknown`.
+  - O `priority_score` orphan-prioritario exige metricas por alvo confiaveis; sem scorer local por alvo o relatorio vira apenas diagnostico.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-085
+
+- Data UTC: `2026-02-16T13:41:30Z`
+- Plano: `PLAN-085`
+- Resumo:
+  - Implementada loss estrutural composta para treino SE(3), substituindo dependencia de MSE puro por combinacao configuravel de:
+    - `FAPE` (frame-aligned point error) com computacao chunked;
+    - `TM-core loss` (aproximacao diferenciavel de TM-score C1' via Kabsch);
+    - `Clash loss` de repulsao Van der Waals com exclusao de pares covalentes.
+  - Integracao no `trainer_se3` com pesos explicitos por termo e rastreamento de componentes no `metrics.json`:
+    - `loss_mse`, `loss_fape`, `loss_tm`, `loss_clash`, `loss_generative`, `loss_total`.
+  - `config_se3` estendida com parametros de loss fisica/estrutural:
+    - `loss_weight_mse`, `loss_weight_fape`, `loss_weight_tm`, `loss_weight_clash`;
+    - `fape_clamp_distance`, `fape_length_scale`;
+    - `vdw_min_distance`, `vdw_repulsion_power`;
+    - `loss_chunk_size`.
+  - Validacoes fail-fast adicionadas para contratos invalidos de loss/config (pesos negativos, soma de pesos zerada, parametros fora de faixa).
+  - README atualizado com parametros novos no exemplo de config.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/losses_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `tests/test_se3_losses.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_se3_losses.py tests/test_se3_pipeline.py tests/test_se3_memory.py` -> `10 passed`
+  - `pytest -q` -> `46 passed`
+  - `python -m rna3d_local --help` -> superficie CLI preservada.
+- Riscos conhecidos / follow-ups:
+  - O termo FAPE chunked e O(L^2) em custo computacional (com memoria controlada); para alvos muito longos, pode aumentar tempo por epoca.
+  - Os pesos default da loss composta ainda precisam de calibracao empirica por score local para definir regime competitivo final.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-086
+
+- Data UTC: `2026-02-16T14:00:43Z`
+- Plano: `PLAN-086`
+- Resumo:
+  - Implementado passo de minimizacao pos-inferencia em `minimization.py` para `predictions long` com backend explicito:
+    - `openmm` (forcas bond/angle/VdW-like + `LocalEnergyMinimizer`);
+    - `pyrosetta` (fail-fast explicito para contrato C1' only);
+    - `mock` (deterministico para testes locais).
+  - Comando CLI novo `minimize-ensemble` adicionado ao `rna3d_local`.
+  - Contratos estritos/fail-fast adicionados para:
+    - parametros fisicos/iteracoes invalidos;
+    - chaves duplicadas (`target_id:model_id:resid`);
+    - backend/dependencia indisponivel;
+    - saida com shape invalido ou coordenadas nao-finitas.
+  - Saida passa a incluir metadados de refinamento (`refinement_backend`, `refinement_steps`) e `manifest` com estatisticas de deslocamento.
+  - README atualizado para inserir minimizacao antes de `export-submission` nos fluxos TBM e hibrido.
+- Arquivos principais tocados:
+  - `src/rna3d_local/minimization.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_minimization.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_minimization.py tests/test_phase2_hybrid.py tests/test_description_and_submission.py` -> `9 passed`
+  - `python -m rna3d_local --help` -> comando `minimize-ensemble` presente.
+  - `python -m rna3d_local minimize-ensemble --help` -> parametros esperados presentes.
+  - `pytest -q` -> `49 passed`
+- Riscos conhecidos / follow-ups:
+  - `backend=openmm` depende da biblioteca OpenMM no ambiente Kaggle/local; ausencia gera erro de contrato.
+  - `backend=pyrosetta` permanece bloqueado para input C1' only (necessita entrada full-atom para `rna_minimize`).

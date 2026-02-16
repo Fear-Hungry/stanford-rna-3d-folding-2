@@ -1332,3 +1332,103 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Treino SE(3) usa sinal cruzado PDB+QUICK_START e falha cedo em cobertura inconsistente.
   - Inferencia SE(3) opera com modo explicito sem PDB (`quickstart_only`) sem fallback silencioso.
   - Bias quimico continuo aplicado no caminho 2D sem regressao dos fluxos existentes.
+
+## PLAN-083 - Folds estritos por homologia (anti-private-LB drop)
+
+- Objetivo: eliminar vazamento de homologia entre folds de validacao local usando clustering por identidade/cobertura antes da atribuicao de folds.
+- Escopo:
+  - Implementar construtor de folds com clustering restrito para:
+    - sequencias de treino;
+    - sequencias PDB/homologas de referencia.
+  - Suportar backends explicitos:
+    - `mmseqs2` (`easy-cluster`);
+    - `cdhit_est` (`cd-hit-est`);
+    - `mock` apenas para testes locais.
+  - Aplicar thresholds configuraveis com defaults competitivos:
+    - `identity_threshold=0.40`;
+    - `coverage_threshold=0.80`.
+  - Gerar artefatos estritos:
+    - `clusters.parquet` (membro -> cluster);
+    - `train_folds.parquet` (target de treino -> fold);
+    - `manifest` com checagens de leakage.
+  - Falhar cedo em:
+    - binario/backend indisponivel;
+    - mapeamento incompleto de membros para clusters;
+    - alvo de treino sem fold;
+    - cluster distribuido em mais de um fold.
+  - Expor comando CLI dedicado para build reproducivel dos folds.
+  - Cobrir com testes de contrato (leakage, backend indisponivel, parametros invalidos).
+- Criterios de aceite:
+  - `pytest -q` verde com novos testes de fold homologo.
+  - `build-homology-folds` cria folds sem vazamento de cluster entre folds.
+  - `backend=mmseqs2|cdhit_est` sem binario disponivel falha cedo com erro acionavel.
+  - `manifest` registra thresholds, backend e metrica de leakage (`max_folds_per_cluster_train == 1`).
+
+## PLAN-084 - Estratificacao por dominio + metrica prioritaria de orphans
+
+- Objetivo: garantir que folds de validacao local preservem diversidade topologica por dominio (ex.: ribozimas, CRISPR-Cas, tRNAs) e que a avaliacao destaque desempenho em alvos orphan (sem template forte).
+- Escopo:
+  - Estender `build-homology-folds` com estratificacao por dominio no nivel de cluster, sem quebrar restricao anti-leakage.
+  - Suportar dominio a partir de:
+    - arquivo explicito de rotulos (`target_id`, `domain_label`);
+    - coluna de dominio no treino;
+    - inferencia deterministica pela coluna `description` (sem fallback silencioso).
+  - Validar cobertura de dominio por fold usando limite maximo factivel dado numero de clusters por dominio.
+  - Expor parametros de dominio no CLI e registrar diagnostico no `manifest` (`domain_counts`, `domain_fold_coverage`).
+  - Adicionar comando de avaliacao de folds com priorizacao de orphans:
+    - entrada de metricas por alvo (`target_id`, score);
+    - classificacao orphan por labels explicitos ou score de retrieval;
+    - score prioritario ponderado por orphan (`orphan_weight`).
+  - Cobrir com testes de contrato (fonte de dominio ausente, cobertura invalida, metrica orphan sem cobertura).
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos de estratificacao por dominio e avaliacao orphan-prioritaria.
+  - `build-homology-folds` falha cedo quando nao houver fonte valida de dominio em modo estrito.
+  - `manifest` dos folds registra distribuicao por dominio e cobertura por fold.
+  - `evaluate-homology-folds` gera relatorio com `priority_score` e bloqueia cenarios sem metrica orphan valida.
+
+## PLAN-085 - Loss estrutural alinhada ao US-align (FAPE + TM + Clash)
+
+- Objetivo: substituir dependencia de MSE puro por uma loss estrutural que priorize topologia de core e fisica estereoquimica no treino SE(3).
+- Escopo:
+  - Implementar modulo de loss estruturada com:
+    - FAPE (Frame Aligned Point Error) por blocos/chunks para controle de memoria;
+    - aproximacao diferenciavel de TM-score em C1' via alinhamento Kabsch;
+    - penalidade de repulsao de Van der Waals (clash loss) excluindo pares covalentes.
+  - Integrar a loss composta no `trainer_se3` com pesos configuraveis e sem fallback silencioso.
+  - Estender `config_se3` com parametros explicitos:
+    - pesos (`loss_weight_*`);
+    - parametros FAPE;
+    - parametros de clash (distancia minima, potencia);
+    - tamanho de chunk para controle de RAM.
+  - Persistir parametros efetivos e componentes de loss nos artefatos (`config_effective.json`, `metrics.json`, manifest).
+  - Cobrir com testes unitarios:
+    - contratos invalidos;
+    - comportamento esperado (loss ~0 quando predicao=verdade);
+    - ativacao da clash loss em sobreposicao atomica.
+- Criterios de aceite:
+  - `pytest -q` verde com novos testes de loss estrutural.
+  - Treino SE(3) registra `loss_mse`, `loss_fape`, `loss_tm`, `loss_clash` e `loss_total`.
+  - Config invalida para parametros de loss falha cedo com erro acionavel.
+  - Calculo da loss evita materializacao densa O(L^2) em memoria (uso chunked).
+
+## PLAN-086 - Minimizacao energetica pos-inferencia (pre-submit)
+
+- Objetivo: aplicar refinamento energetico rapido nos 5 modelos finais por alvo antes do `export-submission`, reduzindo clashes e desequilibrios geometricos residuais.
+- Escopo:
+  - Criar modulo de minimizacao para `predictions long` com backend explicito:
+    - `openmm` (primario, fail-fast se dependencia indisponivel);
+    - `pyrosetta` (fail-fast explicito para contrato C1' quando nao suportado);
+    - `mock` (somente teste local deterministico).
+  - Implementar forcas fisicas no backend OpenMM para geometria C1':
+    - bond stretching entre vizinhos covalentes;
+    - angle regularization para suavizar torcoes;
+    - repulsao curta distancia (VdW-like) para evitar sobreposicao.
+  - Expor comando CLI dedicado (`minimize-ensemble`) com parametros de iteracao e forcas.
+  - Gerar manifest com backend, parametros efetivos e estatisticas de deslocamento.
+  - Atualizar README para incluir passo obrigatorio de minimizacao antes da exportacao.
+  - Cobrir com testes de contrato (chaves duplicadas, backend invalido/indisponivel, preservacao de schema).
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos de minimizacao.
+  - `minimize-ensemble` preserva contrato de chaves (`target_id/model_id/resid`) e escreve saida valida para `export-submission`.
+  - `backend=openmm` sem dependencia instalada falha cedo com erro acionavel.
+  - Fluxo documentado no README com minimizacao entre selecao Top-5 e export.

@@ -17,6 +17,7 @@ from ..se3.sequence_tower import SequenceTower
 from ..utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 from .config_se3 import Se3TrainConfig, load_se3_train_config
 from .dataset_se3 import load_training_graphs
+from .losses_se3 import compute_structural_loss_terms
 
 
 @dataclass(frozen=True)
@@ -192,8 +193,18 @@ def train_se3_generator(
     optimizer = torch.optim.Adam(params, lr=cfg.learning_rate)
 
     loss_trace: list[float] = []
+    loss_mse_trace: list[float] = []
+    loss_fape_trace: list[float] = []
+    loss_tm_trace: list[float] = []
+    loss_clash_trace: list[float] = []
+    loss_generative_trace: list[float] = []
     for _ in range(cfg.epochs):
         epoch_loss = 0.0
+        epoch_mse = 0.0
+        epoch_fape = 0.0
+        epoch_tm = 0.0
+        epoch_clash = 0.0
+        epoch_generative = 0.0
         for graph in graphs:
             if graph.coords_true is None:
                 raise_error(stage, location, "coords_true ausente no treino", impact="1", examples=[graph.target_id])
@@ -217,15 +228,45 @@ def train_se3_generator(
                 chem_exposure=graph.chem_exposure,
                 chain_break_offset=cfg.chain_break_offset,
             )
-            loss = torch.mean((x_coarse - graph.coords_true) ** 2)
+            structural_terms = compute_structural_loss_terms(
+                x_pred=x_coarse,
+                x_true=graph.coords_true,
+                chain_index=graph.chain_index,
+                residue_index=graph.residue_index,
+                fape_clamp_distance=cfg.fape_clamp_distance,
+                fape_length_scale=cfg.fape_length_scale,
+                vdw_min_distance=cfg.vdw_min_distance,
+                vdw_repulsion_power=cfg.vdw_repulsion_power,
+                loss_chunk_size=cfg.loss_chunk_size,
+                stage=stage,
+                location=location,
+            )
+            loss_structural = (
+                (float(cfg.loss_weight_mse) * structural_terms.mse)
+                + (float(cfg.loss_weight_fape) * structural_terms.fape)
+                + (float(cfg.loss_weight_tm) * structural_terms.tm)
+                + (float(cfg.loss_weight_clash) * structural_terms.clash)
+            )
+            loss_generative = x_coarse.new_tensor(0.0)
             if diffusion is not None:
-                loss = loss + diffusion.forward_loss(h=h_fused, x_cond=x_coarse, x_true=graph.coords_true)
+                loss_generative = loss_generative + diffusion.forward_loss(h=h_fused, x_cond=x_coarse, x_true=graph.coords_true)
             if flow is not None:
-                loss = loss + flow.forward_loss(h=h_fused, x_cond=x_coarse, x_true=graph.coords_true)
+                loss_generative = loss_generative + flow.forward_loss(h=h_fused, x_cond=x_coarse, x_true=graph.coords_true)
+            loss = loss_structural + loss_generative
             loss.backward()
             optimizer.step()
             epoch_loss += float(loss.detach().cpu().item())
+            epoch_mse += float(structural_terms.mse.detach().cpu().item())
+            epoch_fape += float(structural_terms.fape.detach().cpu().item())
+            epoch_tm += float(structural_terms.tm.detach().cpu().item())
+            epoch_clash += float(structural_terms.clash.detach().cpu().item())
+            epoch_generative += float(loss_generative.detach().cpu().item())
         loss_trace.append(epoch_loss / float(len(graphs)))
+        loss_mse_trace.append(epoch_mse / float(len(graphs)))
+        loss_fape_trace.append(epoch_fape / float(len(graphs)))
+        loss_tm_trace.append(epoch_tm / float(len(graphs)))
+        loss_clash_trace.append(epoch_clash / float(len(graphs)))
+        loss_generative_trace.append(epoch_generative / float(len(graphs)))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = _model_paths(out_dir)
@@ -269,6 +310,15 @@ def train_se3_generator(
         "max_msa_sequences": cfg.max_msa_sequences,
         "max_cov_positions": cfg.max_cov_positions,
         "max_cov_pairs": cfg.max_cov_pairs,
+        "loss_weight_mse": cfg.loss_weight_mse,
+        "loss_weight_fape": cfg.loss_weight_fape,
+        "loss_weight_tm": cfg.loss_weight_tm,
+        "loss_weight_clash": cfg.loss_weight_clash,
+        "fape_clamp_distance": cfg.fape_clamp_distance,
+        "fape_length_scale": cfg.fape_length_scale,
+        "vdw_min_distance": cfg.vdw_min_distance,
+        "vdw_repulsion_power": cfg.vdw_repulsion_power,
+        "loss_chunk_size": cfg.loss_chunk_size,
         "seed": int(seed),
     }
     write_json(paths["config_effective"], effective_config_payload)
@@ -279,7 +329,17 @@ def train_se3_generator(
             "n_targets": len(graphs),
             "epochs": cfg.epochs,
             "loss_final": loss_trace[-1],
+            "loss_mse_final": loss_mse_trace[-1],
+            "loss_fape_final": loss_fape_trace[-1],
+            "loss_tm_final": loss_tm_trace[-1],
+            "loss_clash_final": loss_clash_trace[-1],
+            "loss_generative_final": loss_generative_trace[-1],
             "loss_trace": [float(item) for item in loss_trace],
+            "loss_mse_trace": [float(item) for item in loss_mse_trace],
+            "loss_fape_trace": [float(item) for item in loss_fape_trace],
+            "loss_tm_trace": [float(item) for item in loss_tm_trace],
+            "loss_clash_trace": [float(item) for item in loss_clash_trace],
+            "loss_generative_trace": [float(item) for item in loss_generative_trace],
         },
     )
     chemical_source_counts: dict[str, int] = {}

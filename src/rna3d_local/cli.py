@@ -12,8 +12,11 @@ from .embedding_index import build_embedding_index
 from .ensemble.qa_ranker_se3 import rank_se3_ensemble
 from .ensemble.select_top5 import select_top5_se3
 from .errors import PipelineError
+from .homology_eval import evaluate_homology_folds
+from .homology_folds import build_homology_folds
 from .hybrid_router import build_hybrid_candidates
 from .hybrid_select import select_top5_hybrid
+from .minimization import minimize_ensemble
 from .phase2_assets import build_phase2_assets_manifest
 from .rnapro_offline import predict_rnapro_offline
 from .reranker import score_template_reranker, train_template_reranker
@@ -98,6 +101,43 @@ def main(argv: list[str] | None = None) -> int:
                 out_path=(repo / args.out).resolve(),
             )
             _print_json({"features": str(out.features_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "build-homology-folds":
+            out = build_homology_folds(
+                repo_root=repo,
+                train_targets_path=(repo / args.train_targets).resolve(),
+                pdb_sequences_path=(repo / args.pdb_sequences).resolve(),
+                out_dir=(repo / args.out_dir).resolve(),
+                backend=str(args.backend),
+                identity_threshold=float(args.identity_threshold),
+                coverage_threshold=float(args.coverage_threshold),
+                n_folds=int(args.n_folds),
+                chain_separator=str(args.chain_separator),
+                mmseqs_bin=str(args.mmseqs_bin),
+                cdhit_bin=str(args.cdhit_bin),
+                domain_labels_path=None if args.domain_labels is None else (repo / args.domain_labels).resolve(),
+                domain_column=str(args.domain_column),
+                description_column=str(args.description_column),
+                strict_domain_stratification=not bool(args.allow_no_domain_stratification),
+            )
+            _print_json({"clusters": str(out.clusters_path), "train_folds": str(out.train_folds_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "evaluate-homology-folds":
+            out = evaluate_homology_folds(
+                repo_root=repo,
+                train_folds_path=(repo / args.train_folds).resolve(),
+                target_metrics_path=(repo / args.target_metrics).resolve(),
+                report_path=(repo / args.report).resolve(),
+                orphan_labels_path=None if args.orphan_labels is None else (repo / args.orphan_labels).resolve(),
+                retrieval_path=None if args.retrieval is None else (repo / args.retrieval).resolve(),
+                metric_column=None if args.metric_column is None else str(args.metric_column),
+                retrieval_score_column=None if args.retrieval_score_column is None else str(args.retrieval_score_column),
+                orphan_score_threshold=float(args.orphan_score_threshold),
+                orphan_weight=float(args.orphan_weight),
+            )
+            _print_json({"report": str(out.report_path)})
             return 0
 
         if args.command == "retrieve-templates-latent":
@@ -320,6 +360,24 @@ def main(argv: list[str] | None = None) -> int:
                 candidates_path=(repo / args.candidates).resolve(),
                 out_path=(repo / args.out).resolve(),
                 n_models=int(args.n_models),
+            )
+            _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "minimize-ensemble":
+            out = minimize_ensemble(
+                repo_root=repo,
+                predictions_path=(repo / args.predictions).resolve(),
+                out_path=(repo / args.out).resolve(),
+                backend=str(args.backend),
+                max_iterations=int(args.max_iterations),
+                bond_length_angstrom=float(args.bond_length_angstrom),
+                bond_force_k=float(args.bond_force_k),
+                angle_force_k=float(args.angle_force_k),
+                angle_target_deg=float(args.angle_target_deg),
+                vdw_min_distance_angstrom=float(args.vdw_min_distance_angstrom),
+                vdw_epsilon=float(args.vdw_epsilon),
+                openmm_platform=None if args.openmm_platform is None else str(args.openmm_platform),
             )
             _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
             return 0

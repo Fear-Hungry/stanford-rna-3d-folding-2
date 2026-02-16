@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import polars as pl
+import torch
+
+from .contracts import require_columns
+from .errors import raise_error
+from .io_tables import read_table, write_table
+from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
+
+
+@dataclass(frozen=True)
+class MinimizeEnsembleResult:
+    predictions_path: Path
+    manifest_path: Path
+
+
+def _build_covalent_pairs(resids: list[int]) -> list[tuple[int, int]]:
+    pairs: list[tuple[int, int]] = []
+    for idx in range(len(resids) - 1):
+        if int(resids[idx + 1]) - int(resids[idx]) == 1:
+            pairs.append((idx, idx + 1))
+    return pairs
+
+
+def _minimize_mock(
+    *,
+    coords_angstrom: np.ndarray,
+    residue_index: np.ndarray,
+    max_iterations: int,
+    bond_length_angstrom: float,
+    vdw_min_distance_angstrom: float,
+) -> np.ndarray:
+    device = torch.device("cpu")
+    x = torch.tensor(coords_angstrom, dtype=torch.float32, device=device).clone()
+    residues = torch.tensor(residue_index, dtype=torch.long, device=device)
+    if int(x.shape[0]) <= 1:
+        return x.detach().cpu().numpy()
+    for _ in range(int(max_iterations)):
+        if int(x.shape[0]) > 2:
+            inner = x[1:-1]
+            smooth = (x[:-2] + x[2:]) * 0.5
+            inner = inner + (0.08 * (smooth - inner))
+            x[1:-1] = inner
+        for idx in range(int(x.shape[0]) - 1):
+            if int(residues[idx + 1] - residues[idx]) != 1:
+                continue
+            delta = x[idx + 1] - x[idx]
+            dist = torch.sqrt(torch.clamp(torch.sum(delta * delta), min=1e-8))
+            diff = dist - float(bond_length_angstrom)
+            corr = 0.15 * diff * (delta / dist)
+            x[idx] = x[idx] + corr
+            x[idx + 1] = x[idx + 1] - corr
+        for i in range(int(x.shape[0]) - 1):
+            for j in range(i + 1, int(x.shape[0])):
+                if int(residues[j] - residues[i]) <= 1:
+                    continue
+                delta = x[j] - x[i]
+                dist = torch.sqrt(torch.clamp(torch.sum(delta * delta), min=1e-8))
+                if float(dist.item()) >= float(vdw_min_distance_angstrom):
+                    continue
+                penetration = float(vdw_min_distance_angstrom) - float(dist.item())
+                push = 0.2 * penetration * (delta / dist)
+                x[i] = x[i] - push
+                x[j] = x[j] + push
+    return x.detach().cpu().numpy()
+
+
+def _minimize_openmm(
+    *,
+    coords_angstrom: np.ndarray,
+    residue_index: np.ndarray,
+    max_iterations: int,
+    bond_length_angstrom: float,
+    bond_force_k: float,
+    angle_force_k: float,
+    angle_target_deg: float,
+    vdw_min_distance_angstrom: float,
+    vdw_epsilon: float,
+    openmm_platform: str | None,
+    stage: str,
+    location: str,
+) -> np.ndarray:
+    try:
+        import openmm as mm  # type: ignore
+        from openmm import unit  # type: ignore
+    except Exception:
+        try:
+            from simtk import openmm as mm  # type: ignore
+            from simtk import unit  # type: ignore
+        except Exception as exc:
+            raise_error(stage, location, "backend=openmm indisponivel (dependencia ausente)", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+
+    system = mm.System()
+    count = int(coords_angstrom.shape[0])
+    for _ in range(count):
+        system.addParticle(12.0)
+
+    covalent_pairs = _build_covalent_pairs([int(item) for item in residue_index.tolist()])
+    bond_force = mm.HarmonicBondForce()
+    for i, j in covalent_pairs:
+        bond_force.addBond(int(i), int(j), float(bond_length_angstrom) * 0.1, float(bond_force_k))
+    system.addForce(bond_force)
+
+    if len(covalent_pairs) >= 2:
+        angle_force = mm.HarmonicAngleForce()
+        angle_target = float(np.deg2rad(float(angle_target_deg)))
+        for idx in range(len(covalent_pairs) - 1):
+            i0, i1 = covalent_pairs[idx]
+            j0, j1 = covalent_pairs[idx + 1]
+            if i1 != j0:
+                continue
+            angle_force.addAngle(int(i0), int(i1), int(j1), angle_target, float(angle_force_k))
+        system.addForce(angle_force)
+
+    repulsion = mm.CustomNonbondedForce("epsilon*step(sigma-r)*(sigma/r)^12")
+    repulsion.addGlobalParameter("epsilon", float(vdw_epsilon))
+    repulsion.addGlobalParameter("sigma", float(vdw_min_distance_angstrom) * 0.1)
+    repulsion.setNonbondedMethod(mm.CustomNonbondedForce.NoCutoff)
+    for _ in range(count):
+        repulsion.addParticle([])
+    for i, j in covalent_pairs:
+        repulsion.addExclusion(int(i), int(j))
+    system.addForce(repulsion)
+
+    integrator = mm.VerletIntegrator(0.001 * unit.picoseconds)
+    if openmm_platform is None or str(openmm_platform).strip() == "":
+        context = mm.Context(system, integrator)
+    else:
+        try:
+            platform = mm.Platform.getPlatformByName(str(openmm_platform))
+        except Exception as exc:
+            raise_error(stage, location, "openmm_platform invalido", impact="1", examples=[f"{openmm_platform}:{type(exc).__name__}"])
+        context = mm.Context(system, integrator, platform)
+    coords_nm = np.asarray(coords_angstrom, dtype=np.float64) * 0.1
+    context.setPositions(coords_nm * unit.nanometer)
+    try:
+        mm.LocalEnergyMinimizer.minimize(context, tolerance=10.0, maxIterations=int(max_iterations))
+    except Exception as exc:
+        raise_error(stage, location, "falha na minimizacao openmm", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+    state = context.getState(getPositions=True)
+    out_nm = state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
+    del context
+    del integrator
+    return np.asarray(out_nm, dtype=np.float64) * 10.0
+
+
+def _minimize_pyrosetta(
+    *,
+    coords_angstrom: np.ndarray,
+    stage: str,
+    location: str,
+) -> np.ndarray:
+    try:
+        import pyrosetta  # type: ignore  # noqa: F401
+    except Exception as exc:
+        raise_error(stage, location, "backend=pyrosetta indisponivel (dependencia ausente)", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+    raise_error(
+        stage,
+        location,
+        "backend=pyrosetta requer entrada full-atom RNA (input atual C1' only)",
+        impact="1",
+        examples=["forneca PDB full-atom para usar rna_minimize"],
+    )
+    return coords_angstrom
+
+
+def minimize_ensemble(
+    *,
+    repo_root: Path,
+    predictions_path: Path,
+    out_path: Path,
+    backend: str,
+    max_iterations: int,
+    bond_length_angstrom: float,
+    bond_force_k: float,
+    angle_force_k: float,
+    angle_target_deg: float,
+    vdw_min_distance_angstrom: float,
+    vdw_epsilon: float,
+    openmm_platform: str | None,
+) -> MinimizeEnsembleResult:
+    stage = "MINIMIZE_ENSEMBLE"
+    location = "src/rna3d_local/minimization.py:minimize_ensemble"
+    backend_name = str(backend).strip().lower()
+    if backend_name not in {"openmm", "pyrosetta", "mock"}:
+        raise_error(stage, location, "backend de minimizacao invalido", impact="1", examples=[str(backend)])
+    if int(max_iterations) <= 0:
+        raise_error(stage, location, "max_iterations deve ser > 0", impact="1", examples=[str(max_iterations)])
+    if float(bond_length_angstrom) <= 0.0:
+        raise_error(stage, location, "bond_length_angstrom invalido", impact="1", examples=[str(bond_length_angstrom)])
+    if float(bond_force_k) <= 0.0:
+        raise_error(stage, location, "bond_force_k invalido", impact="1", examples=[str(bond_force_k)])
+    if float(angle_force_k) <= 0.0:
+        raise_error(stage, location, "angle_force_k invalido", impact="1", examples=[str(angle_force_k)])
+    if float(angle_target_deg) <= 0.0 or float(angle_target_deg) >= 180.0:
+        raise_error(stage, location, "angle_target_deg deve estar em (0,180)", impact="1", examples=[str(angle_target_deg)])
+    if float(vdw_min_distance_angstrom) <= 0.0:
+        raise_error(stage, location, "vdw_min_distance_angstrom invalido", impact="1", examples=[str(vdw_min_distance_angstrom)])
+    if float(vdw_epsilon) <= 0.0:
+        raise_error(stage, location, "vdw_epsilon invalido", impact="1", examples=[str(vdw_epsilon)])
+
+    pred = read_table(predictions_path, stage=stage, location=location)
+    require_columns(pred, ["target_id", "model_id", "resid", "resname", "x", "y", "z"], stage=stage, location=location, label="predictions_long")
+    dup = pred.group_by(["target_id", "model_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
+    if dup.height > 0:
+        examples = (
+            dup.with_columns((pl.col("target_id") + pl.lit(":") + pl.col("model_id").cast(pl.Utf8) + pl.lit(":") + pl.col("resid").cast(pl.Utf8)).alias("k"))
+            .get_column("k")
+            .head(8)
+            .to_list()
+        )
+        raise_error(stage, location, "predictions long com chave duplicada", impact=str(int(dup.height)), examples=[str(x) for x in examples])
+
+    out_parts: list[pl.DataFrame] = []
+    max_shift = 0.0
+    mean_shift_sum = 0.0
+    mean_shift_count = 0
+    for group_key, group_df in pred.group_by(["target_id", "model_id"], maintain_order=True):
+        target_id = str(group_key[0]) if isinstance(group_key, tuple) else str(group_key)
+        model_id = int(group_key[1]) if isinstance(group_key, tuple) else 0
+        part = group_df.sort("resid")
+        coords = part.select(pl.col("x").cast(pl.Float64), pl.col("y").cast(pl.Float64), pl.col("z").cast(pl.Float64)).to_numpy()
+        if not np.isfinite(coords).all():
+            raise_error(stage, location, "coordenadas invalidas antes da minimizacao", impact="1", examples=[f"{target_id}:{model_id}"])
+        residues = part.get_column("resid").cast(pl.Int64).to_numpy()
+        if backend_name == "mock":
+            minimized = _minimize_mock(
+                coords_angstrom=np.asarray(coords, dtype=np.float64),
+                residue_index=np.asarray(residues, dtype=np.int64),
+                max_iterations=int(max_iterations),
+                bond_length_angstrom=float(bond_length_angstrom),
+                vdw_min_distance_angstrom=float(vdw_min_distance_angstrom),
+            )
+        elif backend_name == "openmm":
+            minimized = _minimize_openmm(
+                coords_angstrom=np.asarray(coords, dtype=np.float64),
+                residue_index=np.asarray(residues, dtype=np.int64),
+                max_iterations=int(max_iterations),
+                bond_length_angstrom=float(bond_length_angstrom),
+                bond_force_k=float(bond_force_k),
+                angle_force_k=float(angle_force_k),
+                angle_target_deg=float(angle_target_deg),
+                vdw_min_distance_angstrom=float(vdw_min_distance_angstrom),
+                vdw_epsilon=float(vdw_epsilon),
+                openmm_platform=openmm_platform,
+                stage=stage,
+                location=location,
+            )
+        else:
+            minimized = _minimize_pyrosetta(coords_angstrom=np.asarray(coords, dtype=np.float64), stage=stage, location=location)
+        if minimized.shape != coords.shape:
+            raise_error(stage, location, "backend de minimizacao retornou shape invalido", impact="1", examples=[f"{target_id}:{model_id}:{minimized.shape}!={coords.shape}"])
+        if not np.isfinite(minimized).all():
+            raise_error(stage, location, "backend de minimizacao retornou coordenadas nao-finitas", impact="1", examples=[f"{target_id}:{model_id}"])
+        shift = np.sqrt(np.sum(np.square(minimized - coords), axis=1))
+        max_shift = max(max_shift, float(np.max(shift)) if shift.size > 0 else 0.0)
+        mean_shift_sum += float(np.sum(shift))
+        mean_shift_count += int(shift.size)
+        out_part = part.with_columns(
+            [
+                pl.Series("x", minimized[:, 0]),
+                pl.Series("y", minimized[:, 1]),
+                pl.Series("z", minimized[:, 2]),
+                pl.lit(str(backend_name)).alias("refinement_backend"),
+                pl.lit(int(max_iterations)).alias("refinement_steps"),
+            ]
+        )
+        out_parts.append(out_part)
+
+    if not out_parts:
+        raise_error(stage, location, "nenhuma estrutura encontrada para minimizacao", impact="0", examples=[])
+    out = pl.concat(out_parts, how="vertical").sort(["target_id", "model_id", "resid"])
+    write_table(out, out_path)
+    manifest_path = out_path.parent / "minimize_ensemble_manifest.json"
+    write_json(
+        manifest_path,
+        {
+            "created_utc": utc_now_iso(),
+            "backend": backend_name,
+            "paths": {
+                "predictions_in": rel_or_abs(predictions_path, repo_root),
+                "predictions_out": rel_or_abs(out_path, repo_root),
+            },
+            "params": {
+                "max_iterations": int(max_iterations),
+                "bond_length_angstrom": float(bond_length_angstrom),
+                "bond_force_k": float(bond_force_k),
+                "angle_force_k": float(angle_force_k),
+                "angle_target_deg": float(angle_target_deg),
+                "vdw_min_distance_angstrom": float(vdw_min_distance_angstrom),
+                "vdw_epsilon": float(vdw_epsilon),
+                "openmm_platform": None if openmm_platform is None else str(openmm_platform),
+            },
+            "stats": {
+                "n_rows": int(out.height),
+                "n_targets": int(out.get_column("target_id").n_unique()),
+                "n_target_models": int(out.select("target_id", "model_id").unique().height),
+                "shift_max_angstrom": float(max_shift),
+                "shift_mean_angstrom": float(mean_shift_sum / float(max(mean_shift_count, 1))),
+            },
+            "sha256": {"predictions.parquet": sha256_file(out_path)},
+        },
+    )
+    return MinimizeEnsembleResult(predictions_path=out_path, manifest_path=manifest_path)

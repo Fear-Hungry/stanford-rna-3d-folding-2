@@ -37,6 +37,15 @@ class Se3TrainConfig:
     max_msa_sequences: int
     max_cov_positions: int
     max_cov_pairs: int
+    loss_weight_mse: float
+    loss_weight_fape: float
+    loss_weight_tm: float
+    loss_weight_clash: float
+    fape_clamp_distance: float
+    fape_length_scale: float
+    vdw_min_distance: float
+    vdw_repulsion_power: int
+    loss_chunk_size: int
 
 
 def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainConfig:
@@ -94,6 +103,15 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         max_msa_sequences=int(payload.get("max_msa_sequences", 96)),
         max_cov_positions=int(payload.get("max_cov_positions", 256)),
         max_cov_pairs=int(payload.get("max_cov_pairs", 8192)),
+        loss_weight_mse=float(payload.get("loss_weight_mse", 0.0)),
+        loss_weight_fape=float(payload.get("loss_weight_fape", 1.0)),
+        loss_weight_tm=float(payload.get("loss_weight_tm", 1.0)),
+        loss_weight_clash=float(payload.get("loss_weight_clash", 5.0)),
+        fape_clamp_distance=float(payload.get("fape_clamp_distance", 10.0)),
+        fape_length_scale=float(payload.get("fape_length_scale", 10.0)),
+        vdw_min_distance=float(payload.get("vdw_min_distance", 2.1)),
+        vdw_repulsion_power=int(payload.get("vdw_repulsion_power", 4)),
+        loss_chunk_size=int(payload.get("loss_chunk_size", 256)),
     )
     numeric_checks = [
         ("hidden_dim", cfg.hidden_dim),
@@ -109,6 +127,8 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         ("max_msa_sequences", cfg.max_msa_sequences),
         ("max_cov_positions", cfg.max_cov_positions),
         ("max_cov_pairs", cfg.max_cov_pairs),
+        ("vdw_repulsion_power", cfg.vdw_repulsion_power),
+        ("loss_chunk_size", cfg.loss_chunk_size),
     ]
     bad = [name for name, value in numeric_checks if int(value) <= 0]
     if bad:
@@ -117,6 +137,25 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         raise_error(stage, location, "learning_rate invalido (<=0)", impact="1", examples=[str(cfg.learning_rate)])
     if cfg.radius_angstrom <= 0:
         raise_error(stage, location, "radius_angstrom invalido (<=0)", impact="1", examples=[str(cfg.radius_angstrom)])
+    if cfg.fape_clamp_distance <= 0:
+        raise_error(stage, location, "fape_clamp_distance invalido (<=0)", impact="1", examples=[str(cfg.fape_clamp_distance)])
+    if cfg.fape_length_scale <= 0:
+        raise_error(stage, location, "fape_length_scale invalido (<=0)", impact="1", examples=[str(cfg.fape_length_scale)])
+    if cfg.vdw_min_distance <= 0:
+        raise_error(stage, location, "vdw_min_distance invalido (<=0)", impact="1", examples=[str(cfg.vdw_min_distance)])
+    if cfg.vdw_repulsion_power <= 1:
+        raise_error(stage, location, "vdw_repulsion_power deve ser > 1", impact="1", examples=[str(cfg.vdw_repulsion_power)])
+    loss_weights = {
+        "loss_weight_mse": cfg.loss_weight_mse,
+        "loss_weight_fape": cfg.loss_weight_fape,
+        "loss_weight_tm": cfg.loss_weight_tm,
+        "loss_weight_clash": cfg.loss_weight_clash,
+    }
+    bad_weights = [name for name, value in loss_weights.items() if float(value) < 0.0]
+    if bad_weights:
+        raise_error(stage, location, "loss_weight invalido (<0)", impact=str(len(bad_weights)), examples=bad_weights[:8])
+    if sum(float(value) for value in loss_weights.values()) <= 0.0:
+        raise_error(stage, location, "soma dos loss_weight deve ser > 0", impact="1", examples=[str(loss_weights)])
     if cfg.hidden_dim % cfg.ipa_heads != 0:
         raise_error(
             stage,
