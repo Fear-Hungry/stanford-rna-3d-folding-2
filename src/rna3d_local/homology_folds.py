@@ -10,6 +10,7 @@ import polars as pl
 from .contracts import require_columns
 from .errors import raise_error
 from .io_tables import read_table, write_table
+from .mock_policy import enforce_no_mock_backend
 from .se3.sequence_parser import parse_sequence_with_chains
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
@@ -387,6 +388,7 @@ def _build_cluster_mapping(
     stage: str,
     location: str,
 ) -> dict[str, str]:
+    enforce_no_mock_backend(backend=backend, field="backend", stage=stage, location=location)
     with TemporaryDirectory(prefix="rna3d_cluster_input_") as tmp_dir:
         fasta_path = Path(tmp_dir) / "all_sequences.fasta"
         _write_fasta(entries, fasta_path)

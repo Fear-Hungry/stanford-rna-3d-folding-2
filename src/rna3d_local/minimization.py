@@ -10,6 +10,7 @@ import torch
 from .contracts import require_columns
 from .errors import raise_error
 from .io_tables import read_table, write_table
+from .mock_policy import enforce_no_mock_backend
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
 
@@ -207,6 +208,7 @@ def minimize_ensemble(
     backend_name = str(backend).strip().lower()
     if backend_name not in {"openmm", "pyrosetta", "mock"}:
         raise_error(stage, location, "backend de minimizacao invalido", impact="1", examples=[str(backend)])
+    enforce_no_mock_backend(backend=backend_name, field="backend", stage=stage, location=location)
     if int(max_iterations) <= 0:
         raise_error(stage, location, "max_iterations deve ser > 0", impact="1", examples=[str(max_iterations)])
     if int(max_iterations) > 100:

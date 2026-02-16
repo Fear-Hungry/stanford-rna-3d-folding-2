@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from .errors import raise_error
+from .mock_policy import enforce_no_mock_backend
 
 
 def _hash_embedding(text: str, *, dim: int, salt: str) -> np.ndarray:
@@ -38,6 +39,7 @@ def encode_sequences(
     mode = str(encoder).strip().lower()
     if mode not in {"ribonanzanet2", "mock"}:
         raise_error(stage, location, "encoder invalido", impact="1", examples=[encoder])
+    enforce_no_mock_backend(backend=mode, field="encoder", stage=stage, location=location)
     if mode == "ribonanzanet2":
         if model_path is None:
             raise_error(stage, location, "model_path obrigatorio para ribonanzanet2", impact="1", examples=["model_path=None"])

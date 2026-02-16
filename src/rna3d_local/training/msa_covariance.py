@@ -15,6 +15,7 @@ import torch
 
 from ..contracts import require_columns
 from ..errors import raise_error
+from ..mock_policy import enforce_no_mock_backend
 from ..se3.sequence_parser import parse_sequence_with_chains
 
 _NUC_TO_INT = {"A": 0, "C": 1, "G": 2, "U": 3}
@@ -362,6 +363,7 @@ def compute_msa_covariance(
     backend_name = str(backend).strip().lower()
     if backend_name not in {"mmseqs2", "mock"}:
         raise_error(stage, location, "msa_backend invalido", impact="1", examples=[backend_name])
+    enforce_no_mock_backend(backend=backend_name, field="msa_backend", stage=stage, location=location)
     cache_root = None if cache_dir is None else Path(cache_dir)
     rows = [(str(target_id), str(sequence)) for target_id, sequence in targets.select("target_id", "sequence").iter_rows()]
     outputs: dict[str, MsaCovTarget] = {}

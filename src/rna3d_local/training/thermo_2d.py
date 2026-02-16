@@ -15,6 +15,7 @@ import torch
 
 from ..contracts import require_columns
 from ..errors import raise_error
+from ..mock_policy import enforce_no_mock_backend
 from ..se3.sequence_parser import parse_sequence_with_chains
 
 
@@ -365,6 +366,7 @@ def compute_thermo_bpp(
     backend_name = str(backend).strip().lower()
     if backend_name not in {"rnafold", "linearfold", "viennarna", "mock"}:
         raise_error(stage, location, "backend termoquimico BPP invalido", impact="1", examples=[backend_name])
+    enforce_no_mock_backend(backend=backend_name, field="thermo_backend", stage=stage, location=location)
     if int(num_workers) <= 0:
         raise_error(stage, location, "num_workers invalido para extracao BPP", impact="1", examples=[str(num_workers)])
     cache_root = None if cache_dir is None else Path(cache_dir)
