@@ -24,6 +24,19 @@ class Se3TrainConfig:
     radius_angstrom: float
     max_neighbors: int
     graph_chunk_size: int
+    thermo_backend: str
+    rnafold_bin: str
+    linearfold_bin: str
+    thermo_cache_dir: str | None
+    msa_backend: str
+    mmseqs_bin: str
+    mmseqs_db: str
+    msa_cache_dir: str | None
+    chain_separator: str
+    chain_break_offset: int
+    max_msa_sequences: int
+    max_cov_positions: int
+    max_cov_pairs: int
 
 
 def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainConfig:
@@ -43,6 +56,15 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
     graph_backend = str(payload.get("graph_backend", "torch_sparse")).strip().lower()
     if graph_backend not in {"torch_sparse", "torch_geometric"}:
         raise_error(stage, location, "graph_backend invalido na config", impact="1", examples=[graph_backend])
+    thermo_backend = str(payload.get("thermo_backend", "rnafold")).strip().lower()
+    if thermo_backend not in {"rnafold", "linearfold", "mock"}:
+        raise_error(stage, location, "thermo_backend invalido na config", impact="1", examples=[thermo_backend])
+    msa_backend = str(payload.get("msa_backend", "mock")).strip().lower()
+    if msa_backend not in {"mmseqs2", "mock"}:
+        raise_error(stage, location, "msa_backend invalido na config", impact="1", examples=[msa_backend])
+    chain_separator = str(payload.get("chain_separator", "|"))
+    if len(chain_separator) != 1:
+        raise_error(stage, location, "chain_separator deve ter 1 caractere", impact="1", examples=[chain_separator])
     cfg = Se3TrainConfig(
         hidden_dim=int(payload["hidden_dim"]),
         num_layers=int(payload["num_layers"]),
@@ -59,6 +81,19 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         radius_angstrom=float(payload.get("radius_angstrom", 14.0)),
         max_neighbors=int(payload.get("max_neighbors", 64)),
         graph_chunk_size=int(payload.get("graph_chunk_size", 512)),
+        thermo_backend=thermo_backend,
+        rnafold_bin=str(payload.get("rnafold_bin", "RNAfold")).strip(),
+        linearfold_bin=str(payload.get("linearfold_bin", "linearfold")).strip(),
+        thermo_cache_dir=(None if payload.get("thermo_cache_dir", None) in {None, ""} else str(payload.get("thermo_cache_dir"))),
+        msa_backend=msa_backend,
+        mmseqs_bin=str(payload.get("mmseqs_bin", "mmseqs")).strip(),
+        mmseqs_db=str(payload.get("mmseqs_db", "")).strip(),
+        msa_cache_dir=(None if payload.get("msa_cache_dir", None) in {None, ""} else str(payload.get("msa_cache_dir"))),
+        chain_separator=chain_separator,
+        chain_break_offset=int(payload.get("chain_break_offset", 1000)),
+        max_msa_sequences=int(payload.get("max_msa_sequences", 96)),
+        max_cov_positions=int(payload.get("max_cov_positions", 256)),
+        max_cov_pairs=int(payload.get("max_cov_pairs", 8192)),
     )
     numeric_checks = [
         ("hidden_dim", cfg.hidden_dim),
@@ -70,6 +105,10 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         ("sequence_heads", cfg.sequence_heads),
         ("max_neighbors", cfg.max_neighbors),
         ("graph_chunk_size", cfg.graph_chunk_size),
+        ("chain_break_offset", cfg.chain_break_offset),
+        ("max_msa_sequences", cfg.max_msa_sequences),
+        ("max_cov_positions", cfg.max_cov_positions),
+        ("max_cov_pairs", cfg.max_cov_pairs),
     ]
     bad = [name for name, value in numeric_checks if int(value) <= 0]
     if bad:
@@ -94,4 +133,12 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
             impact="1",
             examples=[f"hidden_dim={cfg.hidden_dim}", f"sequence_heads={cfg.sequence_heads}"],
         )
+    if not cfg.rnafold_bin:
+        raise_error(stage, location, "rnafold_bin vazio na config", impact="1", examples=[cfg.rnafold_bin])
+    if not cfg.linearfold_bin:
+        raise_error(stage, location, "linearfold_bin vazio na config", impact="1", examples=[cfg.linearfold_bin])
+    if not cfg.mmseqs_bin:
+        raise_error(stage, location, "mmseqs_bin vazio na config", impact="1", examples=[cfg.mmseqs_bin])
+    if cfg.msa_backend == "mmseqs2" and not cfg.mmseqs_db:
+        raise_error(stage, location, "msa_backend=mmseqs2 exige mmseqs_db", impact="1", examples=[cfg.mmseqs_db])
     return cfg

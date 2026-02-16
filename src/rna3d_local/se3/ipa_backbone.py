@@ -5,7 +5,7 @@ import math
 import torch
 from torch import nn
 
-from .sparse_graph import build_sparse_radius_graph
+from .sparse_graph import build_sparse_radius_graph, compute_chain_relative_features, lookup_sparse_pair_bias
 
 
 def _segment_softmax(logits: torch.Tensor, src: torch.Tensor, node_count: int) -> torch.Tensor:
@@ -43,6 +43,11 @@ class IpaBlock(nn.Module):
         self.value = nn.Linear(hidden_dim, hidden_dim)
         self.out = nn.Linear(hidden_dim, hidden_dim)
         self.dist_bias = nn.Linear(1, heads)
+        self.bpp_bias = nn.Linear(1, heads)
+        self.msa_bias = nn.Linear(1, heads)
+        self.chem_bias = nn.Linear(1, heads)
+        self.rel_bias = nn.Linear(1, heads)
+        self.chain_break_bias = nn.Linear(1, heads)
         self.coord_gate = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
@@ -50,7 +55,20 @@ class IpaBlock(nn.Module):
             nn.Tanh(),
         )
 
-    def forward(self, h: torch.Tensor, x: torch.Tensor, *, src: torch.Tensor, dst: torch.Tensor, distances: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        h: torch.Tensor,
+        x: torch.Tensor,
+        *,
+        src: torch.Tensor,
+        dst: torch.Tensor,
+        distances: torch.Tensor,
+        bpp_edge_bias: torch.Tensor,
+        msa_edge_bias: torch.Tensor,
+        chem_edge_bias: torch.Tensor,
+        relative_offset: torch.Tensor,
+        chain_break_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         node_count = int(h.shape[0])
         q = self.query(h).view(node_count, self.heads, self.head_dim)
         k = self.key(h).view(node_count, self.heads, self.head_dim)
@@ -60,7 +78,12 @@ class IpaBlock(nn.Module):
         v_dst = v.index_select(0, dst)
         logits = torch.einsum("ehd,ehd->he", q_src, k_dst) / math.sqrt(float(self.head_dim))
         bias = self.dist_bias((distances * distances).unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        weights = _segment_softmax(logits=logits - bias, src=src, node_count=node_count)
+        bpp_term = self.bpp_bias(bpp_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
+        msa_term = self.msa_bias(msa_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
+        chem_term = self.chem_bias(chem_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
+        rel_term = self.rel_bias(relative_offset.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
+        chain_term = self.chain_break_bias(chain_break_mask.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
+        weights = _segment_softmax(logits=logits - bias + bpp_term + msa_term + chem_term + rel_term + chain_term, src=src, node_count=node_count)
         weighted_v = v_dst * weights.transpose(0, 1).unsqueeze(-1).to(dtype=v_dst.dtype)
         h_update = torch.zeros((node_count, self.heads, self.head_dim), dtype=h.dtype, device=h.device)
         h_update.index_add_(0, src, weighted_v.to(dtype=h.dtype))
@@ -103,7 +126,22 @@ class IpaBackbone(nn.Module):
         self.layers = nn.ModuleList([IpaBlock(hidden_dim=hidden_dim, heads=heads) for _ in range(int(num_layers))])
         self.norm = nn.LayerNorm(hidden_dim)
 
-    def forward(self, node_features: torch.Tensor, coords: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        node_features: torch.Tensor,
+        coords: torch.Tensor,
+        *,
+        bpp_pair_src: torch.Tensor,
+        bpp_pair_dst: torch.Tensor,
+        bpp_pair_prob: torch.Tensor,
+        msa_pair_src: torch.Tensor,
+        msa_pair_dst: torch.Tensor,
+        msa_pair_prob: torch.Tensor,
+        residue_index: torch.Tensor,
+        chain_index: torch.Tensor,
+        chem_exposure: torch.Tensor,
+        chain_break_offset: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.input_proj(node_features)
         x = coords
         for layer in self.layers:
@@ -116,5 +154,41 @@ class IpaBackbone(nn.Module):
                 stage=self.stage,
                 location=self.location,
             )
-            h, x = layer(h, x, src=graph.src, dst=graph.dst, distances=graph.distances)
+            bpp_edge_bias = lookup_sparse_pair_bias(
+                src=graph.src,
+                dst=graph.dst,
+                pair_src=bpp_pair_src.to(device=graph.src.device),
+                pair_dst=bpp_pair_dst.to(device=graph.src.device),
+                pair_prob=bpp_pair_prob.to(device=graph.src.device),
+                n_nodes=int(h.shape[0]),
+            )
+            msa_edge_bias = lookup_sparse_pair_bias(
+                src=graph.src,
+                dst=graph.dst,
+                pair_src=msa_pair_src.to(device=graph.src.device),
+                pair_dst=msa_pair_dst.to(device=graph.src.device),
+                pair_prob=msa_pair_prob.to(device=graph.src.device),
+                n_nodes=int(h.shape[0]),
+            )
+            chem_values = chem_exposure.to(device=graph.src.device, dtype=torch.float32)
+            chem_edge_bias = 0.5 * (chem_values.index_select(0, graph.src) + chem_values.index_select(0, graph.dst))
+            relative_offset, chain_break_mask = compute_chain_relative_features(
+                src=graph.src,
+                dst=graph.dst,
+                residue_index=residue_index.to(device=graph.src.device),
+                chain_index=chain_index.to(device=graph.src.device),
+                chain_break_offset=int(chain_break_offset),
+            )
+            h, x = layer(
+                h,
+                x,
+                src=graph.src,
+                dst=graph.dst,
+                distances=graph.distances,
+                bpp_edge_bias=bpp_edge_bias,
+                msa_edge_bias=msa_edge_bias,
+                chem_edge_bias=chem_edge_bias,
+                relative_offset=relative_offset,
+                chain_break_mask=chain_break_mask,
+            )
         return self.norm(h), x

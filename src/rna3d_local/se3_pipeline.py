@@ -69,13 +69,42 @@ def sample_se3_ensemble(
         targets_path=targets_path,
         pairings_path=pairings_path,
         chemical_features_path=chemical_features_path,
+        thermo_backend=runtime.config.thermo_backend,
+        rnafold_bin=runtime.config.rnafold_bin,
+        linearfold_bin=runtime.config.linearfold_bin,
+        thermo_cache_dir=(None if runtime.config.thermo_cache_dir is None else (repo_root / runtime.config.thermo_cache_dir).resolve()),
+        msa_backend=runtime.config.msa_backend,
+        mmseqs_bin=runtime.config.mmseqs_bin,
+        mmseqs_db=runtime.config.mmseqs_db,
+        msa_cache_dir=(None if runtime.config.msa_cache_dir is None else (repo_root / runtime.config.msa_cache_dir).resolve()),
+        chain_separator=runtime.config.chain_separator,
+        max_msa_sequences=runtime.config.max_msa_sequences,
+        max_cov_positions=runtime.config.max_cov_positions,
+        max_cov_pairs=runtime.config.max_cov_pairs,
         stage=stage,
         location=location,
     )
     rows: list[dict[str, object]] = []
+    chemical_source_counts: dict[str, int] = {}
     with torch.no_grad():
         for graph_index, graph in enumerate(graphs):
-            h, x_cond = run_backbone_for_graph(runtime=runtime, node_features=graph.node_features, coords_init=graph.coords_init)
+            source = str(graph.chem_source)
+            chemical_source_counts[source] = int(chemical_source_counts.get(source, 0) + 1)
+            h, x_cond = run_backbone_for_graph(
+                runtime=runtime,
+                node_features=graph.node_features,
+                coords_init=graph.coords_init,
+                bpp_pair_src=graph.bpp_pair_src,
+                bpp_pair_dst=graph.bpp_pair_dst,
+                bpp_pair_prob=graph.bpp_pair_prob,
+                msa_pair_src=graph.msa_pair_src,
+                msa_pair_dst=graph.msa_pair_dst,
+                msa_pair_prob=graph.msa_pair_prob,
+                residue_index=graph.residue_index,
+                chain_index=graph.chain_index,
+                chem_exposure=graph.chem_exposure,
+                chain_break_offset=runtime.config.chain_break_offset,
+            )
             samples = sample_methods_for_target(
                 target_id=graph.target_id,
                 h=h,
@@ -125,6 +154,19 @@ def sample_se3_ensemble(
                 "radius_angstrom": runtime.config.radius_angstrom,
                 "max_neighbors": runtime.config.max_neighbors,
                 "graph_chunk_size": runtime.config.graph_chunk_size,
+                "thermo_backend": runtime.config.thermo_backend,
+                "rnafold_bin": runtime.config.rnafold_bin,
+                "linearfold_bin": runtime.config.linearfold_bin,
+                "thermo_cache_dir": runtime.config.thermo_cache_dir,
+                "msa_backend": runtime.config.msa_backend,
+                "mmseqs_bin": runtime.config.mmseqs_bin,
+                "mmseqs_db": runtime.config.mmseqs_db,
+                "msa_cache_dir": runtime.config.msa_cache_dir,
+                "chain_separator": runtime.config.chain_separator,
+                "chain_break_offset": runtime.config.chain_break_offset,
+                "max_msa_sequences": runtime.config.max_msa_sequences,
+                "max_cov_positions": runtime.config.max_cov_positions,
+                "max_cov_pairs": runtime.config.max_cov_pairs,
             },
             "paths": {
                 "model_dir": rel_or_abs(model_dir, repo_root),
@@ -137,6 +179,7 @@ def sample_se3_ensemble(
                 "n_rows": int(out.height),
                 "n_targets": int(out.get_column("target_id").n_unique()),
                 "n_samples_unique": int(out.select("target_id", "sample_id").unique().height),
+                "chemical_mapping_source_counts": chemical_source_counts,
             },
             "sha256": {"candidates.parquet": sha256_file(out_path)},
         },

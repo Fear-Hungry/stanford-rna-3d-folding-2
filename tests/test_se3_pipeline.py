@@ -33,7 +33,16 @@ def _write_chem(path: Path) -> None:
     rows = []
     for target_id in ["T1", "T2"]:
         for resid in [1, 2, 3]:
-            rows.append({"target_id": target_id, "resid": resid, "p_open": 0.3 + (0.1 * resid), "p_paired": 0.7 - (0.1 * resid)})
+            rows.append(
+                {
+                    "target_id": target_id,
+                    "resid": resid,
+                    "reactivity_dms": 0.1 * resid,
+                    "reactivity_2a3": 0.2 * resid,
+                    "p_open": 0.3 + (0.1 * resid),
+                    "p_paired": 0.7 - (0.1 * resid),
+                }
+            )
     pl.DataFrame(rows).write_parquet(path)
 
 
@@ -55,6 +64,8 @@ def _write_config(path: Path) -> None:
         "epochs": 2,
         "learning_rate": 1e-3,
         "method": "both",
+        "thermo_backend": "mock",
+        "msa_backend": "mock",
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -139,3 +150,77 @@ def test_select_top5_se3_fails_when_insufficient_samples(tmp_path: Path) -> None
             n_models=5,
             diversity_lambda=0.2,
         )
+
+
+def test_train_sample_se3_with_multichain_sequence(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    pairings = tmp_path / "pairings.parquet"
+    chem = tmp_path / "chem.parquet"
+    labels = tmp_path / "labels.parquet"
+    config = tmp_path / "config.json"
+    pl.DataFrame([{"target_id": "TC", "sequence": "AC|GU", "temporal_cutoff": "2024-01-01"}]).write_csv(targets)
+    pl.DataFrame(
+        [
+            {"target_id": "TC", "resid": 1, "pair_prob": 0.1},
+            {"target_id": "TC", "resid": 2, "pair_prob": 0.2},
+            {"target_id": "TC", "resid": 3, "pair_prob": 0.3},
+            {"target_id": "TC", "resid": 4, "pair_prob": 0.4},
+        ]
+    ).write_parquet(pairings)
+    pl.DataFrame(
+        [
+            {"target_id": "TC", "resid": 1, "reactivity_dms": 0.1, "reactivity_2a3": 0.2, "p_open": 0.5, "p_paired": 0.5},
+            {"target_id": "TC", "resid": 2, "reactivity_dms": 0.2, "reactivity_2a3": 0.3, "p_open": 0.5, "p_paired": 0.5},
+            {"target_id": "TC", "resid": 3, "reactivity_dms": 0.3, "reactivity_2a3": 0.4, "p_open": 0.5, "p_paired": 0.5},
+            {"target_id": "TC", "resid": 4, "reactivity_dms": 0.4, "reactivity_2a3": 0.5, "p_open": 0.5, "p_paired": 0.5},
+        ]
+    ).write_parquet(chem)
+    pl.DataFrame(
+        [
+            {"target_id": "TC", "resid": 1, "x": 1.0, "y": 2.0, "z": 3.0},
+            {"target_id": "TC", "resid": 2, "x": 2.0, "y": 3.0, "z": 4.0},
+            {"target_id": "TC", "resid": 3, "x": 3.0, "y": 4.0, "z": 5.0},
+            {"target_id": "TC", "resid": 4, "x": 4.0, "y": 5.0, "z": 6.0},
+        ]
+    ).write_parquet(labels)
+    config.write_text(
+        json.dumps(
+            {
+                "hidden_dim": 16,
+                "num_layers": 1,
+                "ipa_heads": 4,
+                "diffusion_steps": 4,
+                "flow_steps": 4,
+                "epochs": 1,
+                "learning_rate": 1e-3,
+                "method": "diffusion",
+                "thermo_backend": "mock",
+                "msa_backend": "mock",
+                "chain_separator": "|",
+            }
+        ),
+        encoding="utf-8",
+    )
+    trained = train_se3_generator(
+        repo_root=tmp_path,
+        targets_path=targets,
+        pairings_path=pairings,
+        chemical_features_path=chem,
+        labels_path=labels,
+        config_path=config,
+        out_dir=tmp_path / "model",
+        seed=7,
+    )
+    sampled = sample_se3_ensemble(
+        repo_root=tmp_path,
+        model_dir=trained.model_dir,
+        targets_path=targets,
+        pairings_path=pairings,
+        chemical_features_path=chem,
+        out_path=tmp_path / "candidates.parquet",
+        method="diffusion",
+        n_samples=2,
+        seed=7,
+    )
+    out = pl.read_parquet(sampled.candidates_path)
+    assert out.height == 8

@@ -64,10 +64,46 @@ def _forward_backbone(
     coarse_head: nn.Linear,
     node_features: torch.Tensor,
     coords_init: torch.Tensor,
+    bpp_pair_src: torch.Tensor,
+    bpp_pair_dst: torch.Tensor,
+    bpp_pair_prob: torch.Tensor,
+    msa_pair_src: torch.Tensor,
+    msa_pair_dst: torch.Tensor,
+    msa_pair_prob: torch.Tensor,
+    residue_index: torch.Tensor,
+    chain_index: torch.Tensor,
+    chem_exposure: torch.Tensor,
+    chain_break_offset: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     h_seq = sequence_tower(node_features)
-    h_egnn, x_egnn = egnn(node_features=h_seq, coords=coords_init)
-    h_ipa, x_ipa = ipa(node_features=h_seq, coords=coords_init)
+    h_egnn, x_egnn = egnn(
+        node_features=h_seq,
+        coords=coords_init,
+        bpp_pair_src=bpp_pair_src,
+        bpp_pair_dst=bpp_pair_dst,
+        bpp_pair_prob=bpp_pair_prob,
+        msa_pair_src=msa_pair_src,
+        msa_pair_dst=msa_pair_dst,
+        msa_pair_prob=msa_pair_prob,
+        residue_index=residue_index,
+        chain_index=chain_index,
+        chem_exposure=chem_exposure,
+        chain_break_offset=chain_break_offset,
+    )
+    h_ipa, x_ipa = ipa(
+        node_features=h_seq,
+        coords=coords_init,
+        bpp_pair_src=bpp_pair_src,
+        bpp_pair_dst=bpp_pair_dst,
+        bpp_pair_prob=bpp_pair_prob,
+        msa_pair_src=msa_pair_src,
+        msa_pair_dst=msa_pair_dst,
+        msa_pair_prob=msa_pair_prob,
+        residue_index=residue_index,
+        chain_index=chain_index,
+        chem_exposure=chem_exposure,
+        chain_break_offset=chain_break_offset,
+    )
     h_fused, x_fused = fusion(h_egnn=h_egnn, x_egnn=x_egnn, h_ipa=h_ipa, x_ipa=x_ipa)
     x_coarse = x_fused + coarse_head(h_fused)
     return h_fused, x_coarse
@@ -92,6 +128,18 @@ def train_se3_generator(
         pairings_path=pairings_path,
         chemical_features_path=chemical_features_path,
         labels_path=labels_path,
+        thermo_backend=cfg.thermo_backend,
+        rnafold_bin=cfg.rnafold_bin,
+        linearfold_bin=cfg.linearfold_bin,
+        thermo_cache_dir=(None if cfg.thermo_cache_dir is None else (repo_root / cfg.thermo_cache_dir).resolve()),
+        msa_backend=cfg.msa_backend,
+        mmseqs_bin=cfg.mmseqs_bin,
+        mmseqs_db=cfg.mmseqs_db,
+        msa_cache_dir=(None if cfg.msa_cache_dir is None else (repo_root / cfg.msa_cache_dir).resolve()),
+        chain_separator=cfg.chain_separator,
+        max_msa_sequences=cfg.max_msa_sequences,
+        max_cov_positions=cfg.max_cov_positions,
+        max_cov_pairs=cfg.max_cov_pairs,
         stage=stage,
         location=location,
     )
@@ -158,6 +206,16 @@ def train_se3_generator(
                 coarse_head=coarse_head,
                 node_features=graph.node_features,
                 coords_init=graph.coords_init,
+                bpp_pair_src=graph.bpp_pair_src,
+                bpp_pair_dst=graph.bpp_pair_dst,
+                bpp_pair_prob=graph.bpp_pair_prob,
+                msa_pair_src=graph.msa_pair_src,
+                msa_pair_dst=graph.msa_pair_dst,
+                msa_pair_prob=graph.msa_pair_prob,
+                residue_index=graph.residue_index,
+                chain_index=graph.chain_index,
+                chem_exposure=graph.chem_exposure,
+                chain_break_offset=cfg.chain_break_offset,
             )
             loss = torch.mean((x_coarse - graph.coords_true) ** 2)
             if diffusion is not None:
@@ -198,6 +256,19 @@ def train_se3_generator(
         "radius_angstrom": cfg.radius_angstrom,
         "max_neighbors": cfg.max_neighbors,
         "graph_chunk_size": cfg.graph_chunk_size,
+        "thermo_backend": cfg.thermo_backend,
+        "rnafold_bin": cfg.rnafold_bin,
+        "linearfold_bin": cfg.linearfold_bin,
+        "thermo_cache_dir": cfg.thermo_cache_dir,
+        "msa_backend": cfg.msa_backend,
+        "mmseqs_bin": cfg.mmseqs_bin,
+        "mmseqs_db": cfg.mmseqs_db,
+        "msa_cache_dir": cfg.msa_cache_dir,
+        "chain_separator": cfg.chain_separator,
+        "chain_break_offset": cfg.chain_break_offset,
+        "max_msa_sequences": cfg.max_msa_sequences,
+        "max_cov_positions": cfg.max_cov_positions,
+        "max_cov_pairs": cfg.max_cov_pairs,
         "seed": int(seed),
     }
     write_json(paths["config_effective"], effective_config_payload)
@@ -211,6 +282,10 @@ def train_se3_generator(
             "loss_trace": [float(item) for item in loss_trace],
         },
     )
+    chemical_source_counts: dict[str, int] = {}
+    for graph in graphs:
+        source = str(graph.chem_source)
+        chemical_source_counts[source] = int(chemical_source_counts.get(source, 0) + 1)
     manifest_payload = {
         "created_utc": utc_now_iso(),
         "paths": {
@@ -222,7 +297,11 @@ def train_se3_generator(
             "model_dir": rel_or_abs(out_dir, repo_root),
         },
         "params": effective_config_payload,
-        "stats": {"n_targets": len(graphs), "n_residues_total": int(sum(len(item.resids) for item in graphs))},
+        "stats": {
+            "n_targets": len(graphs),
+            "n_residues_total": int(sum(len(item.resids) for item in graphs)),
+            "chemical_mapping_source_counts": chemical_source_counts,
+        },
         "sha256": {
             "sequence_tower.pt": sha256_file(paths["sequence_tower"]),
             "backbone_egnn.pt": sha256_file(paths["egnn"]),
@@ -331,6 +410,16 @@ def run_backbone_for_graph(
     runtime: Se3RuntimeModels,
     node_features: torch.Tensor,
     coords_init: torch.Tensor,
+    bpp_pair_src: torch.Tensor,
+    bpp_pair_dst: torch.Tensor,
+    bpp_pair_prob: torch.Tensor,
+    msa_pair_src: torch.Tensor,
+    msa_pair_dst: torch.Tensor,
+    msa_pair_prob: torch.Tensor,
+    residue_index: torch.Tensor,
+    chain_index: torch.Tensor,
+    chem_exposure: torch.Tensor,
+    chain_break_offset: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return _forward_backbone(
         sequence_tower=runtime.sequence_tower,
@@ -340,4 +429,14 @@ def run_backbone_for_graph(
         coarse_head=runtime.coarse_head,
         node_features=node_features,
         coords_init=coords_init,
+        bpp_pair_src=bpp_pair_src,
+        bpp_pair_dst=bpp_pair_dst,
+        bpp_pair_prob=bpp_pair_prob,
+        msa_pair_src=msa_pair_src,
+        msa_pair_dst=msa_pair_dst,
+        msa_pair_prob=msa_pair_prob,
+        residue_index=residue_index,
+        chain_index=chain_index,
+        chem_exposure=chem_exposure,
+        chain_break_offset=chain_break_offset,
     )

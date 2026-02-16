@@ -1,0 +1,345 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import numpy as np
+import polars as pl
+import torch
+
+from ..contracts import require_columns
+from ..errors import raise_error
+from ..se3.sequence_parser import parse_sequence_with_chains
+
+_NUC_TO_INT = {"A": 0, "C": 1, "G": 2, "U": 3}
+_CANONICAL_PAIR_INDEX = {
+    (0, 3),  # AU
+    (3, 0),  # UA
+    (1, 2),  # CG
+    (2, 1),  # GC
+    (2, 3),  # GU
+    (3, 2),  # UG
+    (0, 2),  # AG Hoogsteen proxy
+    (2, 0),  # GA Hoogsteen proxy
+}
+
+
+@dataclass(frozen=True)
+class MsaCovTarget:
+    target_id: str
+    sequence: str
+    cov_marginal: torch.Tensor
+    pair_src: torch.Tensor
+    pair_dst: torch.Tensor
+    pair_prob: torch.Tensor
+
+
+def _mock_pairs(sequence: str) -> list[tuple[int, int, float]]:
+    length = len(sequence)
+    pairs: list[tuple[int, int, float]] = []
+    for left in range(1, (length // 2) + 1):
+        right = length - left + 1
+        if left < right:
+            pairs.append((left, right, 0.45))
+    return pairs
+
+
+def _cache_path(*, cache_dir: Path, backend: str, sequence: str) -> Path:
+    digest = hashlib.sha256(f"{backend}:{sequence}".encode("utf-8")).hexdigest()
+    return cache_dir / f"{backend}_{digest}.json"
+
+
+def _load_cache(path: Path) -> list[tuple[int, int, float]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows: list[tuple[int, int, float]] = []
+    for item in payload.get("pairs", []):
+        rows.append((int(item["i"]), int(item["j"]), float(item["p"])))
+    return rows
+
+
+def _save_cache(path: Path, pairs: list[tuple[int, int, float]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"pairs": [{"i": int(i_1), "j": int(j_1), "p": float(prob)} for i_1, j_1, prob in pairs]}
+    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+
+
+def _map_target_alignment_to_query(qaln: str, taln: str, query_length: int) -> np.ndarray:
+    mapped = np.full((query_length,), -1, dtype=np.int16)
+    q_index = 0
+    for q_char, t_char in zip(qaln, taln):
+        if q_char == "-":
+            continue
+        if q_index >= query_length:
+            break
+        if t_char in {"A", "C", "G", "U", "T"}:
+            mapped[q_index] = _NUC_TO_INT[t_char.replace("T", "U")]
+        q_index += 1
+    return mapped
+
+
+def _run_mmseqs_chain_alignments(
+    *,
+    mmseqs_bin: str,
+    mmseqs_db: str,
+    chain_sequence: str,
+    query_id: str,
+    max_msa_sequences: int,
+    stage: str,
+    location: str,
+) -> np.ndarray:
+    if not mmseqs_db:
+        raise_error(stage, location, "msa_backend=mmseqs2 exige mmseqs_db", impact="1", examples=[mmseqs_db])
+    with TemporaryDirectory(prefix="rna3d_msa_") as tmp_dir:
+        tmp = Path(tmp_dir)
+        query_fasta = tmp / "query.fasta"
+        result_tsv = tmp / "result.tsv"
+        query_fasta.write_text(f">{query_id}\n{chain_sequence}\n", encoding="utf-8")
+        cmd = [
+            str(mmseqs_bin),
+            "easy-search",
+            str(query_fasta),
+            str(mmseqs_db),
+            str(result_tsv),
+            str(tmp / "mmseqs_tmp"),
+            "--format-output",
+            "query,target,qaln,taln",
+            "--max-seqs",
+            str(int(max_msa_sequences)),
+        ]
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        except FileNotFoundError:
+            raise_error(stage, location, "binario mmseqs2 nao encontrado", impact="1", examples=[str(mmseqs_bin)])
+        except Exception as exc:
+            raise_error(
+                stage,
+                location,
+                "falha ao executar mmseqs2 easy-search",
+                impact="1",
+                examples=[f"{type(exc).__name__}:{exc}"],
+            )
+        if proc.returncode != 0:
+            stderr_txt = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise_error(
+                stage,
+                location,
+                "mmseqs2 retornou erro ao gerar MSA",
+                impact="1",
+                examples=[stderr_txt[:240] if stderr_txt else f"returncode={proc.returncode}"],
+            )
+        if not result_tsv.exists():
+            raise_error(stage, location, "mmseqs2 nao gerou arquivo de alinhamento", impact="1", examples=[str(result_tsv)])
+        rows = [line.strip() for line in result_tsv.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        if not rows:
+            raise_error(stage, location, "mmseqs2 sem alinhamentos para o alvo", impact="1", examples=[query_id])
+        aligned: list[np.ndarray] = [np.array([_NUC_TO_INT[item] for item in chain_sequence], dtype=np.int16)]
+        for line in rows:
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            qaln = parts[2].strip().upper().replace("T", "U")
+            taln = parts[3].strip().upper().replace("T", "U")
+            aligned.append(_map_target_alignment_to_query(qaln=qaln, taln=taln, query_length=len(chain_sequence)))
+            if len(aligned) >= int(max_msa_sequences):
+                break
+        if len(aligned) < 2:
+            raise_error(stage, location, "mmseqs2 com alinhamentos insuficientes para covariancia", impact="1", examples=[query_id])
+        return np.stack(aligned, axis=0)
+
+
+def _entropy_from_counts(counts: np.ndarray) -> np.ndarray:
+    probs = counts / np.clip(counts.sum(axis=1, keepdims=True), a_min=1e-9, a_max=None)
+    log_probs = np.where(probs > 0, np.log(probs), 0.0)
+    return -np.sum(probs * log_probs, axis=1)
+
+
+def _covariance_pairs_from_alignment(
+    *,
+    aligned: np.ndarray,
+    max_cov_positions: int,
+    max_cov_pairs: int,
+) -> list[tuple[int, int, float]]:
+    if aligned.ndim != 2:
+        return []
+    n_seq, length = aligned.shape
+    if n_seq < 2 or length < 2:
+        return []
+    valid = aligned >= 0
+    counts = np.zeros((length, 4), dtype=np.float64)
+    for nuc in range(4):
+        counts[:, nuc] = (aligned == nuc).sum(axis=0)
+    coverage = valid.sum(axis=0)
+    entropy = _entropy_from_counts(counts)
+    candidate = np.where(coverage >= 2)[0]
+    if candidate.size == 0:
+        return []
+    order = np.argsort(-entropy[candidate])
+    keep = candidate[order][: int(max_cov_positions)]
+    pair_scores: list[tuple[int, int, float]] = []
+    canonical_indices = np.array([a * 4 + b for a, b in sorted(_CANONICAL_PAIR_INDEX)], dtype=np.int16)
+    for idx_i in range(len(keep)):
+        i = int(keep[idx_i])
+        vi = aligned[:, i]
+        for idx_j in range(idx_i + 1, len(keep)):
+            j = int(keep[idx_j])
+            vj = aligned[:, j]
+            mask = (vi >= 0) & (vj >= 0)
+            valid_count = int(mask.sum())
+            if valid_count < 2:
+                continue
+            pair_ids = (vi[mask] * 4) + vj[mask]
+            hist = np.bincount(pair_ids, minlength=16).astype(np.float64)
+            pxy = hist / float(valid_count)
+            px = pxy.reshape(4, 4).sum(axis=1, keepdims=True)
+            py = pxy.reshape(4, 4).sum(axis=0, keepdims=True)
+            denom = np.clip(px * py, a_min=1e-12, a_max=None)
+            ratio = np.where(pxy.reshape(4, 4) > 0, pxy.reshape(4, 4) / denom, 1.0)
+            mi = float(np.sum(np.where(pxy.reshape(4, 4) > 0, pxy.reshape(4, 4) * np.log(ratio), 0.0)))
+            canonical_mass = float(hist[canonical_indices].sum() / float(valid_count))
+            score = mi * canonical_mass
+            score_norm = float(score / (1.0 + score))
+            if score_norm > 0.0:
+                pair_scores.append((i + 1, j + 1, score_norm))
+    pair_scores.sort(key=lambda item: item[2], reverse=True)
+    return pair_scores[: int(max_cov_pairs)]
+
+
+def _pairs_to_target(
+    *,
+    target_id: str,
+    sequence: str,
+    pairs_1based: list[tuple[int, int, float]],
+    stage: str,
+    location: str,
+) -> MsaCovTarget:
+    length = len(sequence)
+    marginal = torch.zeros((length,), dtype=torch.float32)
+    directed_src: list[int] = []
+    directed_dst: list[int] = []
+    directed_prob: list[float] = []
+    for i_1, j_1, prob in pairs_1based:
+        if i_1 < 1 or j_1 < 1 or i_1 > length or j_1 > length or i_1 == j_1:
+            raise_error(stage, location, "par de covariancia fora de intervalo", impact="1", examples=[f"{target_id}:{i_1}-{j_1}"])
+        score = float(prob)
+        if score < 0 or score > 1:
+            raise_error(stage, location, "score de covariancia fora de [0,1]", impact="1", examples=[f"{target_id}:{i_1}-{j_1}:{score}"])
+        i = int(i_1 - 1)
+        j = int(j_1 - 1)
+        marginal[i] = torch.maximum(marginal[i], torch.tensor(score, dtype=torch.float32))
+        marginal[j] = torch.maximum(marginal[j], torch.tensor(score, dtype=torch.float32))
+        directed_src.extend([i, j])
+        directed_dst.extend([j, i])
+        directed_prob.extend([score, score])
+    if directed_src:
+        pair_src = torch.tensor(directed_src, dtype=torch.long)
+        pair_dst = torch.tensor(directed_dst, dtype=torch.long)
+        pair_prob = torch.tensor(directed_prob, dtype=torch.float32)
+    else:
+        pair_src = torch.zeros((0,), dtype=torch.long)
+        pair_dst = torch.zeros((0,), dtype=torch.long)
+        pair_prob = torch.zeros((0,), dtype=torch.float32)
+    return MsaCovTarget(
+        target_id=target_id,
+        sequence=sequence,
+        cov_marginal=marginal,
+        pair_src=pair_src,
+        pair_dst=pair_dst,
+        pair_prob=pair_prob,
+    )
+
+
+def compute_msa_covariance(
+    *,
+    targets: pl.DataFrame,
+    backend: str,
+    mmseqs_bin: str,
+    mmseqs_db: str,
+    cache_dir: Path | None,
+    chain_separator: str,
+    max_msa_sequences: int,
+    max_cov_positions: int,
+    max_cov_pairs: int,
+    stage: str,
+    location: str,
+) -> dict[str, MsaCovTarget]:
+    require_columns(targets, ["target_id", "sequence"], stage=stage, location=location, label="targets")
+    if max_msa_sequences <= 1:
+        raise_error(stage, location, "max_msa_sequences deve ser > 1", impact="1", examples=[str(max_msa_sequences)])
+    if max_cov_positions <= 0 or max_cov_pairs <= 0:
+        raise_error(
+            stage,
+            location,
+            "max_cov_positions/max_cov_pairs invalidos",
+            impact="2",
+            examples=[str(max_cov_positions), str(max_cov_pairs)],
+        )
+    backend_name = str(backend).strip().lower()
+    if backend_name not in {"mmseqs2", "mock"}:
+        raise_error(stage, location, "msa_backend invalido", impact="1", examples=[backend_name])
+    cache_root = None if cache_dir is None else Path(cache_dir)
+    outputs: dict[str, MsaCovTarget] = {}
+    for target_id, sequence in targets.select("target_id", "sequence").iter_rows():
+        tid = str(target_id)
+        parsed = parse_sequence_with_chains(
+            sequence=str(sequence),
+            chain_separator=chain_separator,
+            stage=stage,
+            location=location,
+            target_id=tid,
+        )
+        joined_sequence = "".join(parsed.residues)
+        global_pairs: list[tuple[int, int, float]] = []
+        offset = 0
+        for chain_idx, chain_length in enumerate(parsed.chain_lengths):
+            chain_seq = joined_sequence[offset : offset + chain_length]
+            if cache_root is not None:
+                cpath = _cache_path(cache_dir=cache_root, backend=f"{backend_name}_chain", sequence=chain_seq)
+            else:
+                cpath = None
+            if cpath is not None and cpath.exists():
+                chain_pairs = _load_cache(cpath)
+            else:
+                if backend_name == "mock":
+                    chain_pairs = _mock_pairs(chain_seq)
+                else:
+                    aligned = _run_mmseqs_chain_alignments(
+                        mmseqs_bin=mmseqs_bin,
+                        mmseqs_db=mmseqs_db,
+                        chain_sequence=chain_seq,
+                        query_id=f"{tid}_c{chain_idx}",
+                        max_msa_sequences=max_msa_sequences,
+                        stage=stage,
+                        location=location,
+                    )
+                    chain_pairs = _covariance_pairs_from_alignment(
+                        aligned=aligned,
+                        max_cov_positions=max_cov_positions,
+                        max_cov_pairs=max_cov_pairs,
+                    )
+                    if not chain_pairs:
+                        raise_error(
+                            stage,
+                            location,
+                            "mmseqs2 sem pares de covariancia utilizaveis",
+                            impact="1",
+                            examples=[f"{tid}:chain={chain_idx}"],
+                        )
+                if cpath is not None:
+                    _save_cache(cpath, chain_pairs)
+            for i_1, j_1, prob in chain_pairs:
+                global_pairs.append((i_1 + offset, j_1 + offset, float(prob)))
+            offset += chain_length
+        outputs[tid] = _pairs_to_target(
+            target_id=tid,
+            sequence=joined_sequence,
+            pairs_1based=global_pairs,
+            stage=stage,
+            location=location,
+        )
+    if not outputs:
+        raise_error(stage, location, "nenhum alvo para extracao de MSA/covariancia", impact="0", examples=[])
+    return outputs

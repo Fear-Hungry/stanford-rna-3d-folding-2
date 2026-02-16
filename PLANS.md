@@ -1276,3 +1276,59 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `train-se3-generator` e `sample-se3-ensemble` funcionam com `sequence_tower=mamba_like` e `graph_backend=torch_sparse`.
   - Execucao com `graph_backend=torch_geometric` sem dependencia instalada falha cedo com erro acionavel.
   - Manifests de treino/amostragem registram parametros efetivos de escalabilidade.
+
+## PLAN-080 - Matriz termodinamica 2D (BPP) no DataLoader
+
+- Objetivo: incorporar probabilidades de pareamento de bases do ensemble de Boltzmann (BPP) ao fluxo SE(3), como viés continuo na representacao 2D.
+- Escopo:
+  - Implementar extracao BPP por backend explicito (`rnafold`, `linearfold`) com modo de teste explicito (`mock`) e sem fallback silencioso.
+  - Integrar a extracao no DataLoader SE(3) para construir, por alvo:
+    - marginais por residuo (probabilidade de estar pareado);
+    - mapa esparso de pares (`i,j,p_ij`) para lookup em arestas dinamicas.
+  - Estender `TargetGraph` para transportar sinais BPP e atualizar treino/inferencia para consumi-los.
+  - Injetar BPP como viés continuo no backbone 2D (atenção/mensageria de arestas).
+  - Expor configuracoes de backend/binarios/cache em `config_se3` e manifests efetivos.
+  - Cobrir com testes de contrato (backend indisponivel, shape/consistencia) e smoke de integracao.
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos para BPP.
+  - Treino/amostragem SE(3) operam com `thermo_backend=mock` em testes e registram backend no manifest.
+  - `thermo_backend=rnafold|linearfold` sem binario disponivel falha cedo com erro acionavel.
+  - Bias BPP e efetivamente aplicado no caminho 2D sem quebrar contratos existentes.
+
+## PLAN-081 - MSA covariancia + awareness multicadeia
+
+- Objetivo: incorporar sinal evolutivo (MSA/covariancia) e awareness de multiplas cadeias no branch SE(3), preservando fail-fast.
+- Escopo:
+  - Implementar extracao de MSA por backend explicito (`mmseqs2`) com modo de teste (`mock`) e erro acionavel quando binario/DB nao estiverem disponiveis.
+  - Derivar recursos de covariancia por residuo/par:
+    - marginais por residuo (sinal de compensatory mutations);
+    - mapa esparso por par (`i,j,cov_prob`) para injetar como bias continuo em arestas.
+  - Adicionar parser de sequencias multicadeia (`chain separator`) no DataLoader e gerar IDs de cadeia por residuo.
+  - Implementar Relative Positional Encoding 2D com offset artificial massivo em chain breaks (`chain_break_offset`, ex: +1000), bloqueando conectividade covalente entre cadeias.
+  - Injetar bias combinado (BPP + covariancia + chain-break RPE) no EGNN/IPA.
+  - Expor configuracao no `config_se3` e registrar parametros efetivos em manifests.
+  - Cobrir com testes de contrato (backend indisponivel, parser multicadeia, offsets, consistencia de shapes) e smoke de integracao.
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos de MSA e multicadeia.
+  - Treino/amostragem SE(3) operam com `msa_backend=mock` em testes.
+  - `msa_backend=mmseqs2` sem binario/db disponivel falha cedo com erro acionavel.
+  - Bias de chain-break com offset massivo e aplicado no caminho 2D sem regressao dos fluxos existentes.
+
+## PLAN-082 - Sondagem quimica PDB x QUICK_START
+
+- Objetivo: cruzar reatividade quimica (DMS/2A3) com coordenadas PDB para estimar exposicao ao solvente por nucleotideo e injetar esse sinal no branch SE(3).
+- Escopo:
+  - Implementar modulo de `chemical mapping` que combina:
+    - reatividade normalizada por alvo (QUICK_START);
+    - exposicao geometrica por distancia ao centroide (PDB/labels);
+    - exposicao quimica fusionada por residuo.
+  - Integrar o mapping no DataLoader SE(3) para treinos (com PDB) e inferencia (sem PDB, modo explicito `quickstart_only`).
+  - Estender `TargetGraph` com sinal de exposicao quimica e validacoes de cobertura/consistencia.
+  - Injetar bias continuo de exposicao quimica nas arestas dinamicas EGNN/IPA.
+  - Registrar origem do sinal (`quickstart_pdb_cross` vs `quickstart_only`) em manifest.
+  - Cobrir com testes de contrato (cobertura incompleta, duplicatas, shape) e integracao.
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos de `chemical mapping`.
+  - Treino SE(3) usa sinal cruzado PDB+QUICK_START e falha cedo em cobertura inconsistente.
+  - Inferencia SE(3) opera com modo explicito sem PDB (`quickstart_only`) sem fallback silencioso.
+  - Bias quimico continuo aplicado no caminho 2D sem regressao dos fluxos existentes.

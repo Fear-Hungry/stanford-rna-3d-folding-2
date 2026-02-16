@@ -27,7 +27,17 @@ def _write_pairings(path: Path, *, length: int) -> None:
 
 
 def _write_chemical(path: Path, *, length: int) -> None:
-    rows = [{"target_id": "LONG1", "resid": resid, "p_open": 0.45, "p_paired": 0.55} for resid in range(1, length + 1)]
+    rows = [
+        {
+            "target_id": "LONG1",
+            "resid": resid,
+            "reactivity_dms": 0.3 + (0.0005 * resid),
+            "reactivity_2a3": 0.4 + (0.0005 * resid),
+            "p_open": 0.45,
+            "p_paired": 0.55,
+        }
+        for resid in range(1, length + 1)
+    ]
     pl.DataFrame(rows).write_parquet(path)
 
 
@@ -118,6 +128,8 @@ def test_train_and_sample_se3_with_linear_memory_config(tmp_path: Path) -> None:
                 "radius_angstrom": 14.0,
                 "max_neighbors": 12,
                 "graph_chunk_size": 64,
+                "thermo_backend": "mock",
+                "msa_backend": "mock",
             }
         ),
         encoding="utf-8",

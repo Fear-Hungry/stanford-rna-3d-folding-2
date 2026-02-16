@@ -15,6 +15,57 @@ class SparseRadiusGraph:
     adjacency: torch.Tensor
 
 
+def lookup_sparse_pair_bias(
+    *,
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    pair_src: torch.Tensor,
+    pair_dst: torch.Tensor,
+    pair_prob: torch.Tensor,
+    n_nodes: int,
+) -> torch.Tensor:
+    edge_count = int(src.numel())
+    if edge_count == 0:
+        return torch.zeros((0,), dtype=torch.float32, device=src.device)
+    if int(pair_src.numel()) == 0:
+        return torch.zeros((edge_count,), dtype=torch.float32, device=src.device)
+    pair_keys = (pair_src.to(dtype=torch.long) * int(n_nodes)) + pair_dst.to(dtype=torch.long)
+    order = torch.argsort(pair_keys)
+    sorted_keys = pair_keys.index_select(0, order)
+    sorted_vals = pair_prob.index_select(0, order).to(dtype=torch.float32)
+    edge_keys = (src.to(dtype=torch.long) * int(n_nodes)) + dst.to(dtype=torch.long)
+    pos = torch.searchsorted(sorted_keys, edge_keys)
+    out = torch.zeros((edge_count,), dtype=torch.float32, device=src.device)
+    if int(sorted_keys.numel()) == 0:
+        return out
+    safe_pos = torch.clamp(pos, max=int(sorted_keys.numel()) - 1)
+    matches = sorted_keys.index_select(0, safe_pos) == edge_keys
+    if bool(matches.any()):
+        out[matches] = sorted_vals.index_select(0, safe_pos[matches])
+    return out
+
+
+def compute_chain_relative_features(
+    *,
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    residue_index: torch.Tensor,
+    chain_index: torch.Tensor,
+    chain_break_offset: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if chain_break_offset <= 0:
+        raise ValueError("chain_break_offset deve ser > 0")
+    src_pos = residue_index.index_select(0, src).to(dtype=torch.float32)
+    dst_pos = residue_index.index_select(0, dst).to(dtype=torch.float32)
+    src_chain = chain_index.index_select(0, src).to(dtype=torch.float32)
+    dst_chain = chain_index.index_select(0, dst).to(dtype=torch.float32)
+    adjusted_src = src_pos + (src_chain * float(chain_break_offset))
+    adjusted_dst = dst_pos + (dst_chain * float(chain_break_offset))
+    rel_offset = (adjusted_dst - adjusted_src) / float(chain_break_offset)
+    break_mask = (src_chain != dst_chain).to(dtype=torch.float32)
+    return rel_offset, break_mask
+
+
 def _enforce_min_degree(
     *,
     src: torch.Tensor,

@@ -41,7 +41,21 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - `graph_backend`:
   - `torch_sparse`: radius graph com `torch.sparse` e processamento em chunks (`graph_chunk_size`);
   - `torch_geometric`: usa `torch_geometric.nn.radius_graph` (falha cedo se dependencias extras nao estiverem instaladas).
+- `thermo_backend`:
+  - `rnafold`: usa ViennaRNA (`RNAfold -p`) para extrair BPP do ensemble de Boltzmann;
+  - `linearfold`: executa `linearfold --bpp` para obter pares/probabilidades;
+  - `mock`: apenas para teste local.
+- `chemical mapping` (automatico no DataLoader SE(3)):
+  - cruza `reactivity_dms/reactivity_2a3` com coordenadas PDB de treino;
+  - gera exposicao ao solvente por residuo (`quickstart_pdb_cross`);
+  - em inferencia sem PDB usa modo explicito `quickstart_only` (sem fallback silencioso).
+- `msa_backend`:
+  - `mmseqs2`: busca homologos e extrai covariancia de mutacoes compensatorias (WC/Hoogsteen proxy);
+  - `mock`: apenas para teste local.
 - Parametros fisicos: `radius_angstrom` (recomendado 12-15) e `max_neighbors`.
+- Awareness multicadeia:
+  - `chain_separator` define quebra de cadeia na sequencia (ex: `|`);
+  - `chain_break_offset` aplica deslocamento massivo no RPE 2D para bloquear conectividade covalente entre cadeias.
 - Exemplo de `config_train.json` para alvo longo:
 
 ```json
@@ -60,7 +74,20 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
   "graph_backend": "torch_sparse",
   "radius_angstrom": 14.0,
   "max_neighbors": 64,
-  "graph_chunk_size": 512
+  "graph_chunk_size": 512,
+  "thermo_backend": "rnafold",
+  "rnafold_bin": "RNAfold",
+  "linearfold_bin": "linearfold",
+  "thermo_cache_dir": "runs/se3/thermo_cache",
+  "msa_backend": "mmseqs2",
+  "mmseqs_bin": "mmseqs",
+  "mmseqs_db": "/data/mmseqs/rna_db",
+  "msa_cache_dir": "runs/se3/msa_cache",
+  "chain_separator": "|",
+  "chain_break_offset": 1000,
+  "max_msa_sequences": 96,
+  "max_cov_positions": 256,
+  "max_cov_pairs": 8192
 }
 ```
 

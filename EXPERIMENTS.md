@@ -342,3 +342,131 @@ Log append-only de experimentos executados.
   - O branch SE(3) passa a operar com mecanismos de memoria linear/esparsa e contratos de erro acionaveis para backends/parametros invalidos.
 - Proximos passos:
   - Rodar benchmark dedicado com GPU e comprimentos altos (>=3000 e >=5500) para medir VRAM, throughput e latencia por backend/torre.
+
+## PLAN-080
+
+### 2026-02-16T13:07:32Z - marcusvinicius/Codex (BPP termodinamica 2D no DataLoader)
+
+- Objetivo/hipotese:
+  - Injetar sinal termodinamico de estrutura secundaria (BPP) no branch SE(3) para guiar empacotamento terciario com viés continuo 2D.
+- Comparacao:
+  - Baseline: branch SE(3) sem BPP explicita; uso apenas de `pair_prob` e quimica por residuo.
+  - Novo: BPP por alvo com marginais + pares esparsos e bias em arestas EGNN/IPA.
+- Comandos executados:
+  - `pytest -q tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py`
+  - `pytest -q`
+  - `python -m rna3d_local --help`
+- Configuracao efetiva:
+  - Novos campos em `config_se3`:
+    - `thermo_backend` (`rnafold|linearfold|mock`)
+    - `rnafold_bin`
+    - `linearfold_bin`
+    - `thermo_cache_dir`
+  - Em testes de integracao: `thermo_backend=mock`.
+- Parametros/hiperparametros:
+  - Mantidos defaults de escala SE(3) da PLAN-079.
+  - BPP em testes:
+    - backend `mock` para smoke deterministico;
+    - validacao de erro para `rnafold_bin` inexistente.
+- Seeds:
+  - Herdadas dos testes SE(3): `seed=123` e `seed=17`.
+- Versao de codigo/dados:
+  - `git commit`: `311512e`
+  - Dados sinteticos em `tmp_path` nos testes.
+- Artefatos:
+  - Novo modulo `src/rna3d_local/training/thermo_2d.py`.
+  - Novos testes `tests/test_thermo_2d.py`.
+  - Manifests de treino/amostragem passam a registrar configuracao termodinamica.
+- Metricas/score/custo:
+  - `pytest -q tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py` -> `12 passed in 2.00s`
+  - `pytest -q` -> `27 passed in 2.00s`
+  - CLI: help sem regressao.
+- Conclusao:
+  - BPP termodinamica 2D integrada no pipeline SE(3) com fail-fast para binarios/contratos invalidos e com bias continuo aplicado no backbone.
+- Proximos passos:
+  - Medir custo de inferencia com `thermo_backend=rnafold` e cache habilitado em comprimentos longos para calibrar budget Kaggle.
+
+## PLAN-081
+
+### 2026-02-16T13:15:45Z - marcusvinicius/Codex (MSA covariancia + awareness multicadeia)
+
+- Objetivo/hipotese:
+  - Acrescentar sinal evolutivo de covariancia e noção explícita de chain breaks no branch SE(3) para melhorar contatos terciarios em casos multicadeia.
+- Comparacao:
+  - Baseline: branch com bias BPP, sem covariancia MSA e sem RPE multicadeia com offset massivo.
+  - Novo: bias combinado BPP + MSA/cov + relative position com `chain_break_offset`.
+- Comandos executados:
+  - `pytest -q tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py`
+  - `pytest -q`
+  - `python -m rna3d_local --help`
+- Configuracao efetiva:
+  - Novos campos em `config_se3`:
+    - `msa_backend` (`mmseqs2|mock`)
+    - `mmseqs_bin`, `mmseqs_db`, `msa_cache_dir`
+    - `chain_separator`, `chain_break_offset`
+    - `max_msa_sequences`, `max_cov_positions`, `max_cov_pairs`
+  - Em testes de integracao: `msa_backend=mock` e `thermo_backend=mock`.
+- Parametros/hiperparametros:
+  - Defaults adicionados:
+    - `chain_break_offset=1000`
+    - `max_msa_sequences=96`
+    - `max_cov_positions=256`
+    - `max_cov_pairs=8192`
+- Seeds:
+  - Herdadas dos testes SE(3): `seed=123`, `seed=17`, `seed=7`.
+- Versao de codigo/dados:
+  - `git commit`: `311512e`
+  - Dados sinteticos em `tmp_path` nos testes.
+- Artefatos:
+  - Novo modulo `src/rna3d_local/training/msa_covariance.py`.
+  - Novo parser multicadeia `src/rna3d_local/se3/sequence_parser.py`.
+  - Novo teste `tests/test_msa_covariance.py`.
+  - Testes atualizados para fluxo multicadeia/BPP integrado.
+- Metricas/score/custo:
+  - `pytest -q tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py` -> `17 passed in 1.96s`
+  - `pytest -q` -> `32 passed in 1.98s`
+  - CLI sem regressao de comandos.
+- Conclusao:
+  - O branch SE(3) agora injeta covariancia MSA e encoding multicadeia com offset massivo no caminho 2D, mantendo contratos fail-fast.
+- Proximos passos:
+  - Rodar benchmark local com `msa_backend=mmseqs2` e DB real para calibrar cobertura/custo em alvos longos e multicadeia.
+
+## PLAN-082
+
+### 2026-02-16T13:20:50Z - marcusvinicius/Codex (sondagem quimica PDB x QUICK_START)
+
+- Objetivo/hipotese:
+  - Reduzir ambiguidade estrutural (incluindo pseudoknots) adicionando exposicao ao solvente por residuo obtida via cruzamento de reatividade quimica com geometria PDB.
+- Comparacao:
+  - Baseline: branch com BPP+MSA+multicadeia, sem sinal dedicado de `chemical mapping` cruzado com PDB.
+  - Novo: `chemical mapping` continuo em nos/arestas com fonte explicita (`quickstart_pdb_cross`/`quickstart_only`).
+- Comandos executados:
+  - `pytest -q tests/test_chemical_mapping.py tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py`
+  - `pytest -q`
+  - `python -m rna3d_local --help`
+- Configuracao efetiva:
+  - Sem novo comando CLI; integracao interna no DataLoader SE(3).
+  - Treino: cruzamento com `labels` (PDB) -> `quickstart_pdb_cross`.
+  - Inferencia: modo explicito sem labels -> `quickstart_only`.
+- Parametros/hiperparametros:
+  - Exposicao quimica por alvo:
+    - normalizacao min-max de `reactivity_dms` e `reactivity_2a3`;
+    - fusao com exposicao geometrica (distancia ao centroide) quando PDB disponivel.
+  - Bias de aresta: media da exposicao quimica dos dois residuos (`chem_edge_bias`).
+- Seeds:
+  - Herdadas dos testes SE(3): `seed=123`, `seed=17`, `seed=7`.
+- Versao de codigo/dados:
+  - `git commit`: `311512e`
+  - Dados sinteticos em `tmp_path` para testes unitarios.
+- Artefatos:
+  - Novo modulo: `src/rna3d_local/training/chemical_mapping.py`.
+  - Novo teste: `tests/test_chemical_mapping.py`.
+  - Manifests de treino/amostragem com `chemical_mapping_source_counts`.
+- Metricas/score/custo:
+  - `pytest -q tests/test_chemical_mapping.py tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py` -> `20 passed in 1.99s`
+  - `pytest -q` -> `35 passed in 2.08s`
+  - CLI sem regressao de superficie.
+- Conclusao:
+  - Sondagem quimica integrada ao branch SE(3) com fail-fast de cobertura e origem de sinal rastreavel por manifest.
+- Proximos passos:
+  - Rodar benchmark local com alvos reais ricos em pseudoknot para medir ganho de score e custo computacional.

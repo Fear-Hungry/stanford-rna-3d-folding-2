@@ -222,3 +222,132 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - O backend `torch_geometric` depende de stack extra (`torch-cluster`); quando ausente, o pipeline falha cedo por contrato.
   - Benchmark de throughput/VRAM em GPU Kaggle para `L` muito alto ainda precisa de medicao formal em experimento dedicado.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-080
+
+- Data UTC: `2026-02-16T13:07:32Z`
+- Plano: `PLAN-080`
+- Resumo:
+  - Integrada extracao termodinamica 2D (BPP) com backend configuravel (`rnafold`, `linearfold`) e backend explicito de teste (`mock`) no DataLoader SE(3), sem fallback silencioso.
+  - Novo modulo `training/thermo_2d.py` com:
+    - execucao de `RNAfold -p` e parse de `dot.ps` (`ubox`);
+    - execucao de `linearfold --bpp` e parse de pares/probabilidades;
+    - cache opcional por hash de sequencia/backend;
+    - validacoes estritas de intervalo/consistencia.
+  - `TargetGraph` estendido para transportar sinal BPP:
+    - marginal por residuo (adicionado como feature de no);
+    - pares esparsos direcionados (`bpp_pair_src/dst/prob`).
+  - Backbones EGNN/IPA atualizados para injetar BPP como bias continuo em arestas dinamicas do grafo esparso.
+  - Configuracao SE(3) ampliada com `thermo_backend`, `rnafold_bin`, `linearfold_bin`, `thermo_cache_dir`; manifests de treino/amostragem registram esses parametros efetivos.
+  - Documentacao atualizada com configuracao termodinamica para alvo longo.
+  - Testes adicionados para contratos BPP e cache, e testes SE(3) ajustados para backend de teste explicito.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/dataset_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/se3/graph_builder.py`
+  - `src/rna3d_local/se3/sparse_graph.py`
+  - `src/rna3d_local/se3/egnn_backbone.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `src/rna3d_local/se3_pipeline.py`
+  - `tests/test_thermo_2d.py`
+  - `tests/test_se3_pipeline.py`
+  - `tests/test_se3_memory.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py` -> `12 passed`
+  - `pytest -q` -> `27 passed`
+  - `python -m rna3d_local --help` -> superficie CLI preservada.
+- Riscos conhecidos / follow-ups:
+  - `thermo_backend=rnafold|linearfold` depende de binarios no ambiente de execucao; indisponibilidade causa falha cedo por contrato.
+  - Benchmark de tempo/memoria com RNAfold/LinearFold em `L` muito alto (>=5500) ainda precisa de medicao dedicada para ajustar cache/batch.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-081
+
+- Data UTC: `2026-02-16T13:15:45Z`
+- Plano: `PLAN-081`
+- Resumo:
+  - Integrada extracao de sinal evolutivo MSA/covariancia com backend configuravel (`mmseqs2`) e backend explicito de teste (`mock`) em `training/msa_covariance.py`, sem fallback silencioso.
+  - Implementado parser multicadeia com separador configuravel (`chain_separator`) em `se3/sequence_parser.py`, produzindo mapeamento por residuo para cadeia.
+  - DataLoader SE(3) agora combina:
+    - BPP termodinamica por cadeia;
+    - covariancia MSA por cadeia;
+    - features de no (marginais BPP + MSA);
+    - pares esparsos dirigidos para BPP/MSA.
+  - `TargetGraph` estendido com awareness multicadeia (`chain_index`, `residue_index`) e sinais MSA.
+  - Implementado Relative Positional Encoding 2D com offset massivo em chain breaks (`chain_break_offset`) e injetado como bias continuo em EGNN/IPA junto de BPP+MSA.
+  - Configuracao SE(3) ampliada com:
+    - `msa_backend`, `mmseqs_bin`, `mmseqs_db`, `msa_cache_dir`;
+    - `chain_separator`, `chain_break_offset`;
+    - `max_msa_sequences`, `max_cov_positions`, `max_cov_pairs`.
+  - Atualizados manifests de treino/amostragem com parametros efetivos de MSA/multicadeia.
+  - Cobertura de testes expandida para MSA mock, falha de binario mmseqs2, parse multicadeia e offsets de chain-break.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/msa_covariance.py`
+  - `src/rna3d_local/se3/sequence_parser.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `src/rna3d_local/training/dataset_se3.py`
+  - `src/rna3d_local/se3/graph_builder.py`
+  - `src/rna3d_local/se3/sparse_graph.py`
+  - `src/rna3d_local/se3/egnn_backbone.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/se3_pipeline.py`
+  - `tests/test_msa_covariance.py`
+  - `tests/test_thermo_2d.py`
+  - `tests/test_se3_pipeline.py`
+  - `tests/test_se3_memory.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py` -> `17 passed`
+  - `pytest -q` -> `32 passed`
+  - `python -m rna3d_local --help` -> superficie CLI preservada.
+- Riscos conhecidos / follow-ups:
+  - `msa_backend=mmseqs2` exige binario e banco de dados homologo no ambiente; ausencia falha cedo por contrato.
+  - Benchmark de custo real para alvos longos/multicadeia com MMseqs2 ainda pendente para calibrar budget de inferencia.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-082
+
+- Data UTC: `2026-02-16T13:20:50Z`
+- Plano: `PLAN-082`
+- Resumo:
+  - Implementado modulo de sondagem quimica `PDB x QUICK_START` em `training/chemical_mapping.py` para estimar exposicao ao solvente por residuo.
+  - O mapping agora cruza:
+    - reatividade `reactivity_dms/reactivity_2a3` normalizada por alvo;
+    - geometria PDB (distancia ao centroide) quando `labels` estao disponiveis no treino;
+    - fusao continua com origem explicita: `quickstart_pdb_cross` (treino) ou `quickstart_only` (inferencia).
+  - DataLoader SE(3) passa a calcular e propagar `chemical_mapping` para `TargetGraph`.
+  - `TargetGraph` estendido com `chem_exposure` e `chem_source`; `node_features` inclui o sinal de exposicao quimica.
+  - Backbones EGNN/IPA atualizados para aplicar bias quimico continuo por aresta (`chem_edge_bias`) junto dos biases BPP/MSA/chain-break.
+  - Manifestos de treino/amostragem agora registram contagem por origem do chemical mapping.
+  - Testes adicionados para contratos do mapping e cobertura de integracao sem regressao.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/chemical_mapping.py`
+  - `src/rna3d_local/training/dataset_se3.py`
+  - `src/rna3d_local/se3/graph_builder.py`
+  - `src/rna3d_local/se3/egnn_backbone.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/se3_pipeline.py`
+  - `tests/test_chemical_mapping.py`
+  - `tests/test_se3_pipeline.py`
+  - `tests/test_se3_memory.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_chemical_mapping.py tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_phase2_hybrid.py` -> `20 passed`
+  - `pytest -q` -> `35 passed`
+  - `python -m rna3d_local --help` -> superficie CLI preservada.
+- Riscos conhecidos / follow-ups:
+  - O sinal `quickstart_only` em inferencia nao usa coordenadas PDB; calibracao de pesos/escala ainda requer benchmark com dados reais.
+  - Medicao dedicada de impacto em pseudoknots complexos (score local) ainda pendente antes de promover para caminho competitivo principal.
