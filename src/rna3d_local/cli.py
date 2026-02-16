@@ -1,23 +1,344 @@
 from __future__ import annotations
 
-from .cli_commands import _enforce_non_ensemble_predictions, _enforce_submit_hardening
+import json
+from pathlib import Path
+
+from .boltz1_offline import predict_boltz1_offline
+from .chai1_offline import predict_chai1_offline
+from .chemical_features import prepare_chemical_features
 from .cli_parser import build_parser
+from .description_family import infer_description_family
+from .embedding_index import build_embedding_index
+from .ensemble.qa_ranker_se3 import rank_se3_ensemble
+from .ensemble.select_top5 import select_top5_se3
 from .errors import PipelineError
+from .hybrid_router import build_hybrid_candidates
+from .hybrid_select import select_top5_hybrid
+from .phase2_assets import build_phase2_assets_manifest
+from .rnapro_offline import predict_rnapro_offline
+from .reranker import score_template_reranker, train_template_reranker
+from .retrieval_latent import retrieve_templates_latent
+from .submission import check_submission, export_submission
+from .submit_kaggle_notebook import submit_kaggle_notebook
+from .submit_readiness import evaluate_submit_readiness
+from .se3_pipeline import sample_se3_ensemble, train_se3_generator
+from .tbm import predict_tbm
+from .template_db import build_template_db
+
+
+def _repo_root() -> Path:
+    return Path.cwd().resolve()
+
+
+def _print_json(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = build_parser()
-    args = p.parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    repo = _repo_root()
     try:
-        return int(args.fn(args))
-    except PipelineError as e:
-        print(str(e))
+        if args.command == "build-template-db":
+            out = build_template_db(
+                repo_root=repo,
+                external_templates_path=(repo / args.external_templates).resolve(),
+                out_dir=(repo / args.out_dir).resolve(),
+            )
+            _print_json(
+                {
+                    "templates": str(out.templates_path),
+                    "template_index": str(out.template_index_path),
+                    "manifest": str(out.manifest_path),
+                }
+            )
+            return 0
+
+        if args.command == "build-embedding-index":
+            out = build_embedding_index(
+                repo_root=repo,
+                template_index_path=(repo / args.template_index).resolve(),
+                out_dir=(repo / args.out_dir).resolve(),
+                embedding_dim=int(args.embedding_dim),
+                encoder=str(args.encoder),
+                model_path=None if args.model_path is None else (repo / args.model_path).resolve(),
+                ann_engine=str(args.ann_engine),
+            )
+            _print_json(
+                {
+                    "template_embeddings": str(out.embeddings_path),
+                    "ann_index": None if out.index_path is None else str(out.index_path),
+                    "manifest": str(out.manifest_path),
+                }
+            )
+            return 0
+
+        if args.command == "infer-description-family":
+            out = infer_description_family(
+                repo_root=repo,
+                targets_path=(repo / args.targets).resolve(),
+                out_dir=(repo / args.out_dir).resolve(),
+                backend=str(args.backend),
+                llm_model_path=None if args.llm_model_path is None else (repo / args.llm_model_path).resolve(),
+                template_family_map_path=None if args.template_family_map is None else (repo / args.template_family_map).resolve(),
+            )
+            _print_json(
+                {
+                    "target_family": str(out.target_family_path),
+                    "family_prior": None if out.family_prior_path is None else str(out.family_prior_path),
+                    "manifest": str(out.manifest_path),
+                }
+            )
+            return 0
+
+        if args.command == "prepare-chemical-features":
+            out = prepare_chemical_features(
+                repo_root=repo,
+                quickstart_path=(repo / args.quickstart).resolve(),
+                out_path=(repo / args.out).resolve(),
+            )
+            _print_json({"features": str(out.features_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "retrieve-templates-latent":
+            out = retrieve_templates_latent(
+                repo_root=repo,
+                template_index_path=(repo / args.template_index).resolve(),
+                template_embeddings_path=(repo / args.template_embeddings).resolve(),
+                targets_path=(repo / args.targets).resolve(),
+                out_path=(repo / args.out).resolve(),
+                top_k=int(args.top_k),
+                encoder=str(args.encoder),
+                embedding_dim=int(args.embedding_dim),
+                model_path=None if args.model_path is None else (repo / args.model_path).resolve(),
+                ann_engine=str(args.ann_engine),
+                faiss_index_path=None if args.faiss_index is None else (repo / args.faiss_index).resolve(),
+                family_prior_path=None if args.family_prior is None else (repo / args.family_prior).resolve(),
+                weight_embed=float(args.weight_embed),
+                weight_llm=float(args.weight_llm),
+                weight_seq=float(args.weight_seq),
+            )
+            _print_json({"candidates": str(out.candidates_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "train-template-reranker":
+            out = train_template_reranker(
+                repo_root=repo,
+                candidates_path=(repo / args.candidates).resolve(),
+                chemical_features_path=(repo / args.chemical_features).resolve(),
+                out_dir=(repo / args.out_dir).resolve(),
+                labels_path=None if args.labels is None else (repo / args.labels).resolve(),
+                epochs=int(args.epochs),
+                learning_rate=float(args.learning_rate),
+                seed=int(args.seed),
+            )
+            _print_json({"model": str(out.model_path), "config": str(out.config_path), "metrics": str(out.metrics_path)})
+            return 0
+
+        if args.command == "score-template-reranker":
+            out = score_template_reranker(
+                repo_root=repo,
+                candidates_path=(repo / args.candidates).resolve(),
+                chemical_features_path=(repo / args.chemical_features).resolve(),
+                model_path=(repo / args.model).resolve(),
+                config_path=(repo / args.config).resolve(),
+                out_path=(repo / args.out).resolve(),
+                top_k=None if args.top_k is None else int(args.top_k),
+            )
+            _print_json({"scored": str(out.scored_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "predict-tbm":
+            out = predict_tbm(
+                repo_root=repo,
+                retrieval_path=(repo / args.retrieval).resolve(),
+                templates_path=(repo / args.templates).resolve(),
+                targets_path=(repo / args.targets).resolve(),
+                out_path=(repo / args.out).resolve(),
+                n_models=int(args.n_models),
+            )
+            _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "export-submission":
+            out = export_submission(
+                sample_path=(repo / args.sample).resolve(),
+                predictions_long_path=(repo / args.predictions).resolve(),
+                out_path=(repo / args.out).resolve(),
+            )
+            _print_json({"submission": str(out.submission_path)})
+            return 0
+
+        if args.command == "check-submission":
+            check_submission(sample_path=(repo / args.sample).resolve(), submission_path=(repo / args.submission).resolve())
+            _print_json({"ok": True, "submission": str((repo / args.submission).resolve())})
+            return 0
+
+        if args.command == "submit-kaggle-notebook":
+            out = submit_kaggle_notebook(
+                competition=str(args.competition),
+                notebook_ref=str(args.notebook_ref),
+                notebook_version=int(args.notebook_version),
+                notebook_file=str(args.notebook_file),
+                sample_path=(repo / args.sample).resolve(),
+                submission_path=(repo / args.submission).resolve(),
+                notebook_output_path=(repo / args.notebook_output_path).resolve(),
+                score_json_path=(repo / args.score_json).resolve(),
+                baseline_score=float(args.baseline_score),
+                message=str(args.message),
+                execute_submit=bool(args.execute_submit),
+            )
+            _print_json({"report": str(out.report_path)})
+            return 0
+
+        if args.command == "build-phase2-assets":
+            out = build_phase2_assets_manifest(
+                repo_root=repo,
+                assets_dir=(repo / args.assets_dir).resolve(),
+                manifest_path=None if args.manifest is None else (repo / args.manifest).resolve(),
+            )
+            _print_json({"manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "predict-rnapro-offline":
+            out = predict_rnapro_offline(
+                repo_root=repo,
+                model_dir=(repo / args.model_dir).resolve(),
+                targets_path=(repo / args.targets).resolve(),
+                out_path=(repo / args.out).resolve(),
+                n_models=int(args.n_models),
+            )
+            _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "predict-chai1-offline":
+            out = predict_chai1_offline(
+                repo_root=repo,
+                model_dir=(repo / args.model_dir).resolve(),
+                targets_path=(repo / args.targets).resolve(),
+                out_path=(repo / args.out).resolve(),
+                n_models=int(args.n_models),
+            )
+            _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "predict-boltz1-offline":
+            out = predict_boltz1_offline(
+                repo_root=repo,
+                model_dir=(repo / args.model_dir).resolve(),
+                targets_path=(repo / args.targets).resolve(),
+                out_path=(repo / args.out).resolve(),
+                n_models=int(args.n_models),
+            )
+            _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "train-se3-generator":
+            out = train_se3_generator(
+                repo_root=repo,
+                targets_path=(repo / args.targets).resolve(),
+                pairings_path=(repo / args.pairings).resolve(),
+                chemical_features_path=(repo / args.chemical_features).resolve(),
+                labels_path=(repo / args.labels).resolve(),
+                config_path=(repo / args.config).resolve(),
+                out_dir=(repo / args.out_dir).resolve(),
+                seed=int(args.seed),
+            )
+            _print_json(
+                {
+                    "model_dir": str(out.model_dir),
+                    "manifest": str(out.manifest_path),
+                    "metrics": str(out.metrics_path),
+                    "config_effective": str(out.config_effective_path),
+                }
+            )
+            return 0
+
+        if args.command == "sample-se3-ensemble":
+            out = sample_se3_ensemble(
+                repo_root=repo,
+                model_dir=(repo / args.model_dir).resolve(),
+                targets_path=(repo / args.targets).resolve(),
+                pairings_path=(repo / args.pairings).resolve(),
+                chemical_features_path=(repo / args.chemical_features).resolve(),
+                out_path=(repo / args.out).resolve(),
+                method=str(args.method),
+                n_samples=int(args.n_samples),
+                seed=int(args.seed),
+            )
+            _print_json({"candidates": str(out.candidates_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "rank-se3-ensemble":
+            out = rank_se3_ensemble(
+                repo_root=repo,
+                candidates_path=(repo / args.candidates).resolve(),
+                out_path=(repo / args.out).resolve(),
+                qa_config_path=None if args.qa_config is None else (repo / args.qa_config).resolve(),
+                diversity_lambda=float(args.diversity_lambda),
+            )
+            _print_json({"ranked": str(out.ranked_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "select-top5-se3":
+            out = select_top5_se3(
+                repo_root=repo,
+                ranked_path=(repo / args.ranked).resolve(),
+                out_path=(repo / args.out).resolve(),
+                n_models=int(args.n_models),
+                diversity_lambda=float(args.diversity_lambda),
+            )
+            _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "build-hybrid-candidates":
+            out = build_hybrid_candidates(
+                repo_root=repo,
+                targets_path=(repo / args.targets).resolve(),
+                retrieval_path=(repo / args.retrieval).resolve(),
+                tbm_path=(repo / args.tbm).resolve(),
+                out_path=(repo / args.out).resolve(),
+                routing_path=(repo / args.routing_out).resolve(),
+                template_score_threshold=float(args.template_score_threshold),
+                rnapro_path=None if args.rnapro is None else (repo / args.rnapro).resolve(),
+                chai1_path=None if args.chai1 is None else (repo / args.chai1).resolve(),
+                boltz1_path=None if args.boltz1 is None else (repo / args.boltz1).resolve(),
+                se3_path=None if args.se3 is None else (repo / args.se3).resolve(),
+            )
+            _print_json(
+                {
+                    "candidates": str(out.candidates_path),
+                    "routing": str(out.routing_path),
+                    "manifest": str(out.manifest_path),
+                }
+            )
+            return 0
+
+        if args.command == "select-top5-hybrid":
+            out = select_top5_hybrid(
+                repo_root=repo,
+                candidates_path=(repo / args.candidates).resolve(),
+                out_path=(repo / args.out).resolve(),
+                n_models=int(args.n_models),
+            )
+            _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
+            return 0
+
+        if args.command == "evaluate-submit-readiness":
+            out = evaluate_submit_readiness(
+                repo_root=repo,
+                sample_path=(repo / args.sample).resolve(),
+                submission_path=(repo / args.submission).resolve(),
+                score_json_path=(repo / args.score_json).resolve(),
+                baseline_score=float(args.baseline_score),
+                report_path=(repo / args.report).resolve(),
+                fail_on_disallow=not bool(args.allow_disallow),
+            )
+            _print_json({"allowed": bool(out.allowed), "report": str(out.report_path)})
+            return 0
+
+        parser.print_help()
         return 2
-
-
-__all__ = [
-    "build_parser",
-    "main",
-    "_enforce_non_ensemble_predictions",
-    "_enforce_submit_hardening",
-]
+    except PipelineError as exc:
+        print(str(exc))
+        return 1

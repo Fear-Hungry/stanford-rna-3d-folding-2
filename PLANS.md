@@ -1096,3 +1096,183 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `submit-kaggle` bloqueia reports sem `compatibility_checks` ou fora do regime oficial.
   - `check-submission` bloqueia coordenadas nao numericas, nao-finitas e fora de faixa.
   - Suite direcionada de testes de `contracts/scoring/robust/readiness/submit_hardening` permanece verde.
+
+## PLAN-069 - Remocao de legado competitivo (sem blend + sem QA linear)
+
+- Objetivo: remover caminhos legados nao competitivos (blend de coordenadas e QA linear) para reduzir acoplamento e evitar uso acidental de estrategias regressivas.
+- Escopo:
+  - Remover completamente a superficie de CLI de `ensemble-predict` (parser + handler + re-exports) e excluir `src/rna3d_local/ensemble.py`.
+  - Atualizar testes de workflow para fluxo sem blend (`predict-tbm`/`predict-rnapro` -> `export-submission`) e eliminar testes dedicados ao modulo de ensemble.
+  - Remover comando `train-qa-ranker` da CLI (parser + handler + re-exports), mantendo apenas QA_GNN/RNArank para treino/rerank.
+  - Endurecer `predict_tbm` e `infer_rnapro` para aceitar `--qa-model` apenas quando `model_type=qa_gnn`; qualquer outro JSON deve falhar cedo com erro acionavel.
+  - Remover API linear ociosa de `qa_ranker.py` (`QA_FEATURE_NAMES`, `QaMetrics`, `QaModel`, `load_qa_model`, `score_candidate_with_model`, `train_qa_ranker`) e ajustar testes para cobrir apenas features/diversidade utilizadas no pipeline.
+  - Atualizar README para refletir remocao dos comandos legados.
+- Criterios de aceite:
+  - `python -m rna3d_local --help` nao lista `ensemble-predict` nem `train-qa-ranker`.
+  - `predict-tbm` e `predict-rnapro` falham com mensagem explicita ao receber `--qa-model` nao-GNN.
+  - Suite direcionada (`cli_strict_surface`, `qa_ranker`, `qa_gnn_ranker`, `template_workflow`) permanece verde.
+
+## PLAN-071 - Cobertura de teste para ausencia de runtime DRfold2
+
+- Objetivo: garantir que a falta de instalacao DRfold2 seja capturada automaticamente pelos testes com fail-fast explicito.
+- Escopo:
+  - Adicionar teste unitario chamando `predict_drfold2` com `drfold2_root` inexistente.
+  - Validar que o erro retornado seja acionavel e no formato de contrato (`drfold2_root nao encontrado`).
+- Criterios de aceite:
+  - `pytest -q tests/test_drfold2_parser.py` verde.
+  - Novo teste falha se o fail-fast de readiness de DRfold2 for removido/regredido.
+
+## PLAN-070 - Instalacao persistente do DRfold2 oficial + validacao end-to-end real
+
+- Objetivo: garantir que o branch ab initio DRfold2 esteja instalado localmente de forma persistente (fora de `/tmp`) e validado com inferencia real (sem stub), eliminando falhas por pesos corrompidos.
+- Escopo:
+  - Clonar repositorio oficial DRfold2 em `third_party/drfold2_official`.
+  - Resolver dependencia de build do `Arena` no ambiente local (compilar binarios requeridos).
+  - Baixar `model_hub.tar.gz` com estrategia resiliente de resume e checagem de integridade por tamanho + `tar`.
+  - Validar integridade funcional dos pesos carregando todos os checkpoints (`torch.load`) com fail-fast.
+  - Executar `predict-drfold2` real em GPU e confirmar geracao de parquet com `target_id`/`model_id` esperados e coordenadas sem nulos.
+- Criterios de aceite:
+  - `third_party/drfold2_official/model_hub` presente e consistente (checagem `tar` OK).
+  - `Arena/Arena` e `Arena/Arena_counter` executaveis presentes.
+  - Validacao de checkpoints sem corrupcao (`ok=81 fail=0`).
+  - Smoke real `predict-drfold2` conclui com parquet valido (`n_models=5`, sem `null` em `x/y/z`).
+
+## PLAN-072 - Preflight do output do notebook no submit-kaggle (arquivo + ordem + hash)
+
+- Objetivo: impedir submissao no Kaggle com arquivo errado/stale (notebook-only), garantindo que o arquivo realmente submetido bate com o `sample_submission` (colunas + ordem) e com o `--submission` validado localmente.
+- Escopo:
+  - No `submit-kaggle`, antes de `kaggle competitions submit`, baixar o arquivo `--notebook-file` do output do notebook `--notebook-ref` via Kaggle API com suporte a paginacao (page_token).
+  - Validar estritamente o arquivo baixado contra `--sample` (colunas e ordem; chaves e ordem; sem nulos; coordenadas numericas/finito/faixa).
+  - Calcular `sha256` do `--submission` local e do arquivo baixado; bloquear submissao se divergirem (modo estrito por padrao, sem fallback silencioso).
+  - Bloquear quando `--notebook-version` nao for o `current_version_number` do notebook (nao ha API confiavel para baixar outputs de versoes antigas).
+- Criterios de aceite:
+  - `submit-kaggle` falha cedo quando `--notebook-file` nao existir no output do notebook (mesmo quando estiver em paginas posteriores).
+  - `submit-kaggle` falha cedo quando o arquivo do notebook violar o contrato do `sample_submission` (incluindo ordem).
+  - `submit-kaggle` falha cedo quando `sha256(local) != sha256(notebook_output)` com erro acionavel.
+  - Testes unitarios cobrem: paginacao do output, mismatch de hash e mismatch de versao.
+
+## PLAN-073 - Fase 1 Template Oracle (greenfield)
+
+- Objetivo: reconstruir pipeline minimo competitivo para reduzir gap de retrieval TBM com fusao de sinais latentes, semanticos e quimicos.
+- Escopo:
+  - Recriar pacote `rna3d_local` com comandos essenciais da Fase 1.
+  - Implementar retrieval por embeddings com encoder fixo (`ribonanzanet2`) e ANN (`faiss_ivfpq`), com modo explicito de teste (`mock`/`numpy_bruteforce`).
+  - Implementar mineracao de `description` offline (backend `llama_cpp` obrigatorio por padrao, `rules` explicito para testes).
+  - Implementar preparacao de features quimicas DMS/2A3 e reranker em PyTorch com bias quimico agregado.
+  - Implementar `predict-tbm`, `export-submission`, `check-submission` e `submit-kaggle-notebook` com contratos estritos.
+- Criterios de aceite:
+  - `pytest -q` verde para testes de contrato/fail-fast e fluxo minimo.
+  - `check-submission` bloqueia colunas/chaves/ordem/coordenadas invalidas.
+  - `retrieve-templates-latent` aplica filtro temporal estrito e gera manifest com scores de fusao.
+  - `submit-kaggle-notebook` bloqueia quando score local nao supera baseline e quando hash local diverge do arquivo de notebook.
+
+## PLAN-074 - Fase 2 Arsenal Hibrido 3D (RNAPro + Boltz-1 + Chai-1)
+
+- Objetivo: habilitar inferencia offline multimodelo para targets orfaos/multicomponente, com roteamento deterministico e gate competitivo estrito antes de submit notebook-only.
+- Escopo:
+  - Criar manifest de assets offline fase 2 (`models/rnapro`, `models/boltz1`, `models/chai1`, `wheels`) com hash e fail-fast.
+  - Adicionar inferencias offline:
+    - `predict-rnapro-offline`
+    - `predict-chai1-offline`
+    - `predict-boltz1-offline`
+  - Implementar roteador hibrido por alvo:
+    - template forte -> TBM;
+    - orfao sem ligante -> ensemble Chai+Boltz;
+    - alvo com `ligand_SMILES` -> Boltz primario;
+    - RNAPro como candidato suplementar.
+  - Implementar selecao `Top-5` por alvo no pool hibrido e gate `evaluate-submit-readiness` com melhoria estrita local.
+  - Cobrir com testes de contrato/integração sem fallback silencioso.
+- Criterios de aceite:
+  - `python -m pytest -q` verde com cobertura dos novos fluxos.
+  - `python -m rna3d_local --help` lista novos comandos de fase 2.
+  - `build-hybrid-candidates` gera `routing.parquet` com regra aplicada por alvo.
+  - `select-top5-hybrid` entrega exatamente 5 modelos por alvo ou falha cedo.
+  - `evaluate-submit-readiness` bloqueia candidatos sem melhoria estrita vs baseline.
+
+## PLAN-075 - Notebook de submissao com pipeline completo Fase 1 + Fase 2
+
+- Objetivo: atualizar o notebook Kaggle de submissao para executar o fluxo completo (Fase 1 + Fase 2) em modo estrito/fail-fast, sem fallback silencioso.
+- Escopo:
+  - Substituir o notebook `stanford-rna3d-submit-prod-v2.ipynb` por versao que roda:
+    - Fase 1: `infer-description-family`, `prepare-chemical-features`, `retrieve-templates-latent`, `score-template-reranker`, `predict-tbm`.
+    - Fase 2: `build-phase2-assets`, `predict-rnapro-offline`, `predict-chai1-offline`, `predict-boltz1-offline`, `build-hybrid-candidates`, `select-top5-hybrid`.
+    - Export/contrato: `export-submission` + `check-submission`.
+  - Implementar descoberta e validacao estrita de ativos em `/kaggle/input` (src, embeddings, FAISS, modelo LLM GGUF, modelo Ribonanza, mapa de familias, quickstart quimico, modelos phase2, reranker pretreinado).
+  - Garantir bloqueio explicito quando houver ativo ausente/ambiguo ou comando CLI ausente.
+  - Preservar contrato notebook-only (`submission.csv` final em `/kaggle/working`).
+- Criterios de aceite:
+  - Notebook JSON valido e codigo compilavel localmente.
+  - Notebook contem todos os comandos de pipeline Fase 1 + Fase 2 listados no escopo.
+  - Validacao local confirma superficie CLI exigida por esse notebook.
+
+## PLAN-076 - Hardening do pipeline completo no Kaggle (quickstart + TBM coverage)
+
+- Objetivo: remover falhas de execucao do notebook completo Fase 1+2 no Kaggle, preservando contrato estrito e garantindo geracao valida de `submission.csv`.
+- Escopo:
+  - Adaptar `prepare-chemical-features` para schemas QUICK_START de templates (`ID,resid,x_i,y_i,z_i`), incluindo caso com apenas um triplet (`x_1,y_1,z_1`), sem fallback silencioso.
+  - Endurecer `predict-tbm` para selecionar os primeiros templates com cobertura completa de residuos do alvo (pular candidatos invalidos e falhar cedo apenas se cobertura valida insuficiente).
+  - Cobrir os novos contratos com testes unitarios dedicados.
+  - Publicar nova versao do dataset de `src` no Kaggle e reexecutar notebook de submissao.
+  - Validar estritamente o `submission.csv` do output remoto contra `sample_submission`.
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos para `chemical_features` e `tbm`.
+  - Notebook Kaggle `marcux777/stanford-rna3d-submit-prod-v2` conclui (`COMPLETE`) com pipeline completo.
+  - Notebook gera `submission.csv` e `check-submission` retorna `ok=true`.
+  - Validacao local adicional `python -m rna3d_local check-submission --sample ... --submission ...` retorna `ok=true`.
+
+## PLAN-077 - Robustez para rerun oculto do Kaggle
+
+- Objetivo: eliminar erro de rerun em hidden dataset ("larger/smaller/different"), mantendo contrato estrito de submissao e sem treino no notebook Kaggle.
+- Escopo:
+  - Remover do notebook de submissao o treino online do reranker (`train-template-reranker`/`score-template-reranker`) para cumprir politica de "no train on Kaggle".
+  - Tornar retrieval/TBM robustos a alvos sem candidatos ou com cobertura parcial de template, registrando diagnostico em manifest em vez de abortar pipeline completo.
+  - Ajustar roteamento hibrido para desviar explicitamente para fase2 quando `template_strong=true` mas nao houver cobertura TBM para o alvo.
+  - Cobrir novos cenarios em testes unitarios.
+  - Publicar nova versao de `src` no dataset Kaggle, reexecutar notebook e validar `submission.csv`.
+  - Submeter nova versao do notebook na competicao para verificar se o erro de rerun oculto desaparece.
+- Criterios de aceite:
+  - `pytest -q` verde com testes atualizados.
+  - Notebook `version 84` executa `COMPLETE` com `check-submission` `ok=true`.
+  - `submission.csv` validado localmente contra `sample_submission`.
+  - Nova submissao Kaggle criada com notebook `v84` sem alterar contrato notebook-only.
+
+## PLAN-078 - Branch SE(3) Generativo para Best-of-5
+
+- Objetivo: adicionar um novo branch experimental integrado para gerar ensembles estruturais diversos (Best-of-5) com arquitetura equivariante e modelagem generativa, sem substituir o pipeline atual.
+- Escopo:
+  - Criar pacotes novos `se3/`, `generative/`, `ensemble/`, `training/` com:
+    - backbone EGNN + IPA adaptado;
+    - geracao por Diffusion SE(3) + Flow Matching;
+    - rank de qualidade + penalizacao de diversidade;
+    - selecao top-5 por alvo.
+  - Expor novos comandos CLI:
+    - `train-se3-generator`
+    - `sample-se3-ensemble`
+    - `rank-se3-ensemble`
+    - `select-top5-se3`
+  - Integrar branch opcional ao roteador hibrido com flag/entrada explicita (default desativado).
+  - Preservar contratos estritos/fail-fast e formato final compativel com `export-submission`.
+  - Cobrir com testes de fluxo e contratos novos.
+- Criterios de aceite:
+  - `pytest -q` verde com testes para treino/amostragem/ranking/selecao SE(3).
+  - Novos comandos aparecem em `python -m rna3d_local --help`.
+  - `select-top5-se3` gera exatamente 5 modelos por alvo (ou falha cedo com erro acionavel).
+  - `build-hybrid-candidates` aceita opcionalmente predicoes SE(3) sem regressao dos fluxos atuais.
+
+## PLAN-079 - Escalabilidade de memoria para alvos longos (L<=5500)
+
+- Objetivo: reduzir consumo de memoria e custo computacional do branch SE(3) para suportar sequencias longas sem violar contratos estritos.
+- Escopo:
+  - Substituir o bloco de atencao quadratica da torre 1D por opcoes de memoria eficiente:
+    - `flash` com `scaled_dot_product_attention` + checkpointing;
+    - `mamba_like` (SSM causal simplificado) com custo linear em memoria.
+  - Introduzir construcao de grafo 3D esparso por raio fisico (`radius_angstrom`) e limite de vizinhos (`max_neighbors`) usando tensores `torch.sparse` com opcao explicita de backend (`torch_sparse`/`torch_geometric`).
+  - Integrar o grafo esparso no backbone EGNN/IPA para eliminar materializacao densa NxN.
+  - Expor parametros de escalabilidade no treino/amostragem via config (`sequence_tower`, `use_gradient_checkpointing`, `radius_angstrom`, `max_neighbors`, `graph_backend`).
+  - Preservar fail-fast para contratos invalidos (config, backend indisponivel, grafo sem arestas, limites invalidos).
+  - Cobrir com testes de contrato/escala para garantir ausencia de regressao no fluxo.
+- Criterios de aceite:
+  - `pytest -q` verde com testes novos de backend esparso e fail-fast.
+  - `train-se3-generator` e `sample-se3-ensemble` funcionam com `sequence_tower=mamba_like` e `graph_backend=torch_sparse`.
+  - Execucao com `graph_backend=torch_geometric` sem dependencia instalada falha cedo com erro acionavel.
+  - Manifests de treino/amostragem registram parametros efetivos de escalabilidade.
