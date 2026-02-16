@@ -34,7 +34,7 @@ def predict_boltz1_offline(
     location = "src/rna3d_local/boltz1_offline.py:predict_boltz1_offline"
     ensure_model_artifacts(
         model_dir=model_dir,
-        required_files=["model.safetensors", "config.json"],
+        required_files=["config.json", "boltz1_conf.ckpt", "ccd.pkl"],
         stage=stage,
         location=location,
     )

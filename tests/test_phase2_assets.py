@@ -15,11 +15,19 @@ def _touch(path: Path, content: str = "x") -> None:
 
 def test_build_phase2_assets_manifest_success(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
-    _touch(assets / "models" / "rnapro" / "model.pt")
+    _touch(assets / "models" / "rnapro" / "rnapro-public-best-500m.ckpt")
     _touch(assets / "models" / "rnapro" / "config.json", "{\"entrypoint\":[\"python\",\"-c\",\"print(\\\"ok\\\")\"]}")
-    _touch(assets / "models" / "boltz1" / "model.safetensors")
+    _touch(assets / "models" / "boltz1" / "boltz1_conf.ckpt")
+    _touch(assets / "models" / "boltz1" / "ccd.pkl")
     _touch(assets / "models" / "boltz1" / "config.json", "{\"entrypoint\":[\"python\",\"-c\",\"print(\\\"ok\\\")\"]}")
-    _touch(assets / "models" / "chai1" / "model.bin")
+    _touch(assets / "models" / "chai1" / "conformers_v1.apkl")
+    _touch(assets / "models" / "chai1" / "esm" / "traced_sdpa_esm2_t36_3B_UR50D_fp16.pt")
+    _touch(assets / "models" / "chai1" / "models_v2" / "feature_embedding.pt")
+    _touch(assets / "models" / "chai1" / "models_v2" / "bond_loss_input_proj.pt")
+    _touch(assets / "models" / "chai1" / "models_v2" / "token_embedder.pt")
+    _touch(assets / "models" / "chai1" / "models_v2" / "trunk.pt")
+    _touch(assets / "models" / "chai1" / "models_v2" / "diffusion_module.pt")
+    _touch(assets / "models" / "chai1" / "models_v2" / "confidence_head.pt")
     _touch(assets / "models" / "chai1" / "config.json", "{\"entrypoint\":[\"python\",\"-c\",\"print(\\\"ok\\\")\"]}")
     _touch(assets / "wheels" / "a.whl")
     out = build_phase2_assets_manifest(repo_root=tmp_path, assets_dir=assets)

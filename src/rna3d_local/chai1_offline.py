@@ -34,7 +34,17 @@ def predict_chai1_offline(
     location = "src/rna3d_local/chai1_offline.py:predict_chai1_offline"
     ensure_model_artifacts(
         model_dir=model_dir,
-        required_files=["model.bin", "config.json"],
+        required_files=[
+            "config.json",
+            "conformers_v1.apkl",
+            "esm/traced_sdpa_esm2_t36_3B_UR50D_fp16.pt",
+            "models_v2/feature_embedding.pt",
+            "models_v2/bond_loss_input_proj.pt",
+            "models_v2/token_embedder.pt",
+            "models_v2/trunk.pt",
+            "models_v2/diffusion_module.pt",
+            "models_v2/confidence_head.pt",
+        ],
         stage=stage,
         location=location,
     )

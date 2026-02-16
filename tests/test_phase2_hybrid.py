@@ -89,13 +89,21 @@ def _write_stub_runner(model_dir: Path, *, source: str) -> None:
 
 def _make_model_dirs(base: Path) -> tuple[Path, Path, Path]:
     rna = base / "rnapro"
-    _touch(rna / "model.pt")
+    _touch(rna / "rnapro-public-best-500m.ckpt")
     _write_stub_runner(rna, source="rnapro")
     chai = base / "chai1"
-    _touch(chai / "model.bin")
+    _touch(chai / "conformers_v1.apkl")
+    _touch(chai / "esm" / "traced_sdpa_esm2_t36_3B_UR50D_fp16.pt")
+    _touch(chai / "models_v2" / "feature_embedding.pt")
+    _touch(chai / "models_v2" / "bond_loss_input_proj.pt")
+    _touch(chai / "models_v2" / "token_embedder.pt")
+    _touch(chai / "models_v2" / "trunk.pt")
+    _touch(chai / "models_v2" / "diffusion_module.pt")
+    _touch(chai / "models_v2" / "confidence_head.pt")
     _write_stub_runner(chai, source="chai1")
     boltz = base / "boltz1"
-    _touch(boltz / "model.safetensors")
+    _touch(boltz / "boltz1_conf.ckpt")
+    _touch(boltz / "ccd.pkl")
     _write_stub_runner(boltz, source="boltz1")
     return rna, chai, boltz
 

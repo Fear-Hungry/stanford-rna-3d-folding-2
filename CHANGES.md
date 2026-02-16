@@ -1065,3 +1065,29 @@ Log append-only de mudancas implementadas.
   - `src/rna3d_local/cli.py`
 - Validacao local executada:
   - `pytest -q` -> `82 passed`
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-074 (runners reais Chai/Boltz)
+
+- Data UTC: `2026-02-16T22:06:32Z`
+- Plano: `PLAN-074`
+- Resumo:
+  - Adicionados runners reais (sem mock) para Phase 2:
+    - `runners/chai1.py` executa `chai_lab` offline apontando `CHAI_DOWNLOADS_DIR` para `model_dir` e extrai coordenadas `C1'` do mmCIF;
+    - `runners/boltz1.py` executa `boltz` via API Python e extrai coordenadas `C1'` do PDB.
+  - Hardening de contratos de assets:
+    - `predict-{chai1,boltz1,rnapro}-offline` agora valida a presenca dos arquivos reais esperados (ckpt/ccd, exports do Chai, ckpt RNAPro).
+  - Atualizados testes de fase 2 (contratos) para refletir os novos requisitos.
+- Arquivos principais tocados:
+  - `src/rna3d_local/runners/chai1.py`
+  - `src/rna3d_local/runners/boltz1.py`
+  - `src/rna3d_local/runners/rnapro.py`
+  - `src/rna3d_local/chai1_offline.py`
+  - `src/rna3d_local/boltz1_offline.py`
+  - `src/rna3d_local/rnapro_offline.py`
+  - `tests/test_phase2_assets.py`
+  - `tests/test_phase2_hybrid.py`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `86 passed`
+- Riscos conhecidos / follow-ups:
+  - `runners/rnapro.py` ainda esta em modo fail-fast (inferencia real do RNAPro nao integrada neste ponto).

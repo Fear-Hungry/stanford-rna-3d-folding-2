@@ -34,7 +34,7 @@ def predict_rnapro_offline(
     location = "src/rna3d_local/rnapro_offline.py:predict_rnapro_offline"
     ensure_model_artifacts(
         model_dir=model_dir,
-        required_files=["model.pt", "config.json"],
+        required_files=["config.json", "rnapro-public-best-500m.ckpt"],
         stage=stage,
         location=location,
     )
