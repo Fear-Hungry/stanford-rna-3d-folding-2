@@ -14,6 +14,13 @@ Fetch automatizado:
 - `python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2 --dry-run`
 - `python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2`
 
+RNAPro (extras obrigatorios p/ inferencia real):
+
+- RibonanzaNet2 (pairwise) para RNAPro:
+  - `python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2_pairwise`
+- CCD cache minimo + `test_templates.pt` (gerado localmente; nao roda no Kaggle):
+  - `python -m rna3d_local prepare-rnapro-support-files --model-dir assets/models/rnapro`
+
 Wheelhouse (pip offline no Kaggle):
 
 - `python -m rna3d_local build-wheelhouse --wheels-dir assets/wheels --python-version 3.12`

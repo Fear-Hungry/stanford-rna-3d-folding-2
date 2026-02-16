@@ -1091,3 +1091,34 @@ Log append-only de mudancas implementadas.
   - `pytest -q` -> `86 passed`
 - Riscos conhecidos / follow-ups:
   - `runners/rnapro.py` ainda esta em modo fail-fast (inferencia real do RNAPro nao integrada neste ponto).
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-074 (RNAPro real runner + suporte offline)
+
+- Data UTC: `2026-02-16T23:45:02Z`
+- Plano: `PLAN-074`
+- Resumo:
+  - `runners/rnapro.py` agora roda **RNAPro real** (sem mock), usando o pacote `rnapro` instalado offline e extraindo `C1'` do mmCIF gerado pelo `DataDumper`.
+  - Novo comando `prepare-rnapro-support-files` gera localmente os arquivos de suporte obrigatorios do RNAPro:
+    - `assets/models/rnapro/test_templates.pt` (placeholder vazio, requerido pelo loader),
+    - `assets/models/rnapro/ccd_cache/` minimo (A/C/G/U): `components.cif` + `components.cif.rdkit_mol.pkl` + `clusters-by-entity-40.txt`.
+  - `fetch-pretrained-assets` ganhou `--include ribonanzanet2_pairwise` (Kaggle Model `shujun717/ribonanzanet2/pyTorch/alpha/1`) e baixa para `assets/models/rnapro/ribonanzanet2_checkpoint/`.
+  - Hardening de contratos:
+    - `write-phase2-model-configs` e `predict-rnapro-offline` agora exigem (fail-fast) CCD cache + RibonanzaNet2 pairwise + `test_templates.pt`.
+  - Wheelhouse:
+    - adicionados `biotite`, `ml-collections` e o wheel do `rnapro` (build universal via git pin) no perfil `phase2`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/runners/rnapro.py`
+  - `src/rna3d_local/rnapro_support.py`
+  - `src/rna3d_local/assets_fetch.py`
+  - `src/rna3d_local/phase2_configs.py`
+  - `src/rna3d_local/rnapro_offline.py`
+  - `src/rna3d_local/wheelhouse.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `assets/README.md`
+  - `assets/SOURCES.md`
+  - `tests/test_phase2_configs.py`
+  - `tests/test_phase2_hybrid.py`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `86 passed`
