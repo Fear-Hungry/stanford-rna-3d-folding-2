@@ -25,16 +25,78 @@ def _touch(path: Path, content: str = "x") -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _write_stub_runner(model_dir: Path, *, source: str) -> None:
+    script = (
+        "from __future__ import annotations\n"
+        "\n"
+        "import argparse\n"
+        "from pathlib import Path\n"
+        "\n"
+        "import polars as pl\n"
+        "\n"
+        "\n"
+        "def main() -> int:\n"
+        "    ap = argparse.ArgumentParser()\n"
+        "    ap.add_argument('--targets', required=True)\n"
+        "    ap.add_argument('--out', required=True)\n"
+        "    ap.add_argument('--n-models', type=int, required=True)\n"
+        "    ap.add_argument('--source', required=True)\n"
+        "    args = ap.parse_args()\n"
+        "    targets = pl.read_csv(args.targets)\n"
+        "    if 'target_id' not in targets.columns or 'sequence' not in targets.columns:\n"
+        "        raise SystemExit('targets schema invalido')\n"
+        "    rows = []\n"
+        "    for tid, seq in targets.select('target_id','sequence').iter_rows():\n"
+        "        tid = str(tid)\n"
+        "        seq = str(seq).replace('|','').upper().replace('T','U')\n"
+        "        for model_id in range(1, int(args.n_models) + 1):\n"
+        "            for resid, base in enumerate(seq, start=1):\n"
+        "                rows.append({\n"
+        "                    'target_id': tid,\n"
+        "                    'model_id': int(model_id),\n"
+        "                    'resid': int(resid),\n"
+        "                    'resname': str(base),\n"
+        "                    'x': float(model_id + resid),\n"
+        "                    'y': float(model_id + resid + 1),\n"
+        "                    'z': float(model_id + resid + 2),\n"
+        "                    'source': str(args.source),\n"
+        "                    'confidence': 0.75,\n"
+        "                })\n"
+        "    out = Path(args.out)\n"
+        "    out.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    pl.DataFrame(rows).write_parquet(out)\n"
+        "    return 0\n"
+        "\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
+    )
+    _touch(model_dir / "run_infer.py", script)
+    entry = [
+        "python",
+        "run_infer.py",
+        "--targets",
+        "{targets}",
+        "--out",
+        "{out}",
+        "--n-models",
+        "{n_models}",
+        "--source",
+        source,
+    ]
+    _touch(model_dir / "config.json", json.dumps({"entrypoint": entry}))
+
+
 def _make_model_dirs(base: Path) -> tuple[Path, Path, Path]:
     rna = base / "rnapro"
     _touch(rna / "model.pt")
-    _touch(rna / "config.json", "{}")
+    _write_stub_runner(rna, source="rnapro")
     chai = base / "chai1"
     _touch(chai / "model.bin")
-    _touch(chai / "config.json", "{}")
+    _write_stub_runner(chai, source="chai1")
     boltz = base / "boltz1"
     _touch(boltz / "model.safetensors")
-    _touch(boltz / "config.json", "{}")
+    _write_stub_runner(boltz, source="boltz1")
     return rna, chai, boltz
 
 

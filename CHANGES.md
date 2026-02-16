@@ -821,3 +821,80 @@ Log append-only de mudancas implementadas.
   - `pytest -q` -> `71 passed`
 - Riscos conhecidos / follow-ups:
   - Score local Best-of-5 completo em todos os 28 alvos pode exceder janela operacional por custo do USalign em alvos especificos; manter medicao parcial explicita e/ou paralelizar por alvo em iteracao futura.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-097
+
+- Data UTC: `2026-02-16T17:42:20Z`
+- Plano: `PLAN-097`
+- Resumo:
+  - Politica central anti-mock adicionada em `src/rna3d_local/mock_policy.py`, com bloqueio por padrao em runtime competitivo e liberacao apenas quando:
+    - `stage` com prefixo `TEST`; ou
+    - variavel de ambiente `RNA3D_ALLOW_MOCK_BACKENDS=1` (uso explicito de teste local).
+  - Bloqueio estrito aplicado nos pontos criticos:
+    - `src/rna3d_local/encoder.py` (`encoder=mock`);
+    - `src/rna3d_local/training/config_se3.py` (`thermo_backend=mock`, `msa_backend=mock`);
+    - `src/rna3d_local/training/thermo_2d.py` (`thermo_backend=mock`);
+    - `src/rna3d_local/training/msa_covariance.py` (`msa_backend=mock`);
+    - `src/rna3d_local/homology_folds.py` (`backend=mock`);
+    - `src/rna3d_local/minimization.py` (`backend=mock`).
+  - Ajuste de default de config SE(3):
+    - `msa_backend` passa a default `mmseqs2` (antes `mock`) em `load_se3_train_config`.
+  - Suite de testes adaptada e expandida:
+    - `tests/conftest.py` habilita permissivo de mock apenas para ambiente de teste (`RNA3D_ALLOW_MOCK_BACKENDS=1`);
+    - novo `tests/test_mock_policy.py` cobre bloqueio de mock fora de `TEST` quando o permissivo e desligado.
+  - `README.md` atualizado para explicitar que mock e bloqueado por padrao no fluxo competitivo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/mock_policy.py`
+  - `src/rna3d_local/encoder.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `src/rna3d_local/training/msa_covariance.py`
+  - `src/rna3d_local/homology_folds.py`
+  - `src/rna3d_local/minimization.py`
+  - `tests/conftest.py`
+  - `tests/test_mock_policy.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_mock_policy.py tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_homology_folds.py tests/test_minimization.py tests/test_retrieval_latent.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py` -> `40 passed`
+  - `pytest -q` -> `77 passed`
+- Riscos conhecidos / follow-ups:
+  - O permissivo por variavel de ambiente permanece disponivel exclusivamente para testes locais; em execucao competitiva, manter variavel ausente/`0`.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-098
+
+- Data UTC: `2026-02-16T18:06:07Z`
+- Plano: `PLAN-098`
+- Resumo:
+  - Fase 2 (preditores offline) deixou de gerar coordenadas sinteticas:
+    - `predict-rnapro-offline`, `predict-chai1-offline`, `predict-boltz1-offline` agora exigem `config.json` com `entrypoint` e executam um runner externo em modo estrito;
+    - o parquet gerado passa por validacao de contrato (colunas, chaves unicas, finitude, cobertura por `target_id/model_id/resid`) e falha cedo sem fallback.
+  - Fase 1 (embeddings) deixou de usar hashing:
+    - `encoder=ribonanzanet2` agora carrega um modelo real offline via `torch.jit.load` (TorchScript) e valida dimensao do embedding.
+  - Assets:
+    - `build-phase2-assets` valida `entrypoint` em `config.json` de cada modelo.
+  - Repositorio:
+    - `.gitignore` passa a ignorar o binario local `src/rna3d_local/evaluation/USalign`.
+  - Suite de testes atualizada/expandida para cobrir o novo contrato (runner stub por `entrypoint` e TorchScript toy model).
+- Arquivos principais tocados:
+  - `.gitignore`
+  - `src/rna3d_local/predictor_common.py`
+  - `src/rna3d_local/rnapro_offline.py`
+  - `src/rna3d_local/chai1_offline.py`
+  - `src/rna3d_local/boltz1_offline.py`
+  - `src/rna3d_local/phase2_assets.py`
+  - `src/rna3d_local/encoder.py`
+  - `tests/test_phase2_hybrid.py`
+  - `tests/test_phase2_assets.py`
+  - `tests/test_encoder_torchscript.py`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q` -> `78 passed`
+- Riscos conhecidos / follow-ups:
+  - O contrato de `entrypoint` exige que os modelos/runners (weights + script) sejam fornecidos via Kaggle Dataset offline; qualquer divergencia deve falhar cedo (sem gerar submission).
+  - O encoder TorchScript deve ser exportado com interface compatível (tokens `LongTensor[B,L]` -> embedding `[B,D]` ou `[B,L,D]`) e `D` igual ao `embedding_dim` configurado.

@@ -1657,3 +1657,44 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - treino SE(3) finalizado com artefatos em `runs/.../se3_model_*`;
   - submissao validada por `check-submission`;
   - score local produzido (integral ou parcial explicitamente justificado) com reporte de custo.
+
+## PLAN-097 - Bloqueio estrito de backends mock no pipeline competitivo
+
+- Objetivo: impedir uso de `mock` em qualquer caminho competitivo de pipeline/treino/validacao/submissao, mantendo modo permissivo apenas para testes locais explicitos.
+- Escopo:
+  - adicionar politica central de runtime para bloquear `mock` por padrao e exigir habilitacao explicita somente em testes locais;
+  - aplicar bloqueio em pontos criticos:
+    - `encoder` (embedding/retrieval),
+    - `homology_folds` (clustering),
+    - `thermo_2d` (BPP),
+    - `msa_covariance` (MSA/covariancia),
+    - `minimization` (relaxacao),
+    - `config_se3` (train runtime config).
+  - manter contratos de erro no formato padrao do repositorio (fail-fast e mensagem acionavel).
+  - documentar no `README.md` que `mock` e bloqueado por padrao no fluxo competitivo.
+  - ajustar testes para preservar suite local com permissivo explicito em ambiente de teste e adicionar cobertura de bloqueio quando permissivo estiver desligado.
+- Criterios de aceite:
+  - qualquer execucao competitiva com `mock` falha cedo com erro de contrato acionavel;
+  - suite de testes continua verde com permissivo explicito para ambiente de teste;
+  - testes de regressao comprovam bloqueio de `mock` quando permissivo nao esta habilitado.
+
+## PLAN-098 - Remover stubs sinteticos e integrar runners reais (Fase 1+2)
+
+- Objetivo: eliminar saídas sinteticas disfarçadas de modelos (Phase 2) e o encoder de embeddings "fake", substituindo por integrações reais/offline com contrato estrito e fail-fast.
+- Escopo:
+  - Fase 2 (preditores offline):
+    - `predict-rnapro-offline`, `predict-chai1-offline`, `predict-boltz1-offline` devem executar um runner real definido em `config.json` do modelo (sem gerar coordenadas sinteticas).
+    - Contrato: `config.json` deve conter `entrypoint` (lista de args) com placeholders `{model_dir}`, `{targets}`, `{out}`, `{n_models}`.
+    - Após o runner, validar estritamente o parquet gerado (colunas, chaves únicas, finitude de coords, cobertura por alvo/model_id/resid).
+  - Fase 1 (embeddings):
+    - `encoder=ribonanzanet2` deve executar um modelo real offline (TorchScript) via `torch.jit.load`, sem hashing.
+    - Contrato: modelo deve aceitar `tokens` (`LongTensor[B,L]`) e retornar embedding por sequência (`[B,D]`) ou por resíduo (`[B,L,D]`), com pooling definido (mean) e `D == embedding_dim`.
+  - Assets:
+    - `build-phase2-assets` deve validar que `config.json` de cada modelo contém `entrypoint` válido.
+  - Testes:
+    - Atualizar `tests/test_phase2_hybrid.py` para usar runner stub via `entrypoint` (script que escreve parquet).
+    - Adicionar teste do encoder TorchScript para `ribonanzanet2`.
+- Criterios de aceite:
+  - Os preditores offline falham cedo sem `entrypoint` (sem fallback sintetico).
+  - `build-embedding-index` com `encoder=ribonanzanet2` usa TorchScript (sem hashing) e valida dimensão.
+  - `pytest -q` verde.

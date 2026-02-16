@@ -1116,3 +1116,75 @@ Log append-only de experimentos executados.
 - Proximos passos:
   - concluir treino longo (`epochs=30`) ja iniciado em background e repetir pipeline+score curto+gate;
   - para score integral (28 alvos), reduzir custo do scorer (timeout/parallelismo por alvo) antes de novo ciclo.
+
+## PLAN-097
+
+### 2026-02-16T17:42:20Z - marcusvinicius/Codex (bloqueio estrito de mock no runtime competitivo)
+
+- Objetivo/hipotese:
+  - Eliminar uso acidental de backends `mock` no fluxo competitivo, mantendo apenas permissivo explicito para ambiente de teste.
+- Comparacao:
+  - Baseline: `mock` aceito em runtime por padrao em varios modulos criticos.
+  - Novo: `mock` bloqueado por contrato fora de `TEST` e sem `RNA3D_ALLOW_MOCK_BACKENDS=1`.
+- Comandos executados:
+  - `pytest -q tests/test_mock_policy.py tests/test_msa_covariance.py tests/test_thermo_2d.py tests/test_homology_folds.py tests/test_minimization.py tests/test_retrieval_latent.py tests/test_se3_pipeline.py tests/test_se3_memory.py tests/test_se3_losses.py`
+  - `pytest -q`
+- Configuracao efetiva:
+  - politica central em `mock_policy.py`:
+    - bloqueia `mock` por padrao;
+    - libera em `stage` iniciado por `TEST` ou com `RNA3D_ALLOW_MOCK_BACKENDS=1`.
+  - `tests/conftest.py` define `RNA3D_ALLOW_MOCK_BACKENDS=1` para manter suite local reprodutivel.
+- Parametros/hiperparametros:
+  - N/A (mudanca de contrato/runtime; sem treino/inferencia competitiva neste ciclo).
+- Seeds:
+  - N/A.
+- Versao de codigo/dados:
+  - `git commit`: `4d99edd` + modificacoes locais nao commitadas do `PLAN-097`.
+  - dados de teste sinteticos em `tmp_path` e fixtures existentes.
+- Artefatos:
+  - Novo modulo: `src/rna3d_local/mock_policy.py`.
+  - Novo teste: `tests/test_mock_policy.py`.
+- Metricas/score/custo:
+  - Suite focada: `40 passed in 2.84s`.
+  - Suite completa: `77 passed in 4.02s`.
+- Conclusao:
+  - O runtime competitivo agora falha cedo quando `mock` e informado, com mensagem acionavel e contrato estrito.
+- Proximos passos:
+  - manter execucoes competitivas sem `RNA3D_ALLOW_MOCK_BACKENDS`;
+  - remover gradualmente fixtures `mock` antigas quando houver cobertura equivalente com backends reais/stubs controlados.
+
+## PLAN-098
+
+### 2026-02-16T18:06:07Z - marcusvinicius/Codex (runners reais Phase 2 + encoder TorchScript)
+
+- Objetivo/hipotese:
+  - Remover stubs sinteticos disfarçados de modelos (preditores offline) e substituir `encoder=ribonanzanet2` fake por TorchScript real, garantindo contrato estrito e fail-fast.
+- Comparacao:
+  - Baseline: preditores offline geravam coordenadas sinteticas quando faltavam modelos/artefatos; embeddings "ribonanzanet2" usavam hashing.
+  - Novo: preditores offline exigem runner externo via `entrypoint` e validam o output; embeddings via `torch.jit.load` com validacao de dimensao.
+- Comandos executados:
+  - `pytest -q`
+- Configuracao efetiva:
+  - Contrato de `entrypoint`:
+    - lista de args com placeholders `{model_dir}`, `{targets}`, `{out}`, `{n_models}`.
+  - Validacao de output: parquet com colunas/keys estritas e checagem de finitude/cobertura por alvo.
+  - Encoder TorchScript:
+    - entrada `tokens: LongTensor[B,L]`;
+    - saida `[B,D]` ou `[B,L,D]` com pooling mean e `D == embedding_dim`.
+- Parametros/hiperparametros:
+  - N/A (mudanca de contrato/runtime; sem treino/inferencia competitiva neste ciclo).
+- Seeds:
+  - N/A.
+- Versao de codigo/dados:
+  - `git commit`: `4d99edd` + modificacoes locais nao commitadas do `PLAN-098`.
+  - dados: N/A.
+- Artefatos:
+  - Suite de testes ampliada:
+    - runner stub via `entrypoint` em `tests/test_phase2_hybrid.py`;
+    - TorchScript toy model em `tests/test_encoder_torchscript.py`.
+- Metricas/score/custo:
+  - Suite completa: `78 passed in 5.13s`.
+- Conclusao:
+  - O pipeline agora falha cedo quando modelos offline reais nao estao presentes (sem gerar saidas falsas) e usa embeddings reais quando fornecido um TorchScript compatível.
+- Proximos passos:
+  - empacotar/registrar os assets reais (weights + runners offline) em Kaggle Datasets privados e validar o notebook de submissao offline com `check-submission` antes de novo submit.

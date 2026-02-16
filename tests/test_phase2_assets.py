@@ -16,11 +16,11 @@ def _touch(path: Path, content: str = "x") -> None:
 def test_build_phase2_assets_manifest_success(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     _touch(assets / "models" / "rnapro" / "model.pt")
-    _touch(assets / "models" / "rnapro" / "config.json", "{}")
+    _touch(assets / "models" / "rnapro" / "config.json", "{\"entrypoint\":[\"python\",\"-c\",\"print(\\\"ok\\\")\"]}")
     _touch(assets / "models" / "boltz1" / "model.safetensors")
-    _touch(assets / "models" / "boltz1" / "config.json", "{}")
+    _touch(assets / "models" / "boltz1" / "config.json", "{\"entrypoint\":[\"python\",\"-c\",\"print(\\\"ok\\\")\"]}")
     _touch(assets / "models" / "chai1" / "model.bin")
-    _touch(assets / "models" / "chai1" / "config.json", "{}")
+    _touch(assets / "models" / "chai1" / "config.json", "{\"entrypoint\":[\"python\",\"-c\",\"print(\\\"ok\\\")\"]}")
     _touch(assets / "wheels" / "a.whl")
     out = build_phase2_assets_manifest(repo_root=tmp_path, assets_dir=assets)
     assert out.manifest_path.exists()

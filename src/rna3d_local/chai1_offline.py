@@ -3,8 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .io_tables import write_table
-from .predictor_common import build_synthetic_long_predictions, ensure_model_artifacts, load_targets_with_contract
+from .errors import raise_error
+from .io_tables import read_table
+from .predictor_common import (
+    ensure_model_artifacts,
+    load_model_entrypoint,
+    load_targets_with_contract,
+    render_entrypoint,
+    run_external_entrypoint,
+    validate_long_predictions,
+)
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
 
@@ -31,15 +39,13 @@ def predict_chai1_offline(
         location=location,
     )
     targets = load_targets_with_contract(targets_path=targets_path, stage=stage, location=location)
-    predictions = build_synthetic_long_predictions(
-        targets=targets,
-        n_models=int(n_models),
-        source="chai1",
-        base_scale=6.5,
-        confidence_base=0.78,
-        ligand_bonus=-0.02,
-    )
-    write_table(predictions, out_path)
+    entrypoint = load_model_entrypoint(model_dir=model_dir, stage=stage, location=location)
+    cmd = render_entrypoint(entrypoint, model_dir=model_dir, targets_path=targets_path, out_path=out_path, n_models=int(n_models))
+    run_external_entrypoint(model_dir=model_dir, entrypoint=cmd, stage=stage, location=location)
+    if not out_path.exists():
+        raise_error(stage, location, "runner chai1 nao gerou arquivo de saida", impact="1", examples=[str(out_path)])
+    predictions = read_table(out_path, stage=stage, location=location)
+    validate_long_predictions(predictions=predictions, targets=targets, n_models=int(n_models), stage=stage, location=location, label="chai1_predictions")
     manifest_path = out_path.parent / "chai1_offline_manifest.json"
     write_json(
         manifest_path,
@@ -50,7 +56,7 @@ def predict_chai1_offline(
                 "targets": rel_or_abs(targets_path, repo_root),
                 "predictions": rel_or_abs(out_path, repo_root),
             },
-            "params": {"n_models": int(n_models), "mode": "single_sequence"},
+            "params": {"n_models": int(n_models), "mode": "single_sequence", "entrypoint": cmd},
             "stats": {
                 "n_rows": int(predictions.height),
                 "n_targets": int(predictions.get_column("target_id").n_unique()),

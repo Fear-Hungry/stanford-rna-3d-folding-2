@@ -143,3 +143,11 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
   - orfao sem ligante -> ensemble `chai1_boltz1_ensemble`;
   - alvo com `ligand_SMILES` -> Boltz-1 primario;
   - RNAPro entra como candidato suplementar quando fornecido.
+
+## Contratos de runners offline (Fase 2)
+
+- `predict-rnapro-offline`, `predict-chai1-offline`, `predict-boltz1-offline` nao geram saida sintetica.
+- Cada `assets/models/<modelo>/config.json` deve conter:
+  - `entrypoint`: lista de argumentos do comando a executar (runner offline), com placeholders:
+    - `{model_dir}` `{targets}` `{out}` `{n_models}`.
+- O comando e executado com `cwd=<model_dir>` e deve escrever um parquet no caminho `{out}` no schema long (`target_id,model_id,resid,resname,x,y,z[,confidence,source]`).
