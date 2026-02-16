@@ -1219,3 +1219,31 @@ Log append-only de experimentos executados.
   - Suite completa: `73 passed in 5.35s`.
 - Conclusao:
   - O repositorio nao aceita mais `mock` em runtime/CLI/config; para rodar o pipeline e necessario fornecer dependencias/modelos reais (ou stubs apenas no escopo de testes).
+
+## PLAN-100
+
+### 2026-02-16T18:46:49Z - marcusvinicius/Codex (pytest sem warnings)
+
+- Objetivo/hipotese:
+  - Remover warnings que poluem o output do `pytest` para tornar regressões mais claras e evitar que warnings relevantes fiquem escondidos.
+- Comparacao:
+  - Baseline: `pytest -q` emitia warnings (ZarrDeprecationWarning, RuntimeWarning em entropia MSA, DeprecationWarning de torch_geometric).
+  - Novo: `pytest -q` roda limpo (0 warnings), com filtro apenas para o warning externo conhecido do torch_geometric.
+- Comandos executados:
+  - `pytest -q`
+- Configuracao efetiva:
+  - `pytest.ini` filtra apenas:
+    - `DeprecationWarning` com mensagem contendo `torch_geometric.distributed ... deprecated`.
+  - `training/msa_covariance.py` calcula log apenas onde `p>0` (sem `log(0)`).
+  - `training/store_zarr.py` usa `create_array` quando disponivel (evita deprecacao do zarr v3).
+- Parametros/hiperparametros:
+  - N/A.
+- Seeds:
+  - N/A.
+- Versao de codigo/dados:
+  - `git commit`: `cb2fddf` + modificacoes locais nao commitadas do `PLAN-100`.
+  - dados: N/A.
+- Metricas/score/custo:
+  - Suite completa: `73 passed in 5.33s` (0 warnings).
+- Conclusao:
+  - A suite passou a ser um sinal mais limpo: warnings remanescentes devem ser tratados (ou filtrados explicitamente se forem de terceiros e conhecidos).

@@ -43,6 +43,20 @@ def _chunk_1d(length: int) -> tuple[int]:
 
 
 def _create_dataset(group: Any, *, name: str, data: np.ndarray, chunks: tuple[int, ...]) -> None:
+    create_array = getattr(group, "create_array", None)
+    if callable(create_array):
+        try:
+            create_array(name, data=data, chunks=chunks, overwrite=True)
+        except TypeError:
+            create_array(
+                name,
+                shape=data.shape,
+                dtype=data.dtype,
+                chunks=chunks,
+                data=data,
+                overwrite=True,
+            )
+        return
     try:
         group.create_dataset(name, data=data, chunks=chunks, overwrite=True)
     except TypeError:

@@ -1719,3 +1719,16 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q` verde.
   - `python -m rna3d_local --help` nao expõe `mock` como opcao de runtime.
   - Configs com `mock` falham cedo com mensagem acionavel (backend invalido).
+
+## PLAN-100 - Reduzir warnings na suite de testes
+
+- Objetivo: reduzir ruído de warnings no `pytest` para tornar regressões acionáveis e evitar mascarar problemas reais.
+- Escopo:
+  - Corrigir warnings originados do próprio código:
+    - `RuntimeWarning` (numpy) em `training/msa_covariance.py` ao calcular entropia (evitar `np.where(np.log(...))` que avalia `log(0)`).
+    - `ZarrDeprecationWarning` em `training/store_zarr.py` substituindo `create_dataset` por `create_array` quando disponível (compatível com versões antigas).
+  - Warnings de terceiros:
+    - filtrar no pytest apenas o `DeprecationWarning` conhecido do `torch_geometric.distributed` (externo), mantendo demais warnings visíveis.
+- Criterios de aceite:
+  - `pytest -q` verde.
+  - suite roda com `0` warnings (ou apenas warnings explicitamente filtrados por terceiros).

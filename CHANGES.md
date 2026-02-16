@@ -936,3 +936,24 @@ Log append-only de mudancas implementadas.
   - `pytest -q` -> `73 passed`
 - Riscos conhecidos / follow-ups:
   - A execucao real agora exige binarios/dependencias reais (RNAfold/MMseqs2/OpenMM) ou runners offline conforme contrato; ausencias devem falhar cedo (sem degradacao silenciosa).
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-100
+
+- Data UTC: `2026-02-16T18:46:49Z`
+- Plano: `PLAN-100`
+- Resumo:
+  - Suite de testes passou a rodar sem warnings:
+    - removido `RuntimeWarning` em `training/msa_covariance.py` (evita `log(0)` ao calcular entropia);
+    - removidos `ZarrDeprecationWarning` em `training/store_zarr.py` usando `create_array` quando disponivel;
+    - filtrado apenas o `DeprecationWarning` conhecido de terceiro (`torch_geometric.distributed`) via `pytest.ini`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/msa_covariance.py`
+  - `src/rna3d_local/training/store_zarr.py`
+  - `pytest.ini`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q` -> `73 passed` (0 warnings)
+- Riscos conhecidos / follow-ups:
+  - O filtro em `pytest.ini` ignora somente o warning deprecado conhecido do `torch_geometric.distributed`; novos warnings permanecem visiveis e devem ser tratados caso aparecam.

@@ -147,7 +147,10 @@ def _run_mmseqs_chain_alignments(
 
 def _entropy_from_counts(counts: np.ndarray) -> np.ndarray:
     probs = counts / np.clip(counts.sum(axis=1, keepdims=True), a_min=1e-9, a_max=None)
-    log_probs = np.where(probs > 0, np.log(probs), 0.0)
+    log_probs = np.zeros_like(probs)
+    mask = probs > 0
+    if np.any(mask):
+        log_probs[mask] = np.log(probs[mask])
     return -np.sum(probs * log_probs, axis=1)
 
 
