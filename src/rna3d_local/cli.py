@@ -24,6 +24,7 @@ from .pairings import derive_pairings_from_chemical
 from .phase2_assets import build_phase2_assets_manifest
 from .phase2_configs import write_phase2_model_configs
 from .rnapro_offline import predict_rnapro_offline
+from .rnapro_support import prepare_rnapro_support_files
 from .reranker import score_template_reranker, train_template_reranker
 from .retrieval_latent import retrieve_templates_latent
 from .submission import check_submission, export_submission
@@ -288,6 +289,19 @@ def main(argv: list[str] | None = None) -> int:
             payload = dict(out.payload)
             payload["manifest"] = str(out.manifest_path)
             _print_json(payload)
+            return 0
+
+        if args.command == "prepare-rnapro-support-files":
+            codes = [c.strip() for c in str(args.codes).split(",") if c.strip()]
+            out = prepare_rnapro_support_files(
+                repo_root=repo,
+                model_dir=(repo / args.model_dir).resolve(),
+                codes=codes,
+                components_cif_gz_url=str(args.components_url),
+                timeout_seconds=int(args.timeout_seconds),
+                overwrite=bool(args.overwrite),
+            )
+            _print_json({"model_dir": str(out.model_dir), "manifest": str(out.manifest_path)})
             return 0
 
         if args.command == "write-phase2-model-configs":

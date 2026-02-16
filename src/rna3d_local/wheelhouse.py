@@ -58,7 +58,7 @@ PHASE2_REQUIREMENTS = [
     "biopython==1.84",
     "chembl-structure-pipeline==1.2.2",
     "click==8.1.7",
-    "dm-tree==0.1.8",
+    "dm-tree==0.1.9",
     "einx==0.3.0",
     "einops==0.8.0",
     "fairscale==0.4.13",
@@ -68,6 +68,9 @@ PHASE2_REQUIREMENTS = [
     "jaxtyping==0.2.38",
     "matplotlib==3.9.2",
     "mashumaro==3.14",
+    # RNAPro runtime deps (avoid cuequivariance/deepspeed/triton; runner forces torch backends).
+    "ml-collections==1.1.0",
+    "biotite==1.4.0",
     "modelcif==1.2",
     "numba==0.61.0",
     "pandera==0.24.0",
@@ -88,6 +91,8 @@ PHASE2_REQUIREMENTS = [
     "types-requests==2.32.0.20241016",
     "typing-extensions==4.12.2",
     "wandb==0.18.7",
+    # RNAPro (Apache-2.0) - build a universal wheel from source (git). Installed on Kaggle with --no-deps.
+    "rnapro @ git+https://github.com/NVIDIA-Digital-Bio/RNAPro.git@ca582630bb2f79193853ecfe859f88a5650cb295",
 ]
 
 

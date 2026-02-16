@@ -138,10 +138,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     fetch = subparsers.add_parser("fetch-pretrained-assets", help="Fetch pretrained/offline assets (weights) for Phase1/2")
     fetch.add_argument("--assets-dir", required=True)
-    fetch.add_argument("--include", action="append", choices=["ribonanzanet2", "boltz1", "chai1", "rnapro"], required=True)
+    fetch.add_argument(
+        "--include",
+        action="append",
+        choices=["ribonanzanet2", "ribonanzanet2_pairwise", "boltz1", "chai1", "rnapro"],
+        required=True,
+    )
     fetch.add_argument("--dry-run", action="store_true")
     fetch.add_argument("--timeout-seconds", type=int, default=60)
     fetch.add_argument("--max-bytes", type=int, default=None)
+
+    sup = subparsers.add_parser(
+        "prepare-rnapro-support-files",
+        help="Prepare RNAPro support files (minimal CCD cache + empty templates.pt) for offline inference",
+    )
+    sup.add_argument("--model-dir", required=True)
+    sup.add_argument("--codes", default="A,C,G,U")
+    sup.add_argument("--components-url", default="https://files.wwpdb.org/pub/pdb/data/monomers/components.cif.gz")
+    sup.add_argument("--timeout-seconds", type=int, default=10 * 60)
+    sup.add_argument("--overwrite", action="store_true")
 
     cfg = subparsers.add_parser("write-phase2-model-configs", help="Write config.json entrypoints for phase2 offline model dirs")
     cfg.add_argument("--assets-dir", required=True)

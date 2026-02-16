@@ -18,6 +18,12 @@ def test_write_phase2_model_configs_success(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     # rnapro
     _touch(assets / "models" / "rnapro" / "rnapro-public-best-500m.ckpt")
+    _touch(assets / "models" / "rnapro" / "test_templates.pt")
+    _touch(assets / "models" / "rnapro" / "ccd_cache" / "components.cif")
+    _touch(assets / "models" / "rnapro" / "ccd_cache" / "components.cif.rdkit_mol.pkl")
+    _touch(assets / "models" / "rnapro" / "ccd_cache" / "clusters-by-entity-40.txt")
+    _touch(assets / "models" / "rnapro" / "ribonanzanet2_checkpoint" / "pairwise.yaml")
+    _touch(assets / "models" / "rnapro" / "ribonanzanet2_checkpoint" / "pytorch_model_fsdp.bin")
     # boltz1
     _touch(assets / "models" / "boltz1" / "boltz1_conf.ckpt")
     _touch(assets / "models" / "boltz1" / "ccd.pkl")
@@ -47,4 +53,3 @@ def test_write_phase2_model_configs_fails_when_missing_weights(tmp_path: Path) -
     (assets / "models" / "chai1").mkdir(parents=True)
     with pytest.raises(PipelineError, match="artefatos obrigatorios do modelo ausentes"):
         write_phase2_model_configs(repo_root=tmp_path, assets_dir=assets, chain_separator="|")
-

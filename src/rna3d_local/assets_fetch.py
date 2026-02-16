@@ -182,6 +182,42 @@ def _run_kaggle_dataset_download(
     return {"status": "downloaded", "cmd": cmd, "out_dir": str(out_dir)}
 
 
+def _run_kaggle_model_download(
+    model_instance_version: str,
+    *,
+    out_dir: Path,
+    dry_run: bool,
+    stage: str,
+    location: str,
+) -> dict[str, object]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "kaggle",
+        "models",
+        "instances",
+        "versions",
+        "download",
+        str(model_instance_version),
+        "-p",
+        str(out_dir),
+        "--untar",
+    ]
+    if dry_run:
+        return {"status": "dry_run", "cmd": cmd, "out_dir": str(out_dir)}
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60 * 60)
+    except FileNotFoundError:
+        raise_error(stage, location, "kaggle CLI nao encontrado no PATH", impact="1", examples=["kaggle"])
+    except subprocess.TimeoutExpired:
+        raise_error(stage, location, "kaggle model download excedeu timeout", impact="1", examples=[model_instance_version])
+    if proc.returncode != 0:
+        stderr_txt = proc.stderr.decode("utf-8", errors="replace").strip()
+        stdout_txt = proc.stdout.decode("utf-8", errors="replace").strip()
+        snippet = stderr_txt[:240] if stderr_txt else (stdout_txt[:240] if stdout_txt else f"returncode={proc.returncode}")
+        raise_error(stage, location, "kaggle models download falhou", impact="1", examples=[model_instance_version, snippet])
+    return {"status": "downloaded", "cmd": cmd, "out_dir": str(out_dir)}
+
+
 def fetch_pretrained_assets(
     *,
     repo_root: Path,
@@ -233,6 +269,47 @@ def fetch_pretrained_assets(
                 "name": "ribonanzanet2_ddpm_v2",
                 "kind": "kaggle_dataset",
                 "dataset_ref": dataset_ref,
+                "files": files,
+                **out,
+            }
+        )
+
+    if "ribonanzanet2_pairwise" in includes:
+        # Kaggle Model instance used by RNAPro: shujun717/ribonanzanet2 (pyTorch/alpha/1)
+        model_ver = "shujun717/ribonanzanet2/pyTorch/alpha/1"
+        out_dir = assets_dir / "models" / "rnapro" / "ribonanzanet2_checkpoint"
+        expected_paths = [out_dir / "pairwise.yaml", out_dir / "pytorch_model_fsdp.bin"]
+        if not dry_run and all(path.exists() for path in expected_paths):
+            out = {
+                "status": "exists",
+                "cmd": ["kaggle", "models", "instances", "versions", "download", model_ver, "-p", str(out_dir), "--untar"],
+                "out_dir": str(out_dir),
+            }
+        else:
+            out = _run_kaggle_model_download(
+                model_ver,
+                out_dir=out_dir,
+                dry_run=bool(dry_run),
+                stage=stage,
+                location=location,
+            )
+        files = [
+            {"name": "pairwise.yaml", "size_bytes": 1021},
+            {"name": "pytorch_model_fsdp.bin", "size_bytes": 405367504},
+        ]
+        if not dry_run:
+            enriched: list[dict[str, object]] = []
+            for item in files:
+                path = (out_dir / str(item["name"])).resolve()
+                if not path.exists():
+                    raise_error(stage, location, "arquivo esperado ausente apos kaggle model download", impact="1", examples=[str(path)])
+                enriched.append({"name": str(item["name"]), "size_bytes": int(path.stat().st_size), "sha256": sha256_file(path)})
+            files = enriched
+        manifest_rows.append(
+            {
+                "name": "ribonanzanet2_pairwise_alpha1",
+                "kind": "kaggle_model",
+                "model_instance_version": model_ver,
                 "files": files,
                 **out,
             }

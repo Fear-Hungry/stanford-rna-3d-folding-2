@@ -56,7 +56,15 @@ def write_phase2_model_configs(
             "models_v2/confidence_head.pt",
         ],
         "boltz1": ["boltz1_conf.ckpt", "ccd.pkl"],
-        "rnapro": ["rnapro-public-best-500m.ckpt"],
+        "rnapro": [
+            "rnapro-public-best-500m.ckpt",
+            "test_templates.pt",
+            "ccd_cache/components.cif",
+            "ccd_cache/components.cif.rdkit_mol.pkl",
+            "ccd_cache/clusters-by-entity-40.txt",
+            "ribonanzanet2_checkpoint/pairwise.yaml",
+            "ribonanzanet2_checkpoint/pytorch_model_fsdp.bin",
+        ],
     }
     for name, base in model_dirs.items():
         missing = [str(base / rel) for rel in required_files.get(name, []) if not (base / rel).exists()]
@@ -101,4 +109,3 @@ def write_phase2_model_configs(
     }
     write_json(out_manifest, payload)
     return Phase2ConfigsResult(manifest_path=out_manifest)
-

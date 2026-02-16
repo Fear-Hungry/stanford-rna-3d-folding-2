@@ -34,7 +34,16 @@ def predict_rnapro_offline(
     location = "src/rna3d_local/rnapro_offline.py:predict_rnapro_offline"
     ensure_model_artifacts(
         model_dir=model_dir,
-        required_files=["config.json", "rnapro-public-best-500m.ckpt"],
+        required_files=[
+            "config.json",
+            "rnapro-public-best-500m.ckpt",
+            "test_templates.pt",
+            "ccd_cache/components.cif",
+            "ccd_cache/components.cif.rdkit_mol.pkl",
+            "ccd_cache/clusters-by-entity-40.txt",
+            "ribonanzanet2_checkpoint/pairwise.yaml",
+            "ribonanzanet2_checkpoint/pytorch_model_fsdp.bin",
+        ],
         stage=stage,
         location=location,
     )

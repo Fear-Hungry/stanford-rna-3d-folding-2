@@ -90,6 +90,12 @@ def _write_stub_runner(model_dir: Path, *, source: str) -> None:
 def _make_model_dirs(base: Path) -> tuple[Path, Path, Path]:
     rna = base / "rnapro"
     _touch(rna / "rnapro-public-best-500m.ckpt")
+    _touch(rna / "test_templates.pt")
+    _touch(rna / "ccd_cache" / "components.cif")
+    _touch(rna / "ccd_cache" / "components.cif.rdkit_mol.pkl")
+    _touch(rna / "ccd_cache" / "clusters-by-entity-40.txt")
+    _touch(rna / "ribonanzanet2_checkpoint" / "pairwise.yaml")
+    _touch(rna / "ribonanzanet2_checkpoint" / "pytorch_model_fsdp.bin")
     _write_stub_runner(rna, source="rnapro")
     chai = base / "chai1"
     _touch(chai / "conformers_v1.apkl")
