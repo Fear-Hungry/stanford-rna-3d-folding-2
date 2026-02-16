@@ -1,0 +1,127 @@
+{
+  "id": "EXP-101-E30",
+  "tag": "e30_hybrid_select_tune_thresholds",
+  "description": "Hybrid router + Top-5 selection a partir de artefatos precomputados (tuning de thresholds).",
+  "variables": {
+    "targets_csv": "input/stanford-rna-3d-folding-2/test_sequences.csv",
+    "sample_submission": "input/stanford-rna-3d-folding-2/sample_submission.csv",
+    "ground_truth": "input/stanford-rna-3d-folding-2/validation_labels.csv",
+    "usalign_bin": "src/rna3d_local/evaluation/USalign",
+    "retrieval_candidates": "runs/retrieval/retrieval_candidates.parquet",
+    "tbm_predictions": "runs/tbm/predictions.parquet",
+    "rnapro_predictions": "runs/phase2/rnapro.parquet",
+    "chai1_predictions": "runs/phase2/chai1.parquet",
+    "boltz1_predictions": "runs/phase2/boltz1.parquet",
+    "se3_predictions": "runs/se3/top5.parquet",
+    "template_score_threshold": "0.65",
+    "ultra_long_seq_threshold": "1500",
+    "n_models": "5",
+    "usalign_timeout": "900",
+    "ground_truth_mode": "best_of_gt_copies"
+  },
+  "steps": [
+    {
+      "name": "hybrid_router",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "build-hybrid-candidates",
+        "--targets",
+        "{targets_csv}",
+        "--retrieval",
+        "{retrieval_candidates}",
+        "--tbm",
+        "{tbm_predictions}",
+        "--rnapro",
+        "{rnapro_predictions}",
+        "--chai1",
+        "{chai1_predictions}",
+        "--boltz1",
+        "{boltz1_predictions}",
+        "--se3",
+        "{se3_predictions}",
+        "--out",
+        "{run_dir}/hybrid_candidates.parquet",
+        "--routing-out",
+        "{run_dir}/routing.parquet",
+        "--template-score-threshold",
+        "{template_score_threshold}",
+        "--ultra-long-seq-threshold",
+        "{ultra_long_seq_threshold}"
+      ]
+    },
+    {
+      "name": "select_top5",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "select-top5-hybrid",
+        "--candidates",
+        "{run_dir}/hybrid_candidates.parquet",
+        "--out",
+        "{run_dir}/hybrid_top5.parquet",
+        "--n-models",
+        "{n_models}"
+      ]
+    },
+    {
+      "name": "export",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "export-submission",
+        "--sample",
+        "{sample_submission}",
+        "--predictions",
+        "{run_dir}/hybrid_top5.parquet",
+        "--out",
+        "{run_dir}/submission.csv"
+      ]
+    },
+    {
+      "name": "check",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "check-submission",
+        "--sample",
+        "{sample_submission}",
+        "--submission",
+        "{run_dir}/submission.csv"
+      ]
+    },
+    {
+      "name": "score",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "score-local-bestof5",
+        "--ground-truth",
+        "{ground_truth}",
+        "--submission",
+        "{run_dir}/submission.csv",
+        "--usalign-bin",
+        "{usalign_bin}",
+        "--timeout-seconds",
+        "{usalign_timeout}",
+        "--ground-truth-mode",
+        "{ground_truth_mode}",
+        "--score-json",
+        "{run_dir}/score.json",
+        "--report",
+        "{run_dir}/score_report.json"
+      ]
+    }
+  ],
+  "artifacts": [
+    "{run_dir}/submission.csv",
+    "{run_dir}/score.json",
+    "{run_dir}/routing.parquet"
+  ]
+}
+

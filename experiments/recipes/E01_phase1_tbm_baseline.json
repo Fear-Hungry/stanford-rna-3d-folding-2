@@ -1,0 +1,167 @@
+{
+  "id": "EXP-101-E01",
+  "tag": "e01_phase1_tbm_baseline",
+  "description": "Fase 1 TBM baseline (embeddings + retrieval + TBM + export + score local).",
+  "variables": {
+    "template_source_csv": "external_templates.csv",
+    "targets_csv": "input/stanford-rna-3d-folding-2/test_sequences.csv",
+    "sample_submission": "input/stanford-rna-3d-folding-2/sample_submission.csv",
+    "ground_truth": "input/stanford-rna-3d-folding-2/validation_labels.csv",
+    "usalign_bin": "src/rna3d_local/evaluation/USalign",
+    "encoder": "ribonanzanet2",
+    "embedding_dim": "256",
+    "ribonanzanet2_model": "assets/models/ribonanzanet2_encoder.ts",
+    "top_k": "64",
+    "ann_engine_build": "none",
+    "ann_engine_retrieve": "numpy_bruteforce",
+    "weight_embed": "0.8",
+    "weight_llm": "0.0",
+    "weight_seq": "0.2",
+    "n_models": "5",
+    "usalign_timeout": "900",
+    "ground_truth_mode": "best_of_gt_copies"
+  },
+  "steps": [
+    {
+      "name": "template_db",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "build-template-db",
+        "--external-templates",
+        "{template_source_csv}",
+        "--out-dir",
+        "{run_dir}/template_db"
+      ]
+    },
+    {
+      "name": "embedding_index",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "build-embedding-index",
+        "--template-index",
+        "{run_dir}/template_db/template_index.parquet",
+        "--out-dir",
+        "{run_dir}/template_db/emb",
+        "--encoder",
+        "{encoder}",
+        "--embedding-dim",
+        "{embedding_dim}",
+        "--model-path",
+        "{ribonanzanet2_model}",
+        "--ann-engine",
+        "{ann_engine_build}"
+      ]
+    },
+    {
+      "name": "retrieve",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "retrieve-templates-latent",
+        "--template-index",
+        "{run_dir}/template_db/template_index.parquet",
+        "--template-embeddings",
+        "{run_dir}/template_db/emb/template_embeddings.parquet",
+        "--targets",
+        "{targets_csv}",
+        "--out",
+        "{run_dir}/retrieval_candidates.parquet",
+        "--top-k",
+        "{top_k}",
+        "--encoder",
+        "{encoder}",
+        "--embedding-dim",
+        "{embedding_dim}",
+        "--model-path",
+        "{ribonanzanet2_model}",
+        "--ann-engine",
+        "{ann_engine_retrieve}",
+        "--weight-embed",
+        "{weight_embed}",
+        "--weight-llm",
+        "{weight_llm}",
+        "--weight-seq",
+        "{weight_seq}"
+      ]
+    },
+    {
+      "name": "tbm",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "predict-tbm",
+        "--retrieval",
+        "{run_dir}/retrieval_candidates.parquet",
+        "--templates",
+        "{run_dir}/template_db/templates.parquet",
+        "--targets",
+        "{targets_csv}",
+        "--out",
+        "{run_dir}/tbm_predictions.parquet",
+        "--n-models",
+        "{n_models}"
+      ]
+    },
+    {
+      "name": "export",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "export-submission",
+        "--sample",
+        "{sample_submission}",
+        "--predictions",
+        "{run_dir}/tbm_predictions.parquet",
+        "--out",
+        "{run_dir}/submission.csv"
+      ]
+    },
+    {
+      "name": "check",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "check-submission",
+        "--sample",
+        "{sample_submission}",
+        "--submission",
+        "{run_dir}/submission.csv"
+      ]
+    },
+    {
+      "name": "score",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "score-local-bestof5",
+        "--ground-truth",
+        "{ground_truth}",
+        "--submission",
+        "{run_dir}/submission.csv",
+        "--usalign-bin",
+        "{usalign_bin}",
+        "--timeout-seconds",
+        "{usalign_timeout}",
+        "--ground-truth-mode",
+        "{ground_truth_mode}",
+        "--score-json",
+        "{run_dir}/score.json",
+        "--report",
+        "{run_dir}/score_report.json"
+      ]
+    }
+  ],
+  "artifacts": [
+    "{run_dir}/submission.csv",
+    "{run_dir}/score.json"
+  ]
+}

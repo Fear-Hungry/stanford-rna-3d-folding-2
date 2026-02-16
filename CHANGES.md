@@ -957,3 +957,42 @@ Log append-only de mudancas implementadas.
   - `pytest -q` -> `73 passed` (0 warnings)
 - Riscos conhecidos / follow-ups:
   - O filtro em `pytest.ini` ignora somente o warning deprecado conhecido do `torch_geometric.distributed`; novos warnings permanecem visiveis e devem ser tratados caso aparecam.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-101
+
+- Data UTC: `2026-02-16T19:29:14Z`
+- Plano: `PLAN-101`
+- Resumo:
+  - Adicionado harness de experimentos reprodutivel (modo estrito/fail-fast):
+    - novo comando `run-experiment` executa receitas JSON e gera artefatos em `runs/<timestamp>_<tag>/` (meta/recipe/logs/report).
+  - Preprocess minimo para SE(3):
+    - novo comando `derive-pairings-from-chemical` gera `pairings.parquet` a partir de `chemical_features.parquet` (schema estrito).
+  - Scorer local mais robusto:
+    - `score-local-bestof5` passou a ignorar sentinelas de coordenadas ausentes (`-1e18`) no ground_truth ao escrever PDB temporario (sem alterar contrato de chaves);
+    - adicionado `--ground-truth-mode` (`single` | `best_of_gt_copies`) e `--timeout-seconds`.
+  - Adicionadas receitas e configs iniciais em `experiments/` para iteracao controlada (Fase 1 TBM, SE3 baseline, hybrid tuning).
+- Arquivos principais tocados:
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `src/rna3d_local/experiments/runner.py`
+  - `src/rna3d_local/experiments/__init__.py`
+  - `src/rna3d_local/pairings.py`
+  - `src/rna3d_local/evaluation/usalign_scorer.py`
+  - `experiments/README.md`
+  - `experiments/recipes/E01_phase1_tbm_baseline.json`
+  - `experiments/recipes/E02_phase1_tbm_minimize_openmm.json`
+  - `experiments/recipes/E20_se3_baseline_mamba.json`
+  - `experiments/recipes/E21_se3_baseline_flash.json`
+  - `experiments/recipes/E30_hybrid_select_tune_thresholds.json`
+  - `experiments/recipes/E31_hybrid_select_minimize_openmm.json`
+  - `experiments/configs/se3_local16gb_mamba.json`
+  - `experiments/configs/se3_local16gb_flash.json`
+  - `tests/test_experiment_runner.py`
+  - `tests/test_pairings.py`
+  - `tests/test_usalign_scorer.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `79 passed`
+- Riscos conhecidos / follow-ups:
+  - As receitas em `experiments/recipes/` assumem a presenca de artefatos/modelos offline (ex.: encoder TorchScript, quickstart Ribonanza, MMseqs DB, Phase2 assets); ausencias agora falham cedo por contrato.

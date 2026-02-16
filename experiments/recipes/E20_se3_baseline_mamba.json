@@ -1,0 +1,220 @@
+{
+  "id": "EXP-101-E20",
+  "tag": "e20_se3_baseline_mamba",
+  "description": "SE(3) gerativo baseline (data lab + treino + amostragem + diversidade Top-5 + score local).",
+  "variables": {
+    "quickstart": "assets/data/ribonanza_quickstart.csv",
+    "train_targets": "input/stanford-rna-3d-folding-2/train_sequences.csv",
+    "train_labels": "input/stanford-rna-3d-folding-2/train_labels.csv",
+    "test_targets": "input/stanford-rna-3d-folding-2/test_sequences.csv",
+    "sample_submission": "input/stanford-rna-3d-folding-2/sample_submission.csv",
+    "ground_truth": "input/stanford-rna-3d-folding-2/validation_labels.csv",
+    "usalign_bin": "src/rna3d_local/evaluation/USalign",
+    "se3_config": "experiments/configs/se3_local16gb_mamba.json",
+    "seed": "123",
+    "workers": "16",
+    "thermo_backend": "rnafold",
+    "msa_backend": "mmseqs2",
+    "mmseqs_db": "/data/mmseqs/rna_db",
+    "sample_method": "both",
+    "n_samples": "24",
+    "diversity_lambda": "0.35",
+    "top5_n_models": "5",
+    "usalign_timeout": "900",
+    "ground_truth_mode": "best_of_gt_copies"
+  },
+  "steps": [
+    {
+      "name": "chemical_features",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "prepare-chemical-features",
+        "--quickstart",
+        "{quickstart}",
+        "--out",
+        "{run_dir}/chemical_features.parquet"
+      ]
+    },
+    {
+      "name": "pairings",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "derive-pairings-from-chemical",
+        "--chemical-features",
+        "{run_dir}/chemical_features.parquet",
+        "--out",
+        "{run_dir}/pairings.parquet"
+      ]
+    },
+    {
+      "name": "phase1_datalab",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "prepare-phase1-data-lab",
+        "--targets",
+        "{train_targets}",
+        "--pairings",
+        "{run_dir}/pairings.parquet",
+        "--chemical-features",
+        "{run_dir}/chemical_features.parquet",
+        "--labels",
+        "{train_labels}",
+        "--out-dir",
+        "{run_dir}/phase1_lab",
+        "--thermo-backend",
+        "{thermo_backend}",
+        "--msa-backend",
+        "{msa_backend}",
+        "--mmseqs-db",
+        "{mmseqs_db}",
+        "--workers",
+        "{workers}"
+      ]
+    },
+    {
+      "name": "train_se3",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "train-se3-generator",
+        "--targets",
+        "{train_targets}",
+        "--pairings",
+        "{run_dir}/pairings.parquet",
+        "--chemical-features",
+        "{run_dir}/chemical_features.parquet",
+        "--labels",
+        "{train_labels}",
+        "--config",
+        "{se3_config}",
+        "--out-dir",
+        "{run_dir}/se3_model",
+        "--seed",
+        "{seed}",
+        "--training-store",
+        "{run_dir}/phase1_lab/training_store.zarr"
+      ]
+    },
+    {
+      "name": "sample_se3",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "sample-se3-ensemble",
+        "--model-dir",
+        "{run_dir}/se3_model",
+        "--targets",
+        "{test_targets}",
+        "--pairings",
+        "{run_dir}/pairings.parquet",
+        "--chemical-features",
+        "{run_dir}/chemical_features.parquet",
+        "--out",
+        "{run_dir}/se3_candidates.parquet",
+        "--method",
+        "{sample_method}",
+        "--n-samples",
+        "{n_samples}",
+        "--seed",
+        "{seed}"
+      ]
+    },
+    {
+      "name": "rank_se3",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "rank-se3-ensemble",
+        "--candidates",
+        "{run_dir}/se3_candidates.parquet",
+        "--out",
+        "{run_dir}/se3_ranked.parquet",
+        "--diversity-lambda",
+        "{diversity_lambda}"
+      ]
+    },
+    {
+      "name": "select_top5",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "select-top5-se3",
+        "--ranked",
+        "{run_dir}/se3_ranked.parquet",
+        "--out",
+        "{run_dir}/se3_top5.parquet",
+        "--n-models",
+        "{top5_n_models}",
+        "--diversity-lambda",
+        "{diversity_lambda}"
+      ]
+    },
+    {
+      "name": "export",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "export-submission",
+        "--sample",
+        "{sample_submission}",
+        "--predictions",
+        "{run_dir}/se3_top5.parquet",
+        "--out",
+        "{run_dir}/submission.csv"
+      ]
+    },
+    {
+      "name": "check",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "check-submission",
+        "--sample",
+        "{sample_submission}",
+        "--submission",
+        "{run_dir}/submission.csv"
+      ]
+    },
+    {
+      "name": "score",
+      "argv": [
+        "python",
+        "-m",
+        "rna3d_local",
+        "score-local-bestof5",
+        "--ground-truth",
+        "{ground_truth}",
+        "--submission",
+        "{run_dir}/submission.csv",
+        "--usalign-bin",
+        "{usalign_bin}",
+        "--timeout-seconds",
+        "{usalign_timeout}",
+        "--ground-truth-mode",
+        "{ground_truth_mode}",
+        "--score-json",
+        "{run_dir}/score.json",
+        "--report",
+        "{run_dir}/score_report.json"
+      ]
+    }
+  ],
+  "artifacts": [
+    "{run_dir}/submission.csv",
+    "{run_dir}/score.json",
+    "{run_dir}/se3_model/metrics.json"
+  ]
+}
+
