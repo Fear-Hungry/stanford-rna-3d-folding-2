@@ -6,10 +6,25 @@ import polars as pl
 import pytest
 
 from rna3d_local.errors import PipelineError
+from rna3d_local.training import thermo_2d
 from rna3d_local.training.thermo_2d import compute_thermo_bpp
 
 
-def test_compute_thermo_bpp_mock_backend_shapes() -> None:
+def _stub_pairs(sequence: str) -> list[tuple[int, int, float]]:
+    length = len(sequence)
+    pairs: list[tuple[int, int, float]] = []
+    for left in range(1, (length // 2) + 1):
+        right = length - left + 1
+        if left < right:
+            pairs.append((left, right, 0.60))
+    return pairs
+
+
+def test_compute_thermo_bpp_rnafold_backend_shapes_with_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run_rnafold_pairs(*, sequence: str, target_id: str, rnafold_bin: str, stage: str, location: str) -> list[tuple[int, int, float]]:
+        return _stub_pairs(sequence)
+
+    monkeypatch.setattr(thermo_2d, "_run_rnafold_pairs", _fake_run_rnafold_pairs)
     targets = pl.DataFrame(
         [
             {"target_id": "T1", "sequence": "ACGUAC", "temporal_cutoff": "2024-01-01"},
@@ -18,13 +33,13 @@ def test_compute_thermo_bpp_mock_backend_shapes() -> None:
     )
     out = compute_thermo_bpp(
         targets=targets,
-        backend="mock",
+        backend="rnafold",
         rnafold_bin="RNAfold",
         linearfold_bin="linearfold",
         cache_dir=None,
         chain_separator="|",
         stage="TEST",
-        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_mock_backend_shapes",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_rnafold_backend_shapes_with_stub",
     )
     assert set(out.keys()) == {"T1", "T2"}
     assert int(out["T1"].paired_marginal.numel()) == 6
@@ -48,12 +63,16 @@ def test_compute_thermo_bpp_rnafold_missing_binary_fails() -> None:
         )
 
 
-def test_compute_thermo_bpp_cache_roundtrip(tmp_path: Path) -> None:
+def test_compute_thermo_bpp_cache_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run_rnafold_pairs(*, sequence: str, target_id: str, rnafold_bin: str, stage: str, location: str) -> list[tuple[int, int, float]]:
+        return _stub_pairs(sequence)
+
+    monkeypatch.setattr(thermo_2d, "_run_rnafold_pairs", _fake_run_rnafold_pairs)
     targets = pl.DataFrame([{"target_id": "T1", "sequence": "ACGUACGU", "temporal_cutoff": "2024-01-01"}])
     cache_dir = tmp_path / "thermo_cache"
     first = compute_thermo_bpp(
         targets=targets,
-        backend="mock",
+        backend="rnafold",
         rnafold_bin="RNAfold",
         linearfold_bin="linearfold",
         cache_dir=cache_dir,
@@ -63,7 +82,7 @@ def test_compute_thermo_bpp_cache_roundtrip(tmp_path: Path) -> None:
     )
     second = compute_thermo_bpp(
         targets=targets,
-        backend="mock",
+        backend="rnafold",
         rnafold_bin="RNAfold",
         linearfold_bin="linearfold",
         cache_dir=cache_dir,
@@ -74,11 +93,15 @@ def test_compute_thermo_bpp_cache_roundtrip(tmp_path: Path) -> None:
     assert float(first["T1"].paired_marginal.sum().item()) == float(second["T1"].paired_marginal.sum().item())
 
 
-def test_compute_thermo_bpp_multichain_respects_separator() -> None:
+def test_compute_thermo_bpp_multichain_respects_separator(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run_rnafold_pairs(*, sequence: str, target_id: str, rnafold_bin: str, stage: str, location: str) -> list[tuple[int, int, float]]:
+        return _stub_pairs(sequence)
+
+    monkeypatch.setattr(thermo_2d, "_run_rnafold_pairs", _fake_run_rnafold_pairs)
     targets = pl.DataFrame([{"target_id": "T1", "sequence": "AC|GU", "temporal_cutoff": "2024-01-01"}])
     out = compute_thermo_bpp(
         targets=targets,
-        backend="mock",
+        backend="rnafold",
         rnafold_bin="RNAfold",
         linearfold_bin="linearfold",
         cache_dir=None,
@@ -92,7 +115,11 @@ def test_compute_thermo_bpp_multichain_respects_separator() -> None:
     assert int(target.pair_src.numel()) == 4
 
 
-def test_compute_thermo_bpp_mock_backend_parallel_consistent() -> None:
+def test_compute_thermo_bpp_rnafold_backend_parallel_consistent(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run_rnafold_pairs(*, sequence: str, target_id: str, rnafold_bin: str, stage: str, location: str) -> list[tuple[int, int, float]]:
+        return _stub_pairs(sequence)
+
+    monkeypatch.setattr(thermo_2d, "_run_rnafold_pairs", _fake_run_rnafold_pairs)
     targets = pl.DataFrame(
         [
             {"target_id": "T1", "sequence": "ACGUAC", "temporal_cutoff": "2024-01-01"},
@@ -102,24 +129,24 @@ def test_compute_thermo_bpp_mock_backend_parallel_consistent() -> None:
     )
     serial = compute_thermo_bpp(
         targets=targets,
-        backend="mock",
+        backend="rnafold",
         rnafold_bin="RNAfold",
         linearfold_bin="linearfold",
         cache_dir=None,
         chain_separator="|",
         stage="TEST",
-        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_mock_backend_parallel_consistent:serial",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_rnafold_backend_parallel_consistent:serial",
         num_workers=1,
     )
     parallel = compute_thermo_bpp(
         targets=targets,
-        backend="mock",
+        backend="rnafold",
         rnafold_bin="RNAfold",
         linearfold_bin="linearfold",
         cache_dir=None,
         chain_separator="|",
         stage="TEST",
-        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_mock_backend_parallel_consistent:parallel",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_rnafold_backend_parallel_consistent:parallel",
         num_workers=4,
     )
     assert sorted(serial.keys()) == sorted(parallel.keys())

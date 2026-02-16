@@ -1188,3 +1188,34 @@ Log append-only de experimentos executados.
   - O pipeline agora falha cedo quando modelos offline reais nao estao presentes (sem gerar saidas falsas) e usa embeddings reais quando fornecido um TorchScript compatível.
 - Proximos passos:
   - empacotar/registrar os assets reais (weights + runners offline) em Kaggle Datasets privados e validar o notebook de submissao offline com `check-submission` antes de novo submit.
+
+## PLAN-099
+
+### 2026-02-16T18:39:26Z - marcusvinicius/Codex (remocao total de `mock` do runtime/CLI/config)
+
+- Objetivo/hipotese:
+  - Remover completamente backends `mock` do runtime para impedir qualquer execucao com saidas sinteticas; testes passam a usar stubs via `monkeypatch` quando precisarem isolar dependencias externas.
+- Comparacao:
+  - Baseline: suporte a `mock` existia em varios backends (thermo/MSA/encoder/minimizacao/clustering) e em configs/CLI.
+  - Novo: `mock` nao e mais um valor valido; ausencias de binarios/dependencias falham cedo com erro acionavel.
+- Comandos executados:
+  - `pytest -q`
+- Configuracao efetiva:
+  - `homology_folds backend`: `python|mmseqs2|cdhit_est` (sem `mock`).
+  - `thermo_backend`: `rnafold|linearfold|viennarna` (sem `mock`).
+  - `msa_backend`: `mmseqs2` (sem `mock`).
+  - `encoder`: `ribonanzanet2` (TorchScript) (sem `mock`).
+  - `minimize-ensemble`: `openmm|pyrosetta` (sem `mock`).
+- Parametros/hiperparametros:
+  - N/A (mudanca de contrato/runtime; sem treino/inferencia competitiva neste ciclo).
+- Seeds:
+  - N/A.
+- Versao de codigo/dados:
+  - `git commit`: `3ecbe70` + modificacoes locais nao commitadas do `PLAN-099`.
+  - dados: N/A.
+- Artefatos:
+  - Suite de testes atualizada para usar stubs por `monkeypatch` em pontos externos (RNAfold/MMseqs2/OpenMM) quando necessario.
+- Metricas/score/custo:
+  - Suite completa: `73 passed in 5.35s`.
+- Conclusao:
+  - O repositorio nao aceita mais `mock` em runtime/CLI/config; para rodar o pipeline e necessario fornecer dependencias/modelos reais (ou stubs apenas no escopo de testes).

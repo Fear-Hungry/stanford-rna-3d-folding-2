@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import raise_error
-from ..mock_policy import enforce_no_mock_backend
 
 
 @dataclass(frozen=True)
@@ -74,13 +73,11 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
     if graph_backend not in {"torch_sparse", "torch_geometric"}:
         raise_error(stage, location, "graph_backend invalido na config", impact="1", examples=[graph_backend])
     thermo_backend = str(payload.get("thermo_backend", "rnafold")).strip().lower()
-    if thermo_backend not in {"rnafold", "linearfold", "viennarna", "mock"}:
+    if thermo_backend not in {"rnafold", "linearfold", "viennarna"}:
         raise_error(stage, location, "thermo_backend invalido na config", impact="1", examples=[thermo_backend])
-    enforce_no_mock_backend(backend=thermo_backend, field="thermo_backend", stage=stage, location=location)
     msa_backend = str(payload.get("msa_backend", "mmseqs2")).strip().lower()
-    if msa_backend not in {"mmseqs2", "mock"}:
+    if msa_backend not in {"mmseqs2"}:
         raise_error(stage, location, "msa_backend invalido na config", impact="1", examples=[msa_backend])
-    enforce_no_mock_backend(backend=msa_backend, field="msa_backend", stage=stage, location=location)
     chain_separator = str(payload.get("chain_separator", "|"))
     if len(chain_separator) != 1:
         raise_error(stage, location, "chain_separator deve ter 1 caractere", impact="1", examples=[chain_separator])

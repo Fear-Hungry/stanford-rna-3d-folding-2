@@ -898,3 +898,41 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - O contrato de `entrypoint` exige que os modelos/runners (weights + script) sejam fornecidos via Kaggle Dataset offline; qualquer divergencia deve falhar cedo (sem gerar submission).
   - O encoder TorchScript deve ser exportado com interface compatível (tokens `LongTensor[B,L]` -> embedding `[B,D]` ou `[B,L,D]`) e `D` igual ao `embedding_dim` configurado.
+
+## 2026-02-16 - marcusvinicius/Codex - PLAN-099
+
+- Data UTC: `2026-02-16T18:39:26Z`
+- Plano: `PLAN-099`
+- Resumo:
+  - Removido suporte a `mock` do runtime/CLI/config do pipeline:
+    - `thermo_backend`, `msa_backend`, `encoder`, `minimization backend` e `homology_folds backend` nao aceitam mais `mock`;
+    - implementacoes sinteticas `*_mock` foram removidas (sem fallback silencioso).
+  - `build-homology-folds`:
+    - `backend=mock` substituido por `backend=python` (implementacao interna deterministica) como opcao explicita; `mmseqs2`/`cdhit_est` permanecem backends reais.
+  - Suite de testes reescrita para nao depender de backends `mock`:
+    - uso de `monkeypatch` para simular chamadas externas (RNAfold/MMseqs2/OpenMM) em testes de integracao;
+    - ajustes de configs de teste para `thermo_backend=rnafold` e `msa_backend=mmseqs2` com `mmseqs_db` definido.
+- Arquivos principais tocados:
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/encoder.py`
+  - `src/rna3d_local/homology_folds.py`
+  - `src/rna3d_local/minimization.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `src/rna3d_local/training/msa_covariance.py`
+  - `tests/test_thermo_2d.py`
+  - `tests/test_msa_covariance.py`
+  - `tests/test_minimization.py`
+  - `tests/test_retrieval_latent.py`
+  - `tests/test_phase1_data_lab.py`
+  - `tests/test_se3_memory.py`
+  - `tests/test_se3_losses.py`
+  - `tests/test_se3_pipeline.py`
+  - `tests/conftest.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+  - `EXPERIMENTS.md`
+- Validacao local executada:
+  - `pytest -q` -> `73 passed`
+- Riscos conhecidos / follow-ups:
+  - A execucao real agora exige binarios/dependencias reais (RNAfold/MMseqs2/OpenMM) ou runners offline conforme contrato; ausencias devem falhar cedo (sem degradacao silenciosa).

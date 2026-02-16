@@ -1698,3 +1698,24 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Os preditores offline falham cedo sem `entrypoint` (sem fallback sintetico).
   - `build-embedding-index` com `encoder=ribonanzanet2` usa TorchScript (sem hashing) e valida dimensão.
   - `pytest -q` verde.
+
+## PLAN-099 - Remover completamente backends `mock` e exigir dependencias reais
+
+- Objetivo: eliminar qualquer suporte a `mock` no runtime/CLI/config do pipeline, garantindo que somente backends reais (ou implementacoes deterministicas explicitamente nomeadas) possam ser usados.
+- Escopo:
+  - Runtime/CLI/config:
+    - remover `mock` de todos os `choices` do CLI e validacoes de config (`thermo_backend`, `msa_backend`, `encoder`, `minimization backend`, `homology_folds backend`);
+    - remover implementacoes `*_mock` que geram saidas sinteticas em runtime;
+    - manter modo estrito: ausencia de binarios/dependencias deve falhar cedo com erro acionavel (sem fallback).
+  - Homology folds:
+    - substituir `backend=mock` por `backend=python` (implementacao deterministica interna) apenas como opcao explicita para testes/pequenos datasets;
+    - manter `mmseqs2` e `cdhit_est` como backends reais.
+  - Testes:
+    - reescrever testes que dependiam de `backend=mock` para usar:
+      - `monkeypatch` em funcoes de subprocess (RNAfold/MMseqs2/OpenMM) para fixtures deterministicas; ou
+      - `backend=python` em homology folds quando aplicavel;
+    - remover testes focados em politica de mock quando `mock` deixar de existir.
+- Criterios de aceite:
+  - `pytest -q` verde.
+  - `python -m rna3d_local --help` nao expõe `mock` como opcao de runtime.
+  - Configs com `mock` falham cedo com mensagem acionavel (backend invalido).

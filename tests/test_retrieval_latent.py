@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from rna3d_local.embedding_index import build_embedding_index
 from rna3d_local.retrieval_latent import retrieve_templates_latent
@@ -10,6 +11,24 @@ from rna3d_local.retrieval_latent import retrieve_templates_latent
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
     pl.DataFrame(rows).write_csv(path)
+
+
+def _write_toy_ribonanzanet2(model_path: Path, dim: int) -> None:
+    torch = pytest.importorskip("torch")
+
+    class Toy(torch.nn.Module):
+        __annotations__ = {}
+
+        def __init__(self, dim: int) -> None:
+            super().__init__()
+            self.emb = torch.nn.Embedding(4, dim)
+
+        def forward(self, tokens: torch.Tensor) -> torch.Tensor:  # (B,L)
+            x = self.emb(tokens)  # (B,L,D)
+            return x.mean(dim=1)  # (B,D)
+
+    scripted = torch.jit.script(Toy(dim))
+    scripted.save(str(model_path))
 
 
 def test_retrieval_latent_respects_temporal_filter(tmp_path: Path) -> None:
@@ -20,13 +39,15 @@ def test_retrieval_latent_respects_temporal_filter(tmp_path: Path) -> None:
             {"template_uid": "ext:T_NEW", "template_id": "T_NEW", "source": "ext", "sequence": "AAAA", "release_date": "2030-01-01", "n_residues": 4},
         ]
     ).write_parquet(template_index)
+    model_path = tmp_path / "toy_ribonanzanet2.pt"
+    _write_toy_ribonanzanet2(model_path, dim=32)
     emb = build_embedding_index(
         repo_root=tmp_path,
         template_index_path=template_index,
         out_dir=tmp_path / "emb",
         embedding_dim=32,
-        encoder="mock",
-        model_path=None,
+        encoder="ribonanzanet2",
+        model_path=model_path,
         ann_engine="none",
     )
     targets = tmp_path / "targets.csv"
@@ -39,9 +60,9 @@ def test_retrieval_latent_respects_temporal_filter(tmp_path: Path) -> None:
         targets_path=targets,
         out_path=out,
         top_k=2,
-        encoder="mock",
+        encoder="ribonanzanet2",
         embedding_dim=32,
-        model_path=None,
+        model_path=model_path,
         ann_engine="numpy_bruteforce",
         faiss_index_path=None,
         family_prior_path=None,
@@ -59,13 +80,15 @@ def test_retrieval_latent_uses_family_prior_weight(tmp_path: Path) -> None:
             {"template_uid": "ext:T2", "template_id": "T2", "source": "ext", "sequence": "CCCC", "release_date": "2020-01-01", "n_residues": 4},
         ]
     ).write_parquet(template_index)
+    model_path = tmp_path / "toy_ribonanzanet2.pt"
+    _write_toy_ribonanzanet2(model_path, dim=32)
     emb = build_embedding_index(
         repo_root=tmp_path,
         template_index_path=template_index,
         out_dir=tmp_path / "emb",
         embedding_dim=32,
-        encoder="mock",
-        model_path=None,
+        encoder="ribonanzanet2",
+        model_path=model_path,
         ann_engine="none",
     )
     targets = tmp_path / "targets.csv"
@@ -85,9 +108,9 @@ def test_retrieval_latent_uses_family_prior_weight(tmp_path: Path) -> None:
         targets_path=targets,
         out_path=out,
         top_k=2,
-        encoder="mock",
+        encoder="ribonanzanet2",
         embedding_dim=32,
-        model_path=None,
+        model_path=model_path,
         ann_engine="numpy_bruteforce",
         faiss_index_path=None,
         family_prior_path=family_prior,

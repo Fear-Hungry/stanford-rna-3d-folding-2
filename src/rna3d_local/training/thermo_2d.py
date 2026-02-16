@@ -15,7 +15,6 @@ import torch
 
 from ..contracts import require_columns
 from ..errors import raise_error
-from ..mock_policy import enforce_no_mock_backend
 from ..se3.sequence_parser import parse_sequence_with_chains
 
 
@@ -251,16 +250,6 @@ def _run_viennarna_pairs(
     return pairs
 
 
-def _mock_pairs(sequence: str) -> list[tuple[int, int, float]]:
-    length = len(sequence)
-    pairs: list[tuple[int, int, float]] = []
-    for left in range(1, (length // 2) + 1):
-        right = length - left + 1
-        if left < right:
-            pairs.append((left, right, 0.60))
-    return pairs
-
-
 def _cache_path(*, cache_dir: Path, backend: str, sequence: str) -> Path:
     digest = hashlib.sha256(f"{backend}:{sequence}".encode("utf-8")).hexdigest()
     return cache_dir / f"{backend}_{digest}.json"
@@ -334,7 +323,7 @@ def _compute_single_target(
                     location=location,
                 )
             else:
-                chain_pairs = _mock_pairs(chain_seq)
+                raise_error(stage, location, "backend termoquimico BPP invalido", impact="1", examples=[backend_name])
             if cpath is not None:
                 _save_cache(cpath, chain_pairs)
         for i_1, j_1, prob in chain_pairs:
@@ -364,9 +353,8 @@ def compute_thermo_bpp(
 ) -> dict[str, ThermoBppTarget]:
     require_columns(targets, ["target_id", "sequence"], stage=stage, location=location, label="targets")
     backend_name = str(backend).strip().lower()
-    if backend_name not in {"rnafold", "linearfold", "viennarna", "mock"}:
+    if backend_name not in {"rnafold", "linearfold", "viennarna"}:
         raise_error(stage, location, "backend termoquimico BPP invalido", impact="1", examples=[backend_name])
-    enforce_no_mock_backend(backend=backend_name, field="thermo_backend", stage=stage, location=location)
     if int(num_workers) <= 0:
         raise_error(stage, location, "num_workers invalido para extracao BPP", impact="1", examples=[str(num_workers)])
     cache_root = None if cache_dir is None else Path(cache_dir)

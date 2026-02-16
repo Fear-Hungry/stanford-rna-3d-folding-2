@@ -10,7 +10,6 @@ import polars as pl
 from .contracts import require_columns
 from .errors import raise_error
 from .io_tables import read_table, write_table
-from .mock_policy import enforce_no_mock_backend
 from .se3.sequence_parser import parse_sequence_with_chains
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
@@ -221,7 +220,7 @@ def _build_train_domain_map(
     return labels
 
 
-def _cluster_mock(entries: list[_SequenceEntry], *, identity_threshold: float, coverage_threshold: float) -> dict[str, str]:
+def _cluster_python(entries: list[_SequenceEntry], *, identity_threshold: float, coverage_threshold: float) -> dict[str, str]:
     ordered = sorted(entries, key=lambda item: (-item.sequence_length, item.global_id))
     unassigned = {item.global_id: item for item in ordered}
     mapping: dict[str, str] = {}
@@ -388,12 +387,11 @@ def _build_cluster_mapping(
     stage: str,
     location: str,
 ) -> dict[str, str]:
-    enforce_no_mock_backend(backend=backend, field="backend", stage=stage, location=location)
     with TemporaryDirectory(prefix="rna3d_cluster_input_") as tmp_dir:
         fasta_path = Path(tmp_dir) / "all_sequences.fasta"
         _write_fasta(entries, fasta_path)
-        if backend == "mock":
-            mapping = _cluster_mock(
+        if backend == "python":
+            mapping = _cluster_python(
                 entries,
                 identity_threshold=identity_threshold,
                 coverage_threshold=coverage_threshold,

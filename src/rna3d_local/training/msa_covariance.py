@@ -15,7 +15,6 @@ import torch
 
 from ..contracts import require_columns
 from ..errors import raise_error
-from ..mock_policy import enforce_no_mock_backend
 from ..se3.sequence_parser import parse_sequence_with_chains
 
 _NUC_TO_INT = {"A": 0, "C": 1, "G": 2, "U": 3}
@@ -39,16 +38,6 @@ class MsaCovTarget:
     pair_src: torch.Tensor
     pair_dst: torch.Tensor
     pair_prob: torch.Tensor
-
-
-def _mock_pairs(sequence: str) -> list[tuple[int, int, float]]:
-    length = len(sequence)
-    pairs: list[tuple[int, int, float]] = []
-    for left in range(1, (length // 2) + 1):
-        right = length - left + 1
-        if left < right:
-            pairs.append((left, right, 0.45))
-    return pairs
 
 
 def _cache_path(*, cache_dir: Path, backend: str, sequence: str) -> Path:
@@ -292,31 +281,28 @@ def _compute_single_target(
         if cpath is not None and cpath.exists():
             chain_pairs = _load_cache(cpath)
         else:
-            if backend_name == "mock":
-                chain_pairs = _mock_pairs(chain_seq)
-            else:
-                aligned = _run_mmseqs_chain_alignments(
-                    mmseqs_bin=mmseqs_bin,
-                    mmseqs_db=mmseqs_db,
-                    chain_sequence=chain_seq,
-                    query_id=f"{tid}_c{chain_idx}",
-                    max_msa_sequences=max_msa_sequences,
-                    stage=stage,
-                    location=location,
+            aligned = _run_mmseqs_chain_alignments(
+                mmseqs_bin=mmseqs_bin,
+                mmseqs_db=mmseqs_db,
+                chain_sequence=chain_seq,
+                query_id=f"{tid}_c{chain_idx}",
+                max_msa_sequences=max_msa_sequences,
+                stage=stage,
+                location=location,
+            )
+            chain_pairs = _covariance_pairs_from_alignment(
+                aligned=aligned,
+                max_cov_positions=max_cov_positions,
+                max_cov_pairs=max_cov_pairs,
+            )
+            if not chain_pairs:
+                raise_error(
+                    stage,
+                    location,
+                    "mmseqs2 sem pares de covariancia utilizaveis",
+                    impact="1",
+                    examples=[f"{tid}:chain={chain_idx}"],
                 )
-                chain_pairs = _covariance_pairs_from_alignment(
-                    aligned=aligned,
-                    max_cov_positions=max_cov_positions,
-                    max_cov_pairs=max_cov_pairs,
-                )
-                if not chain_pairs:
-                    raise_error(
-                        stage,
-                        location,
-                        "mmseqs2 sem pares de covariancia utilizaveis",
-                        impact="1",
-                        examples=[f"{tid}:chain={chain_idx}"],
-                    )
             if cpath is not None:
                 _save_cache(cpath, chain_pairs)
         for i_1, j_1, prob in chain_pairs:
@@ -361,9 +347,8 @@ def compute_msa_covariance(
             examples=[str(max_cov_positions), str(max_cov_pairs)],
         )
     backend_name = str(backend).strip().lower()
-    if backend_name not in {"mmseqs2", "mock"}:
+    if backend_name not in {"mmseqs2"}:
         raise_error(stage, location, "msa_backend invalido", impact="1", examples=[backend_name])
-    enforce_no_mock_backend(backend=backend_name, field="msa_backend", stage=stage, location=location)
     cache_root = None if cache_dir is None else Path(cache_dir)
     rows = [(str(target_id), str(sequence)) for target_id, sequence in targets.select("target_id", "sequence").iter_rows()]
     outputs: dict[str, MsaCovTarget] = {}

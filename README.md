@@ -51,14 +51,12 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - `thermo_backend`:
   - `rnafold`: usa ViennaRNA (`RNAfold -p`) para extrair BPP do ensemble de Boltzmann;
   - `linearfold`: executa `linearfold --bpp` para obter pares/probabilidades;
-  - `mock`: bloqueado por padrao no pipeline competitivo; habilite `RNA3D_ALLOW_MOCK_BACKENDS=1` apenas em teste local explicito.
 - `chemical mapping` (automatico no DataLoader SE(3)):
   - cruza `reactivity_dms/reactivity_2a3` com coordenadas PDB de treino;
   - gera exposicao ao solvente por residuo (`quickstart_pdb_cross`);
   - em inferencia sem PDB usa modo explicito `quickstart_only` (sem fallback silencioso).
 - `msa_backend`:
   - `mmseqs2`: busca homologos e extrai covariancia de mutacoes compensatorias (WC/Hoogsteen proxy);
-  - `mock`: bloqueado por padrao no pipeline competitivo; habilite `RNA3D_ALLOW_MOCK_BACKENDS=1` apenas em teste local explicito.
 - `prepare-phase1-data-lab`:
   - precomputa BPP (RNAfold/LinearFold) e covariancia MSA (MMseqs2) em paralelo (`--workers`);
   - empacota dataset de treino em `training_store.zarr` para leitura lazy por target direto do SSD/NVMe;
@@ -128,7 +126,7 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
   - `autocast_bfloat16=true`;
   - `gradient_accumulation_steps` em `[16,32]`.
 - `autocast_bfloat16=true` falha cedo se CUDA/BF16 nao estiver disponivel (nao existe fallback silencioso para FP32/CPU).
-- `encoder=mock` e qualquer backend `mock` falham por contrato no fluxo competitivo; uso permitido apenas com `RNA3D_ALLOW_MOCK_BACKENDS=1` em teste local explicito.
+- Backends `mock` foram removidos do runtime/CLI/config; configs com `mock` falham cedo (backend invalido).
 - `backend=rules` e `ann_engine=numpy_bruteforce` continuam opcoes de teste local explicito.
 - `build-homology-folds` aplica estratificacao de dominio por padrao (falha cedo sem fonte de dominio valida).
 - `evaluate-homology-folds` prioriza score de orphans com ponderacao explicita (`orphan_weight`) e exige classificacao orphan valida.

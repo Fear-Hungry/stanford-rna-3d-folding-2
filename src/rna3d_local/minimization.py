@@ -5,12 +5,10 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-import torch
 
 from .contracts import require_columns
 from .errors import raise_error
 from .io_tables import read_table, write_table
-from .mock_policy import enforce_no_mock_backend
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
 
@@ -26,53 +24,6 @@ def _build_covalent_pairs(resids: list[int]) -> list[tuple[int, int]]:
         if int(resids[idx + 1]) - int(resids[idx]) == 1:
             pairs.append((idx, idx + 1))
     return pairs
-
-
-def _minimize_mock(
-    *,
-    coords_angstrom: np.ndarray,
-    residue_index: np.ndarray,
-    max_iterations: int,
-    bond_length_angstrom: float,
-    vdw_min_distance_angstrom: float,
-    position_restraint_k: float,
-) -> np.ndarray:
-    device = torch.device("cpu")
-    x = torch.tensor(coords_angstrom, dtype=torch.float32, device=device).clone()
-    x0 = x.clone()
-    residues = torch.tensor(residue_index, dtype=torch.long, device=device)
-    restraint_weight = min(0.40, max(0.05, float(position_restraint_k) / (float(position_restraint_k) + 2000.0)))
-    if int(x.shape[0]) <= 1:
-        return x.detach().cpu().numpy()
-    for _ in range(int(max_iterations)):
-        if int(x.shape[0]) > 2:
-            inner = x[1:-1]
-            smooth = (x[:-2] + x[2:]) * 0.5
-            inner = inner + (0.08 * (smooth - inner))
-            x[1:-1] = inner
-        for idx in range(int(x.shape[0]) - 1):
-            if int(residues[idx + 1] - residues[idx]) != 1:
-                continue
-            delta = x[idx + 1] - x[idx]
-            dist = torch.sqrt(torch.clamp(torch.sum(delta * delta), min=1e-8))
-            diff = dist - float(bond_length_angstrom)
-            corr = 0.15 * diff * (delta / dist)
-            x[idx] = x[idx] + corr
-            x[idx + 1] = x[idx + 1] - corr
-        for i in range(int(x.shape[0]) - 1):
-            for j in range(i + 1, int(x.shape[0])):
-                if int(residues[j] - residues[i]) <= 1:
-                    continue
-                delta = x[j] - x[i]
-                dist = torch.sqrt(torch.clamp(torch.sum(delta * delta), min=1e-8))
-                if float(dist.item()) >= float(vdw_min_distance_angstrom):
-                    continue
-                penetration = float(vdw_min_distance_angstrom) - float(dist.item())
-                push = 0.2 * penetration * (delta / dist)
-                x[i] = x[i] - push
-                x[j] = x[j] + push
-        x = x + (float(restraint_weight) * (x0 - x))
-    return x.detach().cpu().numpy()
 
 
 def _minimize_openmm(
@@ -206,9 +157,8 @@ def minimize_ensemble(
     stage = "MINIMIZE_ENSEMBLE"
     location = "src/rna3d_local/minimization.py:minimize_ensemble"
     backend_name = str(backend).strip().lower()
-    if backend_name not in {"openmm", "pyrosetta", "mock"}:
+    if backend_name not in {"openmm", "pyrosetta"}:
         raise_error(stage, location, "backend de minimizacao invalido", impact="1", examples=[str(backend)])
-    enforce_no_mock_backend(backend=backend_name, field="backend", stage=stage, location=location)
     if int(max_iterations) <= 0:
         raise_error(stage, location, "max_iterations deve ser > 0", impact="1", examples=[str(max_iterations)])
     if int(max_iterations) > 100:
@@ -252,16 +202,7 @@ def minimize_ensemble(
         if not np.isfinite(coords).all():
             raise_error(stage, location, "coordenadas invalidas antes da minimizacao", impact="1", examples=[f"{target_id}:{model_id}"])
         residues = part.get_column("resid").cast(pl.Int64).to_numpy()
-        if backend_name == "mock":
-            minimized = _minimize_mock(
-                coords_angstrom=np.asarray(coords, dtype=np.float64),
-                residue_index=np.asarray(residues, dtype=np.int64),
-                max_iterations=int(max_iterations),
-                bond_length_angstrom=float(bond_length_angstrom),
-                vdw_min_distance_angstrom=float(vdw_min_distance_angstrom),
-                position_restraint_k=float(position_restraint_k),
-            )
-        elif backend_name == "openmm":
+        if backend_name == "openmm":
             minimized = _minimize_openmm(
                 coords_angstrom=np.asarray(coords, dtype=np.float64),
                 residue_index=np.asarray(residues, dtype=np.int64),

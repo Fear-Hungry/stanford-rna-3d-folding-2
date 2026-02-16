@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
 from rna3d_local.errors import PipelineError
+from rna3d_local import minimization
 from rna3d_local.minimization import minimize_ensemble
 
 
@@ -30,7 +32,26 @@ def _write_predictions(path: Path) -> None:
     pl.DataFrame(rows).write_parquet(path)
 
 
-def test_minimize_ensemble_mock_preserves_contract(tmp_path: Path) -> None:
+def test_minimize_ensemble_openmm_preserves_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_minimize_openmm(
+        *,
+        coords_angstrom: np.ndarray,
+        residue_index: np.ndarray,
+        max_iterations: int,
+        bond_length_angstrom: float,
+        bond_force_k: float,
+        angle_force_k: float,
+        angle_target_deg: float,
+        vdw_min_distance_angstrom: float,
+        vdw_epsilon: float,
+        position_restraint_k: float,
+        openmm_platform: str | None,
+        stage: str,
+        location: str,
+    ) -> np.ndarray:
+        return np.asarray(coords_angstrom, dtype=np.float64)
+
+    monkeypatch.setattr(minimization, "_minimize_openmm", _fake_minimize_openmm)
     pred = tmp_path / "pred.parquet"
     out = tmp_path / "pred_min.parquet"
     _write_predictions(pred)
@@ -38,7 +59,7 @@ def test_minimize_ensemble_mock_preserves_contract(tmp_path: Path) -> None:
         repo_root=tmp_path,
         predictions_path=pred,
         out_path=out,
-        backend="mock",
+        backend="openmm",
         max_iterations=20,
         bond_length_angstrom=5.9,
         bond_force_k=60.0,
@@ -53,7 +74,7 @@ def test_minimize_ensemble_mock_preserves_contract(tmp_path: Path) -> None:
     assert refined.height == 16
     assert refined.get_column("target_id").n_unique() == 2
     assert set(["target_id", "model_id", "resid", "resname", "x", "y", "z", "refinement_backend", "refinement_steps", "refinement_position_restraint_k"]).issubset(set(refined.columns))
-    assert refined.filter(pl.col("refinement_backend") != "mock").height == 0
+    assert refined.filter(pl.col("refinement_backend") != "openmm").height == 0
     key_dup = refined.group_by(["target_id", "model_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
     assert key_dup.height == 0
 
@@ -70,7 +91,7 @@ def test_minimize_ensemble_fails_on_duplicate_key(tmp_path: Path) -> None:
             repo_root=tmp_path,
             predictions_path=pred,
             out_path=tmp_path / "out.parquet",
-            backend="mock",
+            backend="openmm",
             max_iterations=5,
             bond_length_angstrom=5.9,
             bond_force_k=60.0,
@@ -112,7 +133,7 @@ def test_minimize_ensemble_fails_when_iterations_exceed_budget(tmp_path: Path) -
             repo_root=tmp_path,
             predictions_path=pred,
             out_path=tmp_path / "out.parquet",
-            backend="mock",
+            backend="openmm",
             max_iterations=120,
             bond_length_angstrom=5.9,
             bond_force_k=60.0,
