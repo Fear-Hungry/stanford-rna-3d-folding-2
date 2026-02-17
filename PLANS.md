@@ -1890,3 +1890,16 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
   - teste falha se frames forem retornados com eixos em linhas.
+
+## PLAN-110 - SE3 fusion equivariante (gate escalar + sem vetor global)
+
+- Objetivo: corrigir a fusão de coordenadas no backbone SE(3) para evitar operações não equivariantes (gate por eixo e residual em eixos globais).
+- Escopo:
+  - `se3/fusion.py`:
+    - trocar `gate[:, :3]` por gate escalar (`gate[:, :1]`) na mistura de `x_egnn/x_ipa`;
+    - remover a adição direta de um vetor global aprendido às coordenadas; manter apenas operações que preservem equivariância.
+  - Testes:
+    - adicionar teste unitário de equivariância por rotação e por translação para `Se3Fusion`.
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.

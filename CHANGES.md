@@ -1062,6 +1062,23 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `94 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-110 (SE3 fusion equivariante)
+
+- Data UTC: `2026-02-17T13:08:14Z`
+- Plano: `PLAN-110`
+- Resumo:
+  - Corrigida a fusão de coordenadas em `Se3Fusion` para usar gate escalar (isotrópico) em vez de pesos por eixo.
+  - Removida a adição de um vetor global aprendido diretamente às coordenadas; residual passa a ser aplicado apenas via operações que preservam equivariância.
+  - Adicionados testes unitários de equivariância por rotação e por translação para a fusão.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/fusion.py`
+  - `tests/test_se3_fusion.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `96 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`
