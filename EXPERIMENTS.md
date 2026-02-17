@@ -1325,3 +1325,28 @@ Log append-only de experimentos executados.
   - `crop_length_mean_final=41.300781`
 - Conclusao:
   - Treino concluiu em CUDA e gerou métricas finitas (sem NaN/inf), validando o caminho de treino SE(3) neste snapshot.
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-119 (Score local USalign no Public Validation)
+
+- Data UTC: `2026-02-17T14:23:08Z`
+- Plano: `PLAN-119`
+- Objetivo:
+  - Medir “score de verdade” via USalign Best-of-5 contra `validation_labels`, com relatórios por alvo.
+- Comandos executados:
+  - Subset curto (10 targets, `ground_truth_mode=best_of_gt_copies`):
+    - `python -m rna3d_local score-local-bestof5 --ground-truth runs/20260216_full_local_run/validation_labels_short10.csv --submission runs/20260216_full_local_run/submission_short10.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 120 --ground-truth-mode best_of_gt_copies --score-json runs/20260217_score_short10_bestof_gt/score.json --report runs/20260217_score_short10_bestof_gt/report.json`
+  - Full (28 targets, `ground_truth_mode=single` para custo controlado em ultra-longos):
+    - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260216_full_local_run/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260217_score_full28_single/score.json --report runs/20260217_score_full28_single/report.json`
+- Versao de codigo/dados:
+  - `git commit`: `b78b4f2`
+  - Ground truth: `input/stanford-rna-3d-folding-2/validation_labels.csv`
+- Artefatos:
+  - `runs/20260217_score_short10_bestof_gt/score.json`
+  - `runs/20260217_score_short10_bestof_gt/report.json`
+  - `runs/20260217_score_full28_single/score.json`
+  - `runs/20260217_score_full28_single/report.json`
+- Metricas/score/custo:
+  - Short10 (`best_of_gt_copies`): `score=0.04443` (n_targets=10)
+  - Full28 (`single`): `score=0.042739285714285716` (n_targets=28)
+- Conclusao:
+  - O scorer USalign executou com sucesso e gerou relatórios por alvo; o modo `best_of_gt_copies` é muito mais caro em alvos ultra-longos (ex.: `9MME`), então o full foi medido em `single` nesta rodada.

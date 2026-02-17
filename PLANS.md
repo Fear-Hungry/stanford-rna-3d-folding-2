@@ -2009,3 +2009,15 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - Treino conclui sem erro e gera `model_dir` + `metrics.json`.
   - `loss`, `tm`, `fape` e `clash` no `metrics.json` são finitos (sem NaN/inf).
+
+## PLAN-119 - Score local “de verdade” (USalign Best-of-5) no Public Validation
+
+- Objetivo: validar a saída (submission) com um scorer geométrico real (USalign) contra `validation_labels.csv`, reportando score agregado e por alvo, e evitando conclusões baseadas apenas em losses.
+- Escopo:
+  - Rodar `python -m rna3d_local score-local-bestof5` em:
+    - subset curto (`validation_labels_short10.csv`) com `ground_truth_mode=best_of_gt_copies`;
+    - conjunto completo (28 targets) com `ground_truth_mode=single` para incluir alvos ultra-longos sem custo explosivo.
+  - Registrar artefatos (score.json + report.json) em `runs/`.
+- Critérios de aceite:
+  - Score executa sem erro e gera `score.json` + `report.json`.
+  - `score` e `best_tm_score` por alvo são finitos (sem NaN/inf).
