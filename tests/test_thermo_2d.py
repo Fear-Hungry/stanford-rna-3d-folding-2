@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import polars as pl
@@ -60,6 +61,21 @@ def test_compute_thermo_bpp_rnafold_missing_binary_fails() -> None:
             chain_separator="|",
             stage="TEST",
             location="tests/test_thermo_2d.py:test_compute_thermo_bpp_rnafold_missing_binary_fails",
+        )
+
+
+def test_run_rnafold_pairs_timeout_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0] if args else ["RNAfold", "-p"], timeout=kwargs.get("timeout", 300))
+
+    monkeypatch.setattr(thermo_2d.subprocess, "run", _fake_run)
+    with pytest.raises(PipelineError, match="timeout no RNAfold"):
+        thermo_2d._run_rnafold_pairs(
+            sequence="ACGU" * 100,
+            target_id="T_timeout",
+            rnafold_bin="RNAfold",
+            stage="TEST",
+            location="tests/test_thermo_2d.py:test_run_rnafold_pairs_timeout_fails_fast",
         )
 
 

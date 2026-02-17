@@ -1168,6 +1168,23 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `107 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-116 (RNAfold: timeout hard em BPP)
+
+- Data UTC: `2026-02-17T13:46:42Z`
+- Plano: `PLAN-116`
+- Resumo:
+  - Adicionado `timeout=300` ao executar `RNAfold -p` na extração de BPP para evitar hangs em RNAs longos.
+  - `TimeoutExpired` agora gera erro fail-fast acionável no padrão do repositório.
+  - Teste de regressão stubbando `subprocess.run` garante o comportamento.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `tests/test_thermo_2d.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `108 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

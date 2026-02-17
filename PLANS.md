@@ -1974,3 +1974,16 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-116 - RNAfold: timeout hard em extração de BPP (evitar hang)
+
+- Objetivo: evitar travamentos indefinidos na extração de BPP via `RNAfold -p` (complexidade cúbica em N), adicionando timeout fixo e erro acionável quando excedido.
+- Escopo:
+  - `training/thermo_2d.py`:
+    - adicionar `timeout=300` no `subprocess.run` de `RNAfold -p`;
+    - capturar `subprocess.TimeoutExpired` e falhar cedo com mensagem no padrão do repo.
+  - Testes:
+    - stub de `subprocess.run` levantando `TimeoutExpired` e validação de fail-fast.
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.

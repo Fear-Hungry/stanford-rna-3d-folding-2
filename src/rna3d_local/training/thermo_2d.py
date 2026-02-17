@@ -170,9 +170,18 @@ def _run_rnafold_pairs(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
+                timeout=300,
             )
         except FileNotFoundError:
             raise_error(stage, location, "binario RNAfold nao encontrado", impact="1", examples=[str(rnafold_bin)])
+        except subprocess.TimeoutExpired:
+            raise_error(
+                stage,
+                location,
+                "timeout no RNAfold ao gerar BPP",
+                impact="1",
+                examples=[str(target_id), f"n={len(sequence)}", "timeout=300s"],
+            )
         except Exception as exc:
             raise_error(
                 stage,
