@@ -1133,6 +1133,25 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `104 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-114 (Harden submit-kaggle-notebook)
+
+- Data UTC: `2026-02-17T13:36:13Z`
+- Plano: `PLAN-114`
+- Resumo:
+  - `submit-kaggle-notebook` agora valida (quando `--execute-submit`) se o `kaggle competitions submit` suporta `--kernel/--version` e falha cedo com mensagem acionável caso o CLI não suporte essas flags.
+  - `--notebook-version` passou a aceitar string (ex.: `Version 1`) para evitar mismatch com o formato esperado pelo Kaggle CLI.
+  - Testes stubbam `subprocess.run` para cobrir CLI incompatível e caminho de submit bem-sucedido.
+- Arquivos principais tocados:
+  - `src/rna3d_local/submit_kaggle_notebook.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_submit_kaggle_notebook_cli.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `106 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

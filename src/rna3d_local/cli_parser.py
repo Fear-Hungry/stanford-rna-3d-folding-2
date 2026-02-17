@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = subparsers.add_parser("submit-kaggle-notebook", help="Submit notebook-only after strict local checks")
     sub.add_argument("--competition", required=True)
     sub.add_argument("--notebook-ref", required=True)
-    sub.add_argument("--notebook-version", required=True, type=int)
+    sub.add_argument("--notebook-version", required=True)
     sub.add_argument("--notebook-file", default="submission.csv")
     sub.add_argument("--sample", required=True)
     sub.add_argument("--submission", required=True)

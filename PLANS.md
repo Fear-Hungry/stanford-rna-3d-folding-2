@@ -1947,3 +1947,18 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-114 - Harden submit-kaggle-notebook (compatibilidade Kaggle CLI)
+
+- Objetivo: evitar falha tardia por incompatibilidade de flags do Kaggle CLI e corrigir o contrato de `--notebook-version` para aceitar o formato real exigido pelo CLI.
+- Escopo:
+  - `submit_kaggle_notebook.py`:
+    - ao executar submit (`--execute-submit`), validar via `kaggle competitions submit -h` se o CLI suporta `--kernel`/`--version` e falhar cedo com mensagem acionável caso contrário.
+    - aceitar `notebook_version` como string (ex.: `Version 1`) e validar não-vazio.
+  - CLI:
+    - `submit-kaggle-notebook --notebook-version` deixa de ser `int` e passa a aceitar string.
+  - Testes:
+    - stub de `subprocess.run` cobrindo (a) CLI sem flags -> erro, (b) CLI com flags -> submit ok.
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.

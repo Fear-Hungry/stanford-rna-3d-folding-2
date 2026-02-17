@@ -15,11 +15,38 @@ class SubmitNotebookResult:
     report_path: Path
 
 
+def _kaggle_submit_supports_kernel_flags(*, stage: str, location: str) -> None:
+    try:
+        completed = subprocess.run(
+            ["kaggle", "competitions", "submit", "-h"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise_error(stage, location, "kaggle CLI nao encontrado no PATH", impact="1", examples=[str(exc)])
+    help_txt = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    if completed.returncode != 0:
+        snippet = (help_txt.strip() or f"returncode={completed.returncode}")[:240]
+        raise_error(stage, location, "falha ao executar 'kaggle competitions submit -h'", impact="1", examples=[snippet])
+    if ("--kernel" not in help_txt) or ("--version" not in help_txt):
+        version_txt = ""
+        try:
+            v = subprocess.run(["kaggle", "--version"], check=False, capture_output=True, text=True)
+            version_txt = ((v.stdout or "") + " " + (v.stderr or "")).strip()
+        except Exception:
+            version_txt = ""
+        examples = ["kaggle competitions submit -h sem --kernel/--version; atualize o pacote kaggle"]
+        if version_txt:
+            examples.append(version_txt[:120])
+        raise_error(stage, location, "kaggle CLI sem suporte a submit via notebook (-k/-v)", impact="1", examples=examples)
+
+
 def submit_kaggle_notebook(
     *,
     competition: str,
     notebook_ref: str,
-    notebook_version: int,
+    notebook_version: str,
     notebook_file: str,
     sample_path: Path,
     submission_path: Path,
@@ -59,6 +86,13 @@ def submit_kaggle_notebook(
             examples=[local_hash, notebook_hash],
         )
 
+    if bool(execute_submit):
+        _kaggle_submit_supports_kernel_flags(stage=stage, location=location)
+
+    version_str = str(notebook_version).strip()
+    if not version_str:
+        raise_error(stage, location, "notebook_version vazio", impact="1", examples=[repr(str(notebook_version))])
+
     command = [
         "kaggle",
         "competitions",
@@ -69,7 +103,7 @@ def submit_kaggle_notebook(
         "-f",
         notebook_file,
         "-v",
-        str(notebook_version),
+        version_str,
         "-m",
         message,
     ]
@@ -77,7 +111,7 @@ def submit_kaggle_notebook(
         "created_utc": utc_now_iso(),
         "competition": competition,
         "notebook_ref": notebook_ref,
-        "notebook_version": int(notebook_version),
+        "notebook_version": version_str,
         "submission": str(submission_path),
         "notebook_output": str(notebook_output_path),
         "score": score,
