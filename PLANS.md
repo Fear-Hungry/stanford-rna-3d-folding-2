@@ -2172,3 +2172,14 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `pytest -q` passa.
   - Teste cobre caso em que `se3` tem cobertura total mas `chai1/boltz1` existem para um subset, e o roteador seleciona `chai1/boltz1` para esses alvos.
+
+## PLAN-130 - Kaggle hidden OOM: export + check em modo streaming
+
+- Objetivo:
+  - Evitar OOM de RAM no rerun hidden do Kaggle quando `sample_submission.csv` e/ou `combined_predictions.parquet` forem grandes.
+- Mudanca:
+  - `check-submission`: validar `sample_submission` vs `submission` em modo streaming (CSV linha-a-linha), sem carregar tudo em Polars e sem criar listas de IDs/valores.
+  - `export-submission`: quando entradas forem grandes, exportar em modo streaming, carregando predições por `target_id` (com particionamento por `target_id` quando necessário).
+- Critérios de aceite:
+  - `pytest -q` passa.
+  - `export-submission` e `check-submission` continuam fail-fast com erros acionáveis no formato padrão.

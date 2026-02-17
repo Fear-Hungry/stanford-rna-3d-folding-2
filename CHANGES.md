@@ -1079,6 +1079,22 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `pytest -q` -> `120 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-130 (hidden OOM: export/check streaming)
+
+- Data UTC: `2026-02-17T20:01:08Z`
+- Plano: `PLAN-130`
+- Resumo:
+  - `check-submission`/`validate_submission_against_sample` passou a validar CSV em modo streaming (linha-a-linha), evitando carregar `sample_submission` e `submission` inteiros em Polars e evitando listas gigantes de IDs/valores.
+  - `export-submission` ganhou modo streaming automatico (por tamanho/env) que particiona `predictions_long` por `target_id` (via `PartitionByKey`) e exporta o `submission.csv` lendo predições por alvo, reduzindo risco de OOM no rerun hidden.
+- Arquivos principais tocados:
+  - `src/rna3d_local/contracts.py`
+  - `src/rna3d_local/submission.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `120 passed`
+  - `python -m compileall -q src/rna3d_local` -> `ok`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-126 (Hardening Kaggle TBM-first)
 
 - Data UTC: `2026-02-17T18:20:56Z`

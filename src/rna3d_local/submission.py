@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +16,190 @@ from .io_tables import read_table
 @dataclass(frozen=True)
 class SubmissionExportResult:
     submission_path: Path
+
+
+def _model_ids_from_sample_columns(columns: list[str], *, stage: str, location: str) -> list[int]:
+    model_cols = [column for column in columns if column.startswith("x_")]
+    model_ids = sorted(int(column.split("_", 1)[1]) for column in model_cols)
+    if not model_ids:
+        raise_error(stage, location, "sample sem colunas de modelo", impact="1", examples=columns[:8])
+    for mid in model_ids:
+        for prefix in ("y_", "z_"):
+            col = f"{prefix}{mid}"
+            if col not in columns:
+                raise_error(stage, location, "sample sem coluna obrigatoria de modelo", impact="1", examples=[col])
+    return model_ids
+
+
+def _should_use_streaming_export(*, sample_path: Path, predictions_long_path: Path) -> bool:
+    if os.environ.get("RNA3D_EXPORT_STREAMING", "").strip() == "1":
+        return True
+    if predictions_long_path.is_dir():
+        return True
+    try:
+        total = int(sample_path.stat().st_size) + int(predictions_long_path.stat().st_size)
+    except OSError:
+        return False
+    threshold = int(os.environ.get("RNA3D_EXPORT_STREAMING_THRESHOLD_BYTES", str(64 * 1024 * 1024)))
+    return total >= threshold
+
+
+def _partition_predictions_by_target(
+    *,
+    predictions_long_path: Path,
+    out_dir: Path,
+    stage: str,
+    location: str,
+) -> None:
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise_error(stage, location, "diretorio de particionamento nao-vazio", impact="1", examples=[str(out_dir)])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        lf = pl.scan_parquet(str(predictions_long_path)).select(
+            pl.col("target_id").cast(pl.Utf8),
+            pl.col("model_id").cast(pl.Int32),
+            pl.col("resid").cast(pl.Int32),
+            pl.col("x").cast(pl.Float64),
+            pl.col("y").cast(pl.Float64),
+            pl.col("z").cast(pl.Float64),
+        )
+        scheme = pl.PartitionByKey(out_dir, by="target_id", include_key=True)
+        lf.sink_parquet(scheme, mkdir=True, engine="streaming")
+    except Exception as exc:  # noqa: BLE001
+        raise_error(stage, location, "falha ao particionar predictions por target_id", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+
+
+def _load_target_pred_map(
+    *,
+    pred_part_dir: Path,
+    target_id: str,
+    model_ids: list[int],
+    stage: str,
+    location: str,
+) -> dict[int, dict[int, tuple[float, float, float]]]:
+    tdir = pred_part_dir / f"target_id={target_id}"
+    files = sorted(tdir.glob("*.parquet"))
+    if not files:
+        raise_error(stage, location, "predictions sem particao do target_id", impact="1", examples=[str(tdir)])
+    df = pl.read_parquet([str(p) for p in files])
+    required = ["target_id", "model_id", "resid", "x", "y", "z"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise_error(stage, location, "predictions particionadas sem coluna obrigatoria", impact=str(len(missing)), examples=missing[:8])
+
+    df = df.select(
+        pl.col("target_id").cast(pl.Utf8),
+        pl.col("model_id").cast(pl.Int32),
+        pl.col("resid").cast(pl.Int32),
+        pl.col("x").cast(pl.Float64),
+        pl.col("y").cast(pl.Float64),
+        pl.col("z").cast(pl.Float64),
+    )
+    dup = df.group_by(["model_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
+    if dup.height > 0:
+        examples = (
+            dup.with_columns((pl.lit(target_id) + pl.lit(":") + pl.col("model_id").cast(pl.Utf8) + pl.lit(":") + pl.col("resid").cast(pl.Utf8)).alias("k"))
+            .get_column("k")
+            .head(8)
+            .to_list()
+        )
+        raise_error(stage, location, "predictions com chave duplicada no target", impact=str(int(dup.height)), examples=[str(x) for x in examples])
+
+    coords: dict[int, dict[int, tuple[float, float, float]]] = {}
+    for row in df.iter_rows(named=True):
+        resid = int(row["resid"])
+        mid = int(row["model_id"])
+        if mid not in model_ids:
+            continue
+        x = float(row["x"])
+        y = float(row["y"])
+        z = float(row["z"])
+        if (not math.isfinite(x)) or (not math.isfinite(y)) or (not math.isfinite(z)):
+            raise_error(stage, location, "coordenadas nao-finitas nas predictions", impact="1", examples=[f"{target_id}:{mid}:{resid}"])
+        if abs(x) > 1e6 or abs(y) > 1e6 or abs(z) > 1e6:
+            raise_error(stage, location, "coordenadas fora do range nas predictions", impact="1", examples=[f"{target_id}:{mid}:{resid}"])
+        per_resid = coords.setdefault(resid, {})
+        if mid in per_resid:
+            raise_error(stage, location, "predictions com chave duplicada no target", impact="1", examples=[f"{target_id}:{mid}:{resid}"])
+        per_resid[mid] = (x, y, z)
+    return coords
+
+
+def _export_submission_streaming(
+    *,
+    sample_path: Path,
+    predictions_long_path: Path,
+    out_path: Path,
+) -> SubmissionExportResult:
+    stage = "EXPORT"
+    location = "src/rna3d_local/submission.py:_export_submission_streaming"
+
+    if predictions_long_path.is_dir():
+        pred_part_dir = predictions_long_path
+    else:
+        pred_part_dir = out_path.parent / f"{predictions_long_path.stem}_by_target"
+        _partition_predictions_by_target(predictions_long_path=predictions_long_path, out_dir=pred_part_dir, stage=stage, location=location)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with sample_path.open("r", encoding="utf-8", newline="") as f_sample, out_path.open("w", encoding="utf-8", newline="") as f_out:
+            reader = csv.DictReader(f_sample)
+            if reader.fieldnames is None:
+                raise_error(stage, location, "sample vazio", impact="1", examples=[str(sample_path)])
+            header = list(reader.fieldnames)
+            if "ID" not in header:
+                raise_error(stage, location, "sample sem coluna ID", impact="1", examples=["ID"])
+            if "resid" not in header:
+                raise_error(stage, location, "sample sem coluna resid", impact="1", examples=["resid"])
+            model_ids = _model_ids_from_sample_columns(header, stage=stage, location=location)
+            writer = csv.DictWriter(f_out, fieldnames=header)
+            writer.writeheader()
+
+            current_target: str | None = None
+            current_coords: dict[int, dict[int, tuple[float, float, float]]] | None = None
+            for row_index, row in enumerate(reader):
+                key = str(row.get("ID", ""))
+                if "_" not in key:
+                    raise_error(stage, location, "ID invalido (esperado <target>_<resid>)", impact="1", examples=[key])
+                target_id = _target_id_from_key(key)
+                try:
+                    resid_key = _resid_from_key(key)
+                except Exception:
+                    raise_error(stage, location, "ID invalido (esperado <target>_<resid>)", impact="1", examples=[key])
+                try:
+                    resid_col = int(str(row.get("resid", "")).strip())
+                except Exception:
+                    raise_error(stage, location, "sample com resid invalido", impact="1", examples=[f"{key}:{row.get('resid')}"])
+                if resid_col != resid_key:
+                    raise_error(stage, location, "sample com resid divergente do ID", impact="1", examples=[f"{key}:resid={resid_col}"])
+
+                if target_id != current_target:
+                    current_target = target_id
+                    current_coords = _load_target_pred_map(
+                        pred_part_dir=pred_part_dir,
+                        target_id=target_id,
+                        model_ids=model_ids,
+                        stage=stage,
+                        location=location,
+                    )
+
+                assert current_coords is not None
+                per_resid = current_coords.get(int(resid_key))
+                if per_resid is None:
+                    raise_error(stage, location, "predictions sem resid para alvo", impact="1", examples=[f"{target_id}:{resid_key}"])
+                for mid in model_ids:
+                    if mid not in per_resid:
+                        raise_error(stage, location, "predictions sem model_id para resid", impact="1", examples=[f"{target_id}:{mid}:{resid_key}"])
+                    x, y, z = per_resid[mid]
+                    row[f"x_{mid}"] = str(float(x))
+                    row[f"y_{mid}"] = str(float(y))
+                    row[f"z_{mid}"] = str(float(z))
+                writer.writerow(row)
+    except OSError as exc:
+        raise_error(stage, location, "falha de IO ao exportar submissao (streaming)", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+
+    validate_submission_against_sample(sample_path=sample_path, submission_path=out_path)
+    return SubmissionExportResult(submission_path=out_path)
 
 
 def _target_id_from_key(key: str) -> str:
@@ -33,6 +220,9 @@ def export_submission(
     predictions_long_path: Path,
     out_path: Path,
 ) -> SubmissionExportResult:
+    if _should_use_streaming_export(sample_path=sample_path, predictions_long_path=predictions_long_path):
+        return _export_submission_streaming(sample_path=sample_path, predictions_long_path=predictions_long_path, out_path=out_path)
+
     stage = "EXPORT"
     location = "src/rna3d_local/submission.py:export_submission"
     sample = read_table(sample_path, stage=stage, location=location)
