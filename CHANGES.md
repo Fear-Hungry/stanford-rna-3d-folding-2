@@ -1046,6 +1046,23 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-128 (export de submissao RAM-safe)
+
+- Data UTC: `2026-02-17T19:13:18Z`
+- Plano: `PLAN-128`
+- Resumo:
+  - `export_submission` foi reescrito para evitar `sample.to_dicts()`/dicionarios Python gigantes e usar apenas operacoes Polars (join + agregacao por `model_id`), reduzindo risco de OOM de RAM no rerun hidden do Kaggle.
+  - Mantem modo estrito/fail-fast: erros acionaveis para IDs invalidos, chaves duplicadas e chaves faltantes vs `sample_submission`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/submission.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `119 passed`
+  - `python -m compileall -q src/rna3d_local` -> `ok`
+- Riscos conhecidos / follow-ups:
+  - Mitiga OOM no export, mas o notebook Kaggle ainda pode estourar RAM em outras etapas (ex.: materializacao de candidates muito grandes); se o rerun hidden continuar falhando, o proximo alvo e remover listas/dicts Python no notebook e fazer split/joins via Polars.
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-126 (Hardening Kaggle TBM-first)
 
 - Data UTC: `2026-02-17T18:20:56Z`

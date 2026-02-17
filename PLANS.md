@@ -2149,3 +2149,13 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Testes cobrem:
     - TBM sem `confidence` recebe `confidence=template_score` no pool.
     - `ranking_score=85.0` vira `0.85` e valores fora do intervalo falham cedo.
+
+## PLAN-128 - OOM Kaggle: export/submission sem Python dicts
+
+- Objetivo:
+  - Evitar OOM de RAM no rerun hidden (Kaggle) removendo `to_dicts()`/dicionarios Python gigantes na etapa de export de submissao.
+- Mudanca:
+  - Reescrever `export_submission` para usar operacoes Polars (join + agregacao por `model_id`) em vez de montar `key_map` e iterar `sample.to_dicts()`.
+- Critérios de aceite:
+  - `pytest -q` passa.
+  - `export_submission` continua fail-fast em chaves faltantes/duplicadas com erros acionaveis.
