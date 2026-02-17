@@ -90,7 +90,7 @@ def select_top5_hybrid(
                 examples=[tid],
             )
 
-        vectors = build_sample_vectors(target_df)
+        vectors = build_sample_vectors(target_df, stage=stage, location=location)
         candidates_scored: list[SampleCandidate] = []
         for row in summary.iter_rows(named=True):
             sample_id = str(row["sample_id"])

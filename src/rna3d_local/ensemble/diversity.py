@@ -9,21 +9,84 @@ import polars as pl
 from ..errors import raise_error
 
 
-def _vector_for_sample(sample_df: pl.DataFrame) -> np.ndarray:
-    coords = sample_df.select("x", "y", "z").to_numpy().astype(np.float64)
-    coords = coords - coords.mean(axis=0, keepdims=True)
-    vec = coords.reshape(-1)
+def _kabsch_align_centered(mobile_centered: np.ndarray, target_centered: np.ndarray) -> np.ndarray:
+    if mobile_centered.shape != target_centered.shape or mobile_centered.ndim != 2 or mobile_centered.shape[1] != 3:
+        raise ValueError(f"kabsch coords shape invalido: mobile={mobile_centered.shape} target={target_centered.shape}")
+    cov = mobile_centered.T @ target_centered
+    u, _s, vt = np.linalg.svd(cov, full_matrices=False)
+    v = vt.T
+    d = float(np.linalg.det(v @ u.T))
+    correction = np.eye(3, dtype=np.float64)
+    correction[2, 2] = 1.0 if d >= 0.0 else -1.0
+    rotation = v @ correction @ u.T
+    return mobile_centered @ rotation.T
+
+
+def _vector_from_centered_coords(coords_centered: np.ndarray) -> np.ndarray:
+    vec = coords_centered.reshape(-1)
     norm = float(np.linalg.norm(vec))
     if norm <= 1e-12:
         return np.zeros_like(vec)
     return vec / norm
 
 
-def build_sample_vectors(target_df: pl.DataFrame) -> dict[str, np.ndarray]:
+def _coords_for_sample(sample_df: pl.DataFrame) -> np.ndarray:
+    return sample_df.select("x", "y", "z").to_numpy().astype(np.float64, copy=False)
+
+
+def build_sample_vectors(target_df: pl.DataFrame, *, stage: str, location: str, anchor_sample_id: str | None = None) -> dict[str, np.ndarray]:
     vectors: dict[str, np.ndarray] = {}
+    if "sample_id" not in target_df.columns:
+        raise_error(stage, location, "target_df sem coluna sample_id para diversidade", impact="1", examples=target_df.columns[:8])
+    if "resid" not in target_df.columns:
+        raise_error(stage, location, "target_df sem coluna resid para diversidade", impact="1", examples=target_df.columns[:8])
+    for col in ["x", "y", "z"]:
+        if col not in target_df.columns:
+            raise_error(stage, location, "target_df sem coluna de coordenadas para diversidade", impact="1", examples=[col])
+
+    parts: list[tuple[str, pl.DataFrame]] = []
     for sample_id, part in target_df.group_by("sample_id", maintain_order=True):
         key = str(sample_id[0]) if isinstance(sample_id, tuple) else str(sample_id)
-        vectors[key] = _vector_for_sample(part.sort("resid"))
+        parts.append((key, part.sort("resid")))
+    if not parts:
+        raise_error(stage, location, "nenhum sample_id para diversidade", impact="1", examples=[])
+
+    anchor_id = str(anchor_sample_id) if anchor_sample_id is not None else str(parts[0][0])
+    anchor_part = None
+    for key, part in parts:
+        if key == anchor_id:
+            anchor_part = part
+            break
+    if anchor_part is None:
+        raise_error(stage, location, "anchor_sample_id ausente no target_df", impact="1", examples=[anchor_id])
+
+    anchor_coords = _coords_for_sample(anchor_part)
+    if not np.isfinite(anchor_coords).all():
+        raise_error(stage, location, "coordenadas nao-finitas no anchor para diversidade", impact="1", examples=[anchor_id])
+    anchor_center = anchor_coords.mean(axis=0, keepdims=True)
+    anchor_centered = anchor_coords - anchor_center
+    anchor_len = int(anchor_centered.shape[0])
+    if anchor_len <= 1:
+        raise_error(stage, location, "anchor com residuos insuficientes para diversidade", impact="1", examples=[anchor_id, f"n={anchor_len}"])
+
+    vectors[anchor_id] = _vector_from_centered_coords(anchor_centered)
+    for key, part in parts:
+        if key == anchor_id:
+            continue
+        coords = _coords_for_sample(part)
+        if int(coords.shape[0]) != anchor_len:
+            raise_error(
+                stage,
+                location,
+                "samples com comprimentos divergentes para diversidade (resid mismatch)",
+                impact="1",
+                examples=[f"anchor={anchor_id}:n={anchor_len}", f"{key}:n={int(coords.shape[0])}"],
+            )
+        if not np.isfinite(coords).all():
+            raise_error(stage, location, "coordenadas nao-finitas para diversidade", impact="1", examples=[key])
+        coords_centered = coords - coords.mean(axis=0, keepdims=True)
+        aligned = _kabsch_align_centered(coords_centered, anchor_centered)
+        vectors[key] = _vector_from_centered_coords(aligned)
     return vectors
 
 

@@ -77,7 +77,7 @@ def select_top5_se3(
                 impact=str(max(0, n_models - int(summary.height))),
                 examples=[tid],
             )
-        vectors = build_sample_vectors(target_df)
+        vectors = build_sample_vectors(target_df, stage=stage, location=location)
         candidates: list[SampleCandidate] = []
         for row in summary.iter_rows(named=True):
             sample_id = str(row["sample_id"])

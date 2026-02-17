@@ -1932,3 +1932,18 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-113 - Diversidade invariante a rotação (Kabsch por alvo)
+
+- Objetivo: corrigir o cálculo de diversidade para não confundir rotações arbitrárias como “diversidade”, evitando seleção Top-5 enviesada quando fontes geram frames diferentes (ex.: Chai/Boltz).
+- Escopo:
+  - `ensemble/diversity.py`:
+    - alinhar cada amostra ao anchor do alvo via Kabsch antes de gerar o vetor para similaridade;
+    - falhar cedo se algum sample tiver comprimento (n resíduos) divergente.
+  - Call-sites:
+    - atualizar `rank_se3_ensemble`, `select_top5_se3` e `select_top5_hybrid` para passar `stage/location` e usar o novo `build_sample_vectors`.
+  - Testes:
+    - adicionar teste cobrindo invariância a rotação/translação e erro em mismatch de comprimento.
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.

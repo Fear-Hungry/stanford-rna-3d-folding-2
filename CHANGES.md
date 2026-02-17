@@ -1113,6 +1113,26 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `102 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-113 (Diversidade invariante a rotação)
+
+- Data UTC: `2026-02-17T13:30:34Z`
+- Plano: `PLAN-113`
+- Resumo:
+  - `build_sample_vectors` agora alinha cada amostra ao anchor do alvo via Kabsch antes de computar similaridade, evitando tratar rotações arbitrárias como diversidade.
+  - Call-sites de seleção/ranking SE(3) e híbrido passaram a propagar `stage/location` e o cálculo falha cedo quando algum sample tem comprimento divergente.
+  - Testes cobrem invariância a rotação/translação e o caso de mismatch de comprimento.
+- Arquivos principais tocados:
+  - `src/rna3d_local/ensemble/diversity.py`
+  - `src/rna3d_local/ensemble/qa_ranker_se3.py`
+  - `src/rna3d_local/ensemble/select_top5.py`
+  - `src/rna3d_local/hybrid_select.py`
+  - `tests/test_diversity_rotation_invariance.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `104 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

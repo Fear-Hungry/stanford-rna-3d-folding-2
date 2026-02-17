@@ -70,7 +70,7 @@ def rank_se3_ensemble(
     rows: list[dict[str, object]] = []
     for target_id, target_df in candidates.group_by("target_id", maintain_order=True):
         tid = str(target_id[0]) if isinstance(target_id, tuple) else str(target_id)
-        vectors = build_sample_vectors(target_df)
+        vectors = build_sample_vectors(target_df, stage=stage, location=location)
         sample_scores: list[tuple[str, float, float, float]] = []
         for sample_id, sample_df in target_df.group_by("sample_id", maintain_order=True):
             sid = str(sample_id[0]) if isinstance(sample_id, tuple) else str(sample_id)
