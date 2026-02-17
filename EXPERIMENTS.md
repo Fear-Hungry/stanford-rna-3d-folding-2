@@ -1515,3 +1515,27 @@ Log append-only de experimentos executados.
 - Submissao Kaggle:
   - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 90 -m "PLAN-126: TBM-first with coverage split + DRfold2 fallback for no-template targets"`
   - Status no momento do registro: `PENDING` (submetido em `2026-02-17 18:46:10` no CLI).
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-128 (kernel v91 apos export RAM-safe; tentativa de destravar hidden OOM)
+
+- Data UTC: `2026-02-17T19:36:40Z`
+- Plano: `PLAN-128`
+- Objetivo:
+  - Testar no Kaggle (code competition rerun) a mitigacao de OOM via `export_submission` sem `to_dicts()`/dicts Python gigantes (PLAN-128), mantendo o mesmo candidato TBM-first.
+- Versao de codigo/dados:
+  - `git commit`: `48a24c6`
+  - Dataset src runtime: `marcux777/stanford-rna3d-reboot-src-v2` (nova versao publicada via `kaggle datasets version -r zip`)
+- Kernel:
+  - `kaggle kernels push -p runs/20260217_plan126_kernel_source` -> version `91`
+- Artefatos (output baixado):
+  - `runs/20260217_plan129_kernel_output_v91/submission.csv`
+  - `runs/20260217_plan129_kernel_output_v91/run_phase1_phase2_full_v2/combined_predictions.parquet`
+  - `runs/20260217_plan129_kernel_output_v91/stanford-rna3d-submit-prod-v2.log`
+- Validacao local executada:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan129_kernel_output_v91/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260217_plan129_kernel_output_v91/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260217_plan129_score_v91/score.json --report runs/20260217_plan129_score_v91/report.json`
+- Metricas/score (proxy local):
+  - `score=0.262925` (`runs/20260217_plan129_score_v91/score.json`)
+- Submissao Kaggle:
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 91 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan129_kernel_output_v91/submission.csv --notebook-output-path runs/20260217_plan129_kernel_output_v91/submission.csv --score-json runs/20260217_plan129_score_v91/score.json --baseline-score 0.132 --message \"PLAN-128: export Polars (RAM-safe) + kernel v91 rerun\" --execute-submit`
+  - Status no momento do registro: `PENDING` (submetido em `2026-02-17 19:36:26` no CLI).
