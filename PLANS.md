@@ -2094,3 +2094,20 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - Todas as variantes passam contrato estrito (`export-submission`/`check-submission`).
   - Score USalign e artefatos completos registrados em `runs/` por variante.
+
+## PLAN-125 - Experimento: sweep de escala de `confidence` (trade-off QA vs clashes)
+
+- Objetivo:
+  - Calibrar o quanto o seletor híbrido deve “confiar” no `confidence` relativo à penalidade de clash, sem alterar o código (apenas transformando o candidates).
+- Hipótese:
+  - Um `confidence_scale` ligeiramente menor pode evitar que confiança “por-fonte” domine o ranking quando clashes estão altos, melhorando o best-of-5.
+- Escopo:
+  - Reusar o mesmo candidates base do `PLAN-077`:
+    - `runs/20260216_plan077_kernel_output_v84/run_phase1_phase2_full_v2/hybrid_candidates.parquet`
+  - Gerar candidates variantes com `confidence_scaled = confidence_scale * confidence` para `confidence_scale in {0.5, 1.0, 2.0}`.
+  - Para cada variante:
+    - rodar `select-top5-hybrid` com `diversity_lambda=0.0`,
+    - exportar submissão e medir USalign full28 (`single`).
+- Critérios de aceite:
+  - Todas as variantes passam contrato estrito.
+  - Se algum `confidence_scale` superar o melhor score atual registrado, registrar em `EXPERIMENTS.md` e recomendar o ajuste correspondente no notebook de submissão (ou em código, se você pedir).

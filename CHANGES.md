@@ -1085,6 +1085,19 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `python -m compileall -q src/rna3d_local` -> ok
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-125 (planejamento + experimento de sweep confidence_scale)
+
+- Data UTC: `2026-02-17T16:23:31Z`
+- Plano: `PLAN-125`
+- Resumo:
+  - Adicionado o `PLAN-125` em `PLANS.md` e executado um sweep de escala de `confidence` (transformacao do candidates) para medir impacto no score USalign do Top-5 híbrido.
+- Arquivos principais tocados:
+  - `PLANS.md`
+  - `EXPERIMENTS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local` -> ok
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-109 (SE3 frames: eixos em colunas)
 
 - Data UTC: `2026-02-17T13:01:17Z`

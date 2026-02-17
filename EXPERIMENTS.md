@@ -1448,3 +1448,28 @@ Log append-only de experimentos executados.
   - `variant_conf_center`: `score=0.1699`
 - Conclusao:
   - Remover/centralizar `confidence` degradou o score vs o melhor atual desta rodada (`0.1753785714`), sugerindo que `confidence` carrega sinal util neste pool e nao deve ser descartado sem substituir por um QA melhor.
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-125 (Sweep de escala de `confidence`)
+
+- Data UTC: `2026-02-17T16:23:31Z`
+- Plano: `PLAN-125`
+- Objetivo:
+  - Calibrar o trade-off entre `confidence` e a penalidade de clash no seletor híbrido, sem alterar código (apenas escalando `confidence` no candidates).
+- Setup (inputs fixos):
+  - Candidates base: `runs/20260216_plan077_kernel_output_v84/run_phase1_phase2_full_v2/hybrid_candidates.parquet`
+  - Sample: `input/stanford-rna-3d-folding-2/sample_submission.csv`
+  - Ground truth: `input/stanford-rna-3d-folding-2/validation_labels.csv`
+  - USalign: `src/rna3d_local/evaluation/USalign`
+  - Seletor: `select-top5-hybrid` com `n_models=5`, `diversity_lambda=0.0`
+- Variantes:
+  - `confidence_scale in {0.5, 1.0, 2.0}` com `confidence := confidence_scale * confidence`.
+- Artefatos:
+  - `runs/20260217_plan125_conf_scale_20260217T162331Z/scores.csv`
+  - `runs/20260217_plan125_conf_scale_20260217T162331Z/sweep.log`
+  - `runs/20260217_plan125_conf_scale_20260217T162331Z/scale_*/{candidates.parquet,hybrid_top5.parquet,submission.csv,score.json,report.json}`
+- Metricas/score (full28, `single`):
+  - `confidence_scale=0.5`: `score=0.17423928571428574`
+  - `confidence_scale=1.0`: `score=0.1753785714285714` (melhor desta rodada; coincide com PLAN-123)
+  - `confidence_scale=2.0`: `score=0.17425`
+- Conclusao:
+  - O melhor ponto neste sweep foi manter a escala original (`confidence_scale=1.0`); reduzir ou aumentar piorou o score.
