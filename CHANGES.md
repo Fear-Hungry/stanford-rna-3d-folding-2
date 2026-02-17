@@ -1045,6 +1045,108 @@ Log append-only de mudancas implementadas.
   - `CHANGES.md`
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-103 (grafo SE3 com arestas BPP)
+
+- Data UTC: `2026-02-17T01:42:20Z`
+- Plano: `PLAN-103`
+- Resumo:
+  - `build_sparse_radius_graph` agora suporta injecao de arestas topologicas via pares esparsos (ex.: BPP), com filtro por probabilidade e `top-k` por no.
+  - O budget total de arestas por src passa a ser respeitado (`out_degree <= max_neighbors`), priorizando arestas BPP sobre arestas espaciais quando necessario.
+  - Config SE3 ganhou knobs para habilitar arestas BPP e as configs `se3_local16gb_{mamba,flash}.json` foram atualizadas para ligar essa topologia por padrao.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sparse_graph.py`
+  - `src/rna3d_local/se3/egnn_backbone.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `experiments/configs/se3_local16gb_mamba.json`
+  - `experiments/configs/se3_local16gb_flash.json`
+  - `tests/test_se3_memory.py`
+- Validacao local executada:
+  - `pytest -q` -> `90 passed`
+- Riscos conhecidos / follow-ups:
+  - `graph_pair_min_prob`/`graph_pair_max_per_node` sao hiperparametros: podem exigir tuning por split/length; valores altos podem elevar custo por camada mesmo com budget final fixo (mais trabalho de selecao/dedup).
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-104 (pruning BPPM contínua)
+
+- Data UTC: `2026-02-17T01:42:20Z`
+- Plano: `PLAN-104`
+- Resumo:
+  - `compute_thermo_bpp` agora suporta pruning da BPPM contínua via `min_pair_prob` e `max_pairs_per_node` para manter custo/memória previsíveis.
+  - Pipeline/config SE3 ganhou `thermo_pair_min_prob` e `thermo_pair_max_per_node` e passou a propagar esses knobs para treino/inferência e `config_effective.json`.
+  - Configs `se3_local16gb_{mamba,flash}.json` foram atualizadas para habilitar pruning alinhado às arestas BPP do grafo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `src/rna3d_local/training/dataset_se3.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/se3_pipeline.py`
+  - `src/rna3d_local/training/data_lab.py`
+  - `experiments/configs/se3_local16gb_mamba.json`
+  - `experiments/configs/se3_local16gb_flash.json`
+  - `tests/test_thermo_2d.py`
+- Validacao local executada:
+  - `pytest -q` -> `90 passed`
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-105 (IPA com frames particionados)
+
+- Data UTC: `2026-02-17T01:42:20Z`
+- Plano: `PLAN-105`
+- Resumo:
+  - `IpaBlock` agora constrói um segundo frame por resíduo (`base_frames`) como rotação relativa aprendida (SO(3) via 6D) sobre o frame ribose/backbone derivado de C1'.
+  - O termo de orientação da atenção passa a incluir também a direção do edge no frame da base, permitindo maior flexibilidade geométrica sem alterar o contrato C1'-only.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/geometry.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `tests/test_ipa_geometry.py`
+- Validacao local executada:
+  - `pytest -q` -> `90 passed`
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-106 (homology folds com clustering estrutural)
+
+- Data UTC: `2026-02-17T01:42:20Z`
+- Plano: `PLAN-106`
+- Resumo:
+  - `build-homology-folds` ganhou backend `usalign_tm` para clusterizar **targets de treino** por similaridade estrutural (TM-score via USalign, C1'-only) usando `train_labels`.
+  - CLI agora expõe `--train-labels`, `--usalign-bin`, `--tm-threshold` e `--usalign-timeout-seconds` e falha cedo quando faltarem os requisitos.
+- Arquivos principais tocados:
+  - `src/rna3d_local/homology_folds.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_homology_folds_structural.py`
+- Validacao local executada:
+  - `pytest -q` -> `90 passed`
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-076 (hardening QUICK_START em chemical_features)
+
+- Data UTC: `2026-02-17T01:42:20Z`
+- Plano: `PLAN-076`
+- Resumo:
+  - `prepare-chemical-features` agora suporta QUICK_START de templates com colunas `x,y,z` (triplet único) e IDs no formato `target_resid`, além do schema `x_i,y_i,z_i`.
+  - Testes cobrem o novo schema para prevenir regressão no rerun oculto do Kaggle.
+- Arquivos principais tocados:
+  - `src/rna3d_local/chemical_features.py`
+  - `tests/test_chemical_features.py`
+- Validacao local executada:
+  - `pytest -q` -> `90 passed`
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-075 (encoder real ribonanzanet2 state_dict + defaults)
+
+- Data UTC: `2026-02-17T01:42:20Z`
+- Plano: `PLAN-075`
+- Resumo:
+  - `encode_sequences` agora suporta checkpoints `state_dict` (além de TorchScript), instanciando o RibonanzaNet2 a partir do `Network.py` presente nos assets.
+  - Implementado chunking por janela (`max_len`) para evitar estouro quadrático em sequências longas.
+  - Defaults de `--embedding-dim` foram ajustados para `384` (compatível com RibonanzaNet2) e a dependência `einops` passou a ser declarada no projeto.
+- Arquivos principais tocados:
+  - `src/rna3d_local/encoder.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `pyproject.toml`
+- Validacao local executada:
+  - `pytest -q` -> `90 passed`
+  - Smoke: `python -c "from rna3d_local.encoder import encode_sequences; ..."` -> `ok` (state_dict -> (N,384))
+
   - `python -m rna3d_local build-wheelhouse --wheels-dir assets/wheels --python-version 3.12` -> `ok` (gera `assets/runtime/wheelhouse_manifest.json`)
   - `python -m rna3d_local build-phase2-assets --assets-dir assets` -> `ok` (gera `assets/runtime/manifest.json`)
 - Riscos conhecidos / follow-ups:

@@ -1247,3 +1247,49 @@ Log append-only de experimentos executados.
   - Suite completa: `73 passed in 5.33s` (0 warnings).
 - Conclusao:
   - A suite passou a ser um sinal mais limpo: warnings remanescentes devem ser tratados (ou filtrados explicitamente se forem de terceiros e conhecidos).
+
+## ADHOC
+
+### 2026-02-17T00:35:07Z - marcusvinicius/Codex (validacao local real do RNAPro + export strict)
+
+- Objetivo/hipotese:
+  - Validar que o runtime real do RNAPro roda localmente e gera `predictions_long.parquet` exportavel sob contrato estrito (sem fallback silencioso).
+- Comparacao:
+  - Baseline: `predict-rnapro-offline` falhava localmente quando o subprocess usava Python fora do venv e/ou torch sem suporte a `sm_120` (RTX 5060 Ti).
+  - Novo: venv `py312` + `torch==2.9.1+cu128` executa o runner (GPU) e exporta CSV valido.
+- Comandos executados:
+  - Preparar suporte CCD/templates (artefatos em `assets/models/rnapro/`):
+    - `.venv312/bin/python -m rna3d_local prepare-rnapro-support-files --model-dir assets/models/rnapro --timeout-seconds 1200`
+  - Criar targets/sample subset (1 alvo curto):
+    - `runs/20260217_rnapro_smoke_9QZJ/targets.csv` a partir de `input/stanford-rna-3d-folding-2/test_sequences.csv` (`target_id=9QZJ`)
+    - `runs/20260217_rnapro_smoke_9QZJ/sample_submission_9QZJ.csv` a partir de `input/stanford-rna-3d-folding-2/sample_submission.csv`
+  - Instalar venv com torch cu128 (necessario para `sm_120`):
+    - `uv venv --python 3.12 .venv312cu128`
+    - `uv pip install -p .venv312cu128/bin/python --index https://download.pytorch.org/whl/cu128 torch==2.9.1+cu128`
+    - `uv pip install -p .venv312cu128/bin/python -e .`
+    - `uv pip install -p .venv312cu128/bin/python numpy==1.26.4 gemmi==0.6.7 rdkit==2023.9.6 pdbeccdutils==0.8.6 ml-collections==1.1.0 biotite==1.4.0 dm-tree==0.1.9 pyyaml==6.0.2 scipy scikit-learn optree einops`
+    - `uv pip install -p .venv312cu128/bin/python --no-deps "rnapro @ git+https://github.com/NVIDIA-Digital-Bio/RNAPro.git@ca582630bb2f79193853ecfe859f88a5650cb295"`
+  - Rodar RNAPro offline (1 alvo, `n_models=5`):
+    - `bash -lc 'source .venv312cu128/bin/activate && python -m rna3d_local predict-rnapro-offline --model-dir assets/models/rnapro --targets runs/20260217_rnapro_smoke_9QZJ/targets.csv --out runs/20260217_rnapro_smoke_9QZJ/rnapro_pred5_cu128.parquet --n-models 5'`
+  - Export + validacao strict (contra sample subset):
+    - `bash -lc 'source .venv312cu128/bin/activate && python -m rna3d_local export-submission --sample runs/20260217_rnapro_smoke_9QZJ/sample_submission_9QZJ.csv --predictions runs/20260217_rnapro_smoke_9QZJ/rnapro_pred5_cu128.parquet --out runs/20260217_rnapro_smoke_9QZJ/submission_9QZJ.csv'`
+    - `bash -lc 'source .venv312cu128/bin/activate && python -m rna3d_local check-submission --sample runs/20260217_rnapro_smoke_9QZJ/sample_submission_9QZJ.csv --submission runs/20260217_rnapro_smoke_9QZJ/submission_9QZJ.csv'`
+  - Validar manifest de assets phase2:
+    - `bash -lc 'source .venv312cu128/bin/activate && python -m rna3d_local build-phase2-assets --assets-dir assets'`
+- Configuracao efetiva:
+  - Target smoke: `9QZJ` (len=19).
+  - `n_models=5` (contrato Best-of-5).
+- Seeds:
+  - Runner RNAPro usa `--seed 101` (default do runner).
+- Versao de codigo/dados:
+  - `git commit`: `707d4d1`
+  - Dados: `input/stanford-rna-3d-folding-2/*`.
+- Artefatos:
+  - `runs/20260217_rnapro_smoke_9QZJ/rnapro_pred5_cu128.parquet`
+  - `runs/20260217_rnapro_smoke_9QZJ/submission_9QZJ.csv`
+  - `assets/runtime/manifest.json`
+- Metricas/score/custo:
+  - RNAPro (1 alvo, `n_models=5`): ~60s.
+  - `check-submission`: `ok=true` (contra sample subset).
+- Conclusao:
+  - Pipeline real do RNAPro (offline) executa e exporta em formato estrito; para GPU `sm_120`, requer `torch==2.9.1+cu128` (o pin upstream `torch==2.7.1+cu126` nao roda nesta GPU).

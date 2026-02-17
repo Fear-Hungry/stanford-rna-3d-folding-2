@@ -1776,3 +1776,69 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Criterios de aceite:
   - `python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2 --dry-run` imprime plano de download (arquivos + tamanhos).
   - Testes unitarios para downloader (fallback + sha256 mismatch) sem usar rede.
+
+## PLAN-103 - Grafo SE3 com arestas topologicas por BPP (budget fixo)
+
+- Objetivo: garantir que interacoes long-range (ex.: pseudoknots/kissing loops) participem do message passing desde a primeira camada, sem explodir VRAM (mantendo budget por no).
+- Escopo:
+  - `se3/sparse_graph.py`:
+    - estender `build_sparse_radius_graph` para aceitar pares esparsos (`pair_src/dst/prob`) e injetar arestas topologicas filtradas por `min_prob` e `topk` por no;
+    - deduplicar arestas e manter `out_degree <= max_neighbors` priorizando pares (BPP) sobre arestas espaciais.
+  - Config:
+    - adicionar `graph_pair_edges={none,bpp}`, `graph_pair_min_prob`, `graph_pair_max_per_node` no loader e no `config_effective.json`.
+    - habilitar `graph_pair_edges=bpp` nas configs `se3_local16gb_{mamba,flash}.json`.
+  - Testes:
+    - adicionar teste unitario garantindo: (a) aresta BPP long-range aparece no grafo; (b) budget `max_neighbors` nao e excedido.
+- Criterios de aceite:
+  - `pytest -q` verde.
+  - `build_sparse_radius_graph(..., pair_*)` injeta arestas BPP e mantem `out_degree <= max_neighbors` por src.
+
+## PLAN-104 - Pruning de BPPM contínua (Partition Function) para custo previsível
+
+- Objetivo: manter o uso de BPPM contínua (partition function; nao MFE/dot-bracket) mas com custo/memória previsíveis em sequências longas, reduzindo `pair_src/dst/prob` para um conjunto esparso controlado.
+- Escopo:
+  - `training/thermo_2d.py`:
+    - adicionar parâmetros de pruning `min_pair_prob` e `max_pairs_per_node` (top-k por resíduo) aplicados às listas de pares por cadeia;
+    - cache deve incorporar esses parâmetros (sem reutilizar cache de outro regime).
+  - Config/pipeline SE3:
+    - adicionar knobs `thermo_pair_min_prob` e `thermo_pair_max_per_node` em `config_se3.py`;
+    - propagar para treino + inferência + `config_effective.json`.
+  - Configs:
+    - ajustar `experiments/configs/se3_local16gb_{mamba,flash}.json` para ligar pruning (valores alinhados ao grafo BPP).
+  - Testes:
+    - cobrir que `compute_thermo_bpp(..., min_pair_prob, max_pairs_per_node)` limita o número de pares sem quebrar shapes e mantém determinismo com cache.
+- Criterios de aceite:
+  - `pytest -q` verde.
+  - `compute_thermo_bpp` com pruning não explode em memória (limite proporcional a `N * max_pairs_per_node`).
+
+## PLAN-105 - IPA com frames particionados (ribose vs base) em C1'-only
+
+- Objetivo: reduzir o viés do IPA "1 corpo rígido por resíduo" para RNA, separando pelo menos dois frames por nucleotídeo: um frame ribose/backbone derivado de C1' e um frame de base com rotação relativa aprendida (SO(3) por resíduo).
+- Escopo:
+  - `se3/geometry.py`:
+    - adicionar conversão robusta de representação 6D -> SO(3) (matriz 3x3) para rotações relativas aprendidas;
+    - manter `build_rna_local_frames` como fonte do frame ribose/backbone (equivariante).
+  - `se3/ipa_backbone.py`:
+    - dentro de `IpaBlock`, aprender uma rotação relativa por resíduo e construir `base_frames = ribose_frames @ R_delta`;
+    - usar `base_frames` para o termo de orientação da atenção (empilhamento/pareamento) sem alterar o contrato de entrada/saída do SE3.
+  - Testes:
+    - garantir que a rotação 6D -> SO(3) é ortonormal/finita e que `IpaBackbone` ainda roda em modo smoke.
+- Criterios de aceite:
+  - `pytest -q` verde.
+  - `IpaBackbone` mantém shapes e finitude com `base_frames` habilitado.
+
+## PLAN-106 - Homology folds com clustering estrutural (TM-score/USalign) anti-leakage
+
+- Objetivo: reduzir risco severo de data leakage em CV causado por homologia estrutural profunda em RNA (não capturada por identidade de sequência), isolando famílias topológicas em folds distintos.
+- Escopo:
+  - `homology_folds.py`:
+    - adicionar backend `usalign_tm` que clusteriza **targets de treino** por similaridade estrutural (TM-score via USalign, C1'-only) usando `train_labels`;
+    - para `pdb_sequences` (sem estrutura), manter clustering por sequência (python) apenas para relatório, sem afetar o assignment dos folds de treino.
+  - CLI:
+    - expor flags `--train-labels`, `--usalign-bin`, `--tm-threshold`, `--usalign-timeout-seconds` no comando `build-homology-folds`;
+    - fail-fast se `backend=usalign_tm` e faltar `train_labels`/`usalign`.
+  - Testes:
+    - adicionar teste unitário que stuba `subprocess.run` para USalign e valida que targets estruturalmente similares caem no mesmo `cluster_id`/fold.
+- Critérios de aceite:
+  - `pytest -q` verde.
+  - `backend=usalign_tm` falha cedo com mensagem acionável se labels/USalign faltarem.
