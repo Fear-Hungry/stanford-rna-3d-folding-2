@@ -213,6 +213,12 @@ def test_phase2_router_and_top5_selection(tmp_path: Path) -> None:
     assert rules["T2"] == "orphan->chai1+boltz1"
     assert rules["T3"] == "ligand->boltz1"
 
+    candidates = pl.read_parquet(routed.candidates_path)
+    assert candidates.filter(pl.col("source") == "chai1_boltz1_ensemble").height == 0
+    t2_sources = set(candidates.filter(pl.col("target_id") == "T2").select("source").unique().get_column("source").to_list())
+    assert "chai1" in t2_sources
+    assert "boltz1" in t2_sources
+
     top5 = select_top5_hybrid(
         repo_root=tmp_path,
         candidates_path=routed.candidates_path,

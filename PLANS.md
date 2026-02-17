@@ -1842,3 +1842,38 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `pytest -q` verde.
   - `backend=usalign_tm` falha cedo com mensagem acionável se labels/USalign faltarem.
+
+## PLAN-107 - Oráculo local via métrica oficial do Kaggle (tm-score-permutechains)
+
+- Objetivo: evitar otimizar contra um score local não correlacionado com o servidor Kaggle, integrando o `metric.py` oficial (inclui strict numbering, permutação de cadeias e best-of-5 vs ensembles).
+- Escopo:
+  - `evaluation/kaggle_official/`:
+    - adicionar diretório isolado e instruções para o usuário colocar `metric.py` e binários oficiais (sem commitar código externo).
+  - Wrapper:
+    - adicionar módulo que valida contratos (IDs, duplicatas) e chama `metric.score(sol_df, sub_df, row_id_column_name='ID')`;
+    - fail-fast se faltar `metric.py`/dependências (`pandas`, `numpy`).
+  - CLI:
+    - adicionar comando `score-local-kaggle-official` para gerar `score.json` e `report.json` compatíveis com logs do repo.
+  - Testes:
+    - stub de `metric.py` temporário para validar import/call e fail-fast quando ausente.
+- Critérios de aceite:
+  - `pytest -q` verde.
+  - comando falha cedo com mensagem acionável quando `metric.py` não está disponível.
+
+## PLAN-108 - Corrigir híbrido Chai+Boltz (sem média em frames) + Top-5 com diversidade/clash
+
+- Objetivo: remover um erro matemático que degrada coordenadas (média direta entre frames arbitrários) e substituir o Top-5 híbrido baseado em defaults de `confidence` por uma seleção geométrica mais robusta (clashes + diversidade), preservando fail-fast.
+- Escopo:
+  - `hybrid_router.py`:
+    - remover o "ensemble" por média de coordenadas Chai+Boltz;
+    - para rotas `orphan->chai1+boltz1` e `template_missing->chai1+boltz1`, incluir **candidatos separados** (`source=chai1` e `source=boltz1`) no pool de candidatos.
+    - parar de injetar `confidence` default por `source` quando ausente (evitar ranking por prior fixo).
+  - `hybrid_select.py`:
+    - selecionar Top-5 por alvo usando score ajustado por clashes + diversidade (reaproveitando `ensemble/diversity.py`);
+    - expor `--diversity-lambda` no comando `select-top5-hybrid` (default alinhado ao SE(3)).
+  - Testes:
+    - ajustar testes de pipeline híbrido para exigir ausência de `source=chai1_boltz1_ensemble` e presença de `chai1`+`boltz1` no pool.
+- Critérios de aceite:
+  - `pytest -q` verde.
+  - `build-hybrid-candidates` não produz mais `source=chai1_boltz1_ensemble`.
+  - `select-top5-hybrid` produz exatamente `n_models` por alvo (1..n_models) e falha cedo se faltar cobertura.

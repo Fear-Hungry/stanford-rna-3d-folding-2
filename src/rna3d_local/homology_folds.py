@@ -224,25 +224,30 @@ def _cluster_train_by_usalign_tm(
     if int(timeout_seconds) <= 0:
         raise_error(stage, location, "usalign_timeout_seconds invalido (<=0)", impact="1", examples=[str(timeout_seconds)])
     usalign_path = _ensure_usalign_executable(usalign_bin, stage=stage, location=location)
-    labels = read_table(train_labels_path, stage=stage, location=location)
-    require_columns(labels, ["target_id", "resid", "x", "y", "z"], stage=stage, location=location, label="train_labels")
+    labels_raw = read_table(train_labels_path, stage=stage, location=location)
+    require_columns(labels_raw, ["target_id", "resid", "x", "y", "z"], stage=stage, location=location, label="train_labels")
+    labels = (
+        labels_raw.select(
+            pl.col("target_id").cast(pl.Utf8).alias("target_id"),
+            pl.col("resid").cast(pl.Int64).alias("resid"),
+            pl.col("x").cast(pl.Float64, strict=False).alias("x"),
+            pl.col("y").cast(pl.Float64, strict=False).alias("y"),
+            pl.col("z").cast(pl.Float64, strict=False).alias("z"),
+        )
+        .sort(["target_id", "resid"])
+    )
+    labels_by_target: dict[str, pl.DataFrame] = {}
+    for key, group in labels.group_by("target_id", maintain_order=True):
+        tid = key[0] if isinstance(key, tuple) else key
+        labels_by_target[str(tid)] = group
 
     with TemporaryDirectory(prefix="rna3d_homology_struct_pdb_") as tmp_dir_raw:
         tmp_dir = Path(tmp_dir_raw)
         pdb_by_target: dict[str, Path] = {}
         for entry in train_entries:
             target_id = str(entry.entity_id)
-            subset = (
-                labels.filter(pl.col("target_id").cast(pl.Utf8) == str(target_id))
-                .select(
-                    pl.col("resid").cast(pl.Int64),
-                    pl.col("x").cast(pl.Float64, strict=False).alias("x"),
-                    pl.col("y").cast(pl.Float64, strict=False).alias("y"),
-                    pl.col("z").cast(pl.Float64, strict=False).alias("z"),
-                )
-                .sort("resid")
-            )
-            if subset.height == 0:
+            subset = labels_by_target.get(target_id)
+            if subset is None or subset.height == 0:
                 raise_error(stage, location, "train_labels sem linhas para target", impact="1", examples=[target_id])
             out_path = (tmp_dir / f"{target_id}.pdb").resolve()
             _write_c1_pdb(target_id=target_id, sequence=str(entry.sequence), coords=subset, out_path=out_path, stage=stage, location=location)

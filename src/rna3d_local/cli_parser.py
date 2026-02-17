@@ -123,6 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
     local_score.add_argument("--score-json", required=True)
     local_score.add_argument("--report", default=None)
 
+    kaggle_score = subparsers.add_parser("score-local-kaggle-official", help="Score using official Kaggle metric.py (no fallback)")
+    kaggle_score.add_argument("--ground-truth", required=True)
+    kaggle_score.add_argument("--submission", required=True)
+    kaggle_score.add_argument("--score-json", required=True)
+    kaggle_score.add_argument("--report", required=True)
+    kaggle_score.add_argument("--metric-py", default=None)
+
     sub = subparsers.add_parser("submit-kaggle-notebook", help="Submit notebook-only after strict local checks")
     sub.add_argument("--competition", required=True)
     sub.add_argument("--notebook-ref", required=True)
@@ -261,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     top5.add_argument("--candidates", required=True)
     top5.add_argument("--out", required=True)
     top5.add_argument("--n-models", type=int, default=5)
+    top5.add_argument("--diversity-lambda", type=float, default=0.35)
 
     mini = subparsers.add_parser("minimize-ensemble", help="Run post-inference geometric minimization on long predictions")
     mini.add_argument("--predictions", required=True)

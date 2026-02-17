@@ -1046,6 +1046,44 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
+
+- Data UTC: `2026-02-17T01:50:13Z`
+- Plano: `PLAN-107`
+- Resumo:
+  - Adicionado scorer local **sem fallback** que executa a metrica oficial do Kaggle (drop-in de `metric.py`), para evitar otimizar contra RMSD/US-align default e alinhar o CV com o servidor.
+  - Novo comando CLI `score-local-kaggle-official` valida contratos de IDs (duplicatas / faltantes / extras) e falha cedo com mensagens acionaveis.
+  - Criado diretorio isolado `src/rna3d_local/evaluation/kaggle_official/` com README orientando como inserir `metric.py` sem vendorizar codigo de terceiros.
+- Arquivos principais tocados:
+  - `src/rna3d_local/evaluation/kaggle_oracle.py`
+  - `src/rna3d_local/evaluation/kaggle_official/README.md`
+  - `src/rna3d_local/evaluation/__init__.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_kaggle_oracle.py`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `94 passed`
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-108 (Hybrid: remover media Chai+Boltz + Top-5 com diversidade/clash)
+
+- Data UTC: `2026-02-17T01:58:15Z`
+- Plano: `PLAN-108`
+- Resumo:
+  - Removida a fusao por media direta de coordenadas Chai+Boltz (frames arbitrarios) no roteador hibrido; agora Chai e Boltz entram como candidatos separados no pool.
+  - `select_top5_hybrid` deixou de rankear por `confidence` default por fonte; agora seleciona Top-5 por alvo via score ajustado por clashes + diversidade (reuso de `ensemble/diversity.py`).
+  - CLI `select-top5-hybrid` ganhou `--diversity-lambda` (default 0.35) para controlar o tradeoff diversidade vs score.
+- Arquivos principais tocados:
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/hybrid_select.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_phase2_hybrid.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `94 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-103 (grafo SE3 com arestas BPP)
 
 - Data UTC: `2026-02-17T01:42:20Z`
@@ -1117,6 +1155,18 @@ Log append-only de mudancas implementadas.
   - `tests/test_homology_folds_structural.py`
 - Validacao local executada:
   - `pytest -q` -> `90 passed`
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-106 (addendum: performance)
+
+- Data UTC: `2026-02-17T01:45:06Z`
+- Plano: `PLAN-106`
+- Resumo:
+  - Otimizada a leitura de `train_labels` no backend `usalign_tm` (pré-agrupamento por `target_id`) para evitar `filter` repetitivo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/homology_folds.py`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `92 passed`
 
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-076 (hardening QUICK_START em chemical_features)
 

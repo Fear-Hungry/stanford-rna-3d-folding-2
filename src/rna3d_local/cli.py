@@ -13,6 +13,7 @@ from .embedding_index import build_embedding_index
 from .ensemble.qa_ranker_se3 import rank_se3_ensemble
 from .ensemble.select_top5 import select_top5_se3
 from .evaluation import score_local_bestof5
+from .evaluation.kaggle_oracle import score_local_kaggle_official
 from .experiments import run_experiment
 from .errors import PipelineError
 from .homology_eval import evaluate_homology_folds
@@ -255,6 +256,23 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "score-local-kaggle-official":
+            out = score_local_kaggle_official(
+                ground_truth_path=(repo / args.ground_truth).resolve(),
+                submission_path=(repo / args.submission).resolve(),
+                score_json_path=(repo / args.score_json).resolve(),
+                report_path=(repo / args.report).resolve(),
+                metric_path=(None if args.metric_py is None else (repo / args.metric_py).resolve()),
+            )
+            _print_json(
+                {
+                    "score": float(out.score),
+                    "score_json": str(out.score_json_path),
+                    "report": str(out.report_path),
+                }
+            )
+            return 0
+
         if args.command == "submit-kaggle-notebook":
             out = submit_kaggle_notebook(
                 competition=str(args.competition),
@@ -485,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
                 candidates_path=(repo / args.candidates).resolve(),
                 out_path=(repo / args.out).resolve(),
                 n_models=int(args.n_models),
+                diversity_lambda=float(args.diversity_lambda),
             )
             _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
             return 0

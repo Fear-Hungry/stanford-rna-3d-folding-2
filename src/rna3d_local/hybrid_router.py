@@ -41,19 +41,6 @@ def _aggressive_foundation_offload(*, model: object | None, stage: str, location
             raise_error(stage, location, "falha ao liberar cache CUDA no offload", impact="1", examples=[f"{context}:{type(exc).__name__}:{exc}"])
 
 
-def _default_confidence_for_source(source: str) -> float:
-    mapping = {
-        "tbm": 0.82,
-        "rnapro": 0.72,
-        "chai1": 0.78,
-        "boltz1": 0.74,
-        "chai1_boltz1_ensemble": 0.79,
-        "generative_se3": 0.80,
-        "se3": 0.80,
-    }
-    return float(mapping.get(source, 0.70))
-
-
 def _normalize_predictions_table(df: pl.DataFrame, *, source: str, stage: str, location: str) -> pl.DataFrame:
     require_columns(df, ["target_id", "model_id", "resid", "resname", "x", "y", "z"], stage=stage, location=location, label=source)
     out = df.select(
@@ -64,7 +51,7 @@ def _normalize_predictions_table(df: pl.DataFrame, *, source: str, stage: str, l
         pl.col("x").cast(pl.Float64),
         pl.col("y").cast(pl.Float64),
         pl.col("z").cast(pl.Float64),
-        (pl.col("confidence").cast(pl.Float64) if "confidence" in df.columns else pl.lit(_default_confidence_for_source(source))).alias("confidence"),
+        (pl.col("confidence").cast(pl.Float64) if "confidence" in df.columns else pl.lit(None).cast(pl.Float64)).alias("confidence"),
         (pl.col("source").cast(pl.Utf8) if "source" in df.columns else pl.lit(source)).alias("source"),
     )
     dup = out.group_by(["target_id", "model_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
@@ -81,42 +68,18 @@ def _normalize_predictions_table(df: pl.DataFrame, *, source: str, stage: str, l
     return out
 
 
-def _build_chai_boltz_ensemble_for_target(*, target_id: str, chai: pl.DataFrame, boltz: pl.DataFrame, stage: str, location: str) -> pl.DataFrame:
-    chai_t = chai.filter(pl.col("target_id") == target_id).select("target_id", "model_id", "resid", "resname", "x", "y", "z", "confidence")
-    boltz_t = boltz.filter(pl.col("target_id") == target_id).select("target_id", "model_id", "resid", "resname", "x", "y", "z", "confidence")
+def _build_chai_boltz_candidates_for_target(*, target_id: str, chai: pl.DataFrame, boltz: pl.DataFrame, stage: str, location: str) -> pl.DataFrame:
+    chai_t = chai.filter(pl.col("target_id") == target_id).select("target_id", "model_id", "resid", "resname", "x", "y", "z", "confidence", "source")
+    boltz_t = boltz.filter(pl.col("target_id") == target_id).select("target_id", "model_id", "resid", "resname", "x", "y", "z", "confidence", "source")
     if chai_t.height == 0 or boltz_t.height == 0:
         raise_error(
             stage,
             location,
-            "ensemble chai+boltz sem cobertura completa do alvo",
+            "candidatos chai+boltz sem cobertura completa do alvo",
             impact="1",
             examples=[f"{target_id}:chai={chai_t.height}:boltz={boltz_t.height}"],
         )
-    join = chai_t.join(
-        boltz_t,
-        on=["target_id", "model_id", "resid"],
-        how="inner",
-        suffix="_boltz",
-    )
-    if join.height != chai_t.height or join.height != boltz_t.height:
-        raise_error(
-            stage,
-            location,
-            "ensemble chai+boltz com mismatch de chaves",
-            impact=str(abs(chai_t.height - join.height) + abs(boltz_t.height - join.height)),
-            examples=[target_id],
-        )
-    out = join.select(
-        pl.col("target_id"),
-        pl.col("model_id"),
-        pl.col("resid"),
-        pl.col("resname"),
-        ((pl.col("x") + pl.col("x_boltz")) / 2.0).alias("x"),
-        ((pl.col("y") + pl.col("y_boltz")) / 2.0).alias("y"),
-        ((pl.col("z") + pl.col("z_boltz")) / 2.0).alias("z"),
-        ((pl.col("confidence") + pl.col("confidence_boltz")) / 2.0).alias("confidence"),
-    ).with_columns(pl.lit("chai1_boltz1_ensemble").alias("source"))
-    return out
+    return pl.concat([chai_t, boltz_t], how="vertical_relaxed").sort(["source", "model_id", "resid"])
 
 
 def _template_score_by_target(retrieval: pl.DataFrame, *, stage: str, location: str) -> dict[str, float]:
@@ -219,10 +182,10 @@ def build_hybrid_candidates(
                 primary_df = boltz1.filter(pl.col("target_id") == tid)
             else:
                 rule = "template_missing->chai1+boltz1"
-                primary_source = "chai1_boltz1_ensemble"
+                primary_source = "chai1+boltz1"
                 if chai1 is None or boltz1 is None:
                     raise_error(stage, location, "rota template_missing sem ligante exige chai1_path e boltz1_path", impact="1", examples=[tid])
-                primary_df = _build_chai_boltz_ensemble_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
+                primary_df = _build_chai_boltz_candidates_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
         elif has_ligand:
             rule = "ligand->boltz1"
             primary_source = "boltz1"
@@ -231,12 +194,12 @@ def build_hybrid_candidates(
             primary_df = boltz1.filter(pl.col("target_id") == tid)
         else:
             rule = "orphan->chai1+boltz1"
-            primary_source = "chai1_boltz1_ensemble"
+            primary_source = "chai1+boltz1"
             if chai1 is None or boltz1 is None:
                 raise_error(stage, location, "rota orfao exige chai1_path e boltz1_path", impact="1", examples=[tid])
-            primary_df = _build_chai_boltz_ensemble_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
+            primary_df = _build_chai_boltz_candidates_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
 
-        if primary_source in {"boltz1", "chai1", "chai1_boltz1_ensemble", "rnapro"}:
+        if primary_source in {"boltz1", "chai1", "chai1+boltz1", "rnapro"}:
             _aggressive_foundation_offload(model=None, stage=stage, location=location, context=f"{tid}:{primary_source}")
 
         if primary_df.height == 0:
