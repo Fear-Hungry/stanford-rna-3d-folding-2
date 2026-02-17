@@ -2159,3 +2159,16 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `pytest -q` passa.
   - `export_submission` continua fail-fast em chaves faltantes/duplicadas com erros acionaveis.
+
+## PLAN-129 - Hybrid router: SE(3) como fallback (nao sequestrar Chai/Boltz)
+
+- Objetivo:
+  - Evitar regressao de qualidade onde o roteador escolhe `generative_se3` mesmo quando existem predicoes `chai1/boltz1` para o alvo.
+- Mudanca:
+  - Reordenar a logica do `build_hybrid_candidates` para:
+    - manter `generative_se3` como **primario apenas** para alvos `ultralong`;
+    - usar `chai1/boltz1` quando disponiveis (e `template->tbm` quando aplicavel);
+    - cair para `generative_se3` apenas se nenhuma fonte primaria cobrir o alvo.
+- Critérios de aceite:
+  - `pytest -q` passa.
+  - Teste cobre caso em que `se3` tem cobertura total mas `chai1/boltz1` existem para um subset, e o roteador seleciona `chai1/boltz1` para esses alvos.

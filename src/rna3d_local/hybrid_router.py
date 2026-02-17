@@ -131,6 +131,8 @@ def build_hybrid_candidates(
     boltz1 = None if boltz1_path is None else _normalize_predictions_table(read_table(boltz1_path, stage=stage, location=location), source="boltz1", stage=stage, location=location)
     se3 = None if se3_path is None else _normalize_predictions_table(read_table(se3_path, stage=stage, location=location), source="generative_se3", stage=stage, location=location)
     tbm_targets = set(tbm.get_column("target_id").unique().to_list())
+    chai1_targets = set() if chai1 is None else set(chai1.get_column("target_id").unique().to_list())
+    boltz1_targets = set() if boltz1 is None else set(boltz1.get_column("target_id").unique().to_list())
     se3_targets = set() if se3 is None else set(se3.get_column("target_id").unique().to_list())
 
     candidate_parts: list[pl.DataFrame] = []
@@ -143,6 +145,7 @@ def build_hybrid_candidates(
         has_ligand = len(str(row["ligand_SMILES"]).strip()) > 0
         score = float(target_scores.get(tid, 0.0))
         template_strong = score >= float(template_score_threshold)
+        primary_df: pl.DataFrame | None = None
         if ultralong:
             rule = "ultralong->generative_se3"
             primary_source = "generative_se3"
@@ -162,42 +165,59 @@ def build_hybrid_candidates(
             rule = "template->tbm"
             primary_source = "tbm"
             primary_df = tbm.filter(pl.col("target_id") == tid).with_columns(pl.coalesce([pl.col("confidence"), pl.lit(float(score))]).alias("confidence"))
-        elif tid in se3_targets:
-            if template_strong:
-                rule = "template_missing->generative_se3"
-            elif has_ligand:
-                rule = "ligand_or_weak_template->generative_se3"
-            else:
-                rule = "orphan_or_weak_template->generative_se3"
-            primary_source = "generative_se3"
-            if se3 is None:
-                raise_error(stage, location, "rota generative_se3 exige se3_path", impact="1", examples=[tid])
-            primary_df = se3.filter(pl.col("target_id") == tid)
         elif template_strong and (tid not in tbm_targets):
-            if has_ligand:
+            if has_ligand and (boltz1 is not None) and (tid in boltz1_targets):
                 rule = "template_missing->boltz1"
                 primary_source = "boltz1"
-                if boltz1 is None:
-                    raise_error(stage, location, "rota template_missing com ligante exige boltz1_path", impact="1", examples=[tid])
                 primary_df = boltz1.filter(pl.col("target_id") == tid)
-            else:
+            elif (chai1 is not None) and (boltz1 is not None) and (tid in chai1_targets) and (tid in boltz1_targets):
                 rule = "template_missing->chai1+boltz1"
                 primary_source = "chai1+boltz1"
-                if chai1 is None or boltz1 is None:
-                    raise_error(stage, location, "rota template_missing sem ligante exige chai1_path e boltz1_path", impact="1", examples=[tid])
                 primary_df = _build_chai_boltz_candidates_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
+            elif (chai1 is not None) and (tid in chai1_targets):
+                rule = "template_missing->chai1"
+                primary_source = "chai1"
+                primary_df = chai1.filter(pl.col("target_id") == tid)
+            elif (boltz1 is not None) and (tid in boltz1_targets):
+                rule = "template_missing->boltz1_fallback"
+                primary_source = "boltz1"
+                primary_df = boltz1.filter(pl.col("target_id") == tid)
+            else:
+                rule = "template_missing->generative_se3"
+                primary_source = "generative_se3"
         elif has_ligand:
-            rule = "ligand->boltz1"
-            primary_source = "boltz1"
-            if boltz1 is None:
-                raise_error(stage, location, "rota ligante exige boltz1_path", impact="1", examples=[tid])
-            primary_df = boltz1.filter(pl.col("target_id") == tid)
+            if (boltz1 is not None) and (tid in boltz1_targets):
+                rule = "ligand->boltz1"
+                primary_source = "boltz1"
+                primary_df = boltz1.filter(pl.col("target_id") == tid)
+            else:
+                rule = "ligand_missing->generative_se3"
+                primary_source = "generative_se3"
         else:
-            rule = "orphan->chai1+boltz1"
-            primary_source = "chai1+boltz1"
-            if chai1 is None or boltz1 is None:
-                raise_error(stage, location, "rota orfao exige chai1_path e boltz1_path", impact="1", examples=[tid])
-            primary_df = _build_chai_boltz_candidates_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
+            if (chai1 is not None) and (boltz1 is not None) and (tid in chai1_targets) and (tid in boltz1_targets):
+                rule = "orphan->chai1+boltz1"
+                primary_source = "chai1+boltz1"
+                primary_df = _build_chai_boltz_candidates_for_target(target_id=tid, chai=chai1, boltz=boltz1, stage=stage, location=location)
+            elif (chai1 is not None) and (tid in chai1_targets):
+                rule = "orphan->chai1_fallback"
+                primary_source = "chai1"
+                primary_df = chai1.filter(pl.col("target_id") == tid)
+            elif (boltz1 is not None) and (tid in boltz1_targets):
+                rule = "orphan->boltz1_fallback"
+                primary_source = "boltz1"
+                primary_df = boltz1.filter(pl.col("target_id") == tid)
+            else:
+                rule = "orphan_missing->generative_se3"
+                primary_source = "generative_se3"
+
+        if primary_df is None or primary_df.height == 0:
+            if se3 is not None and tid in se3_targets:
+                if primary_source != "generative_se3":
+                    rule = f"{rule}_fallback->generative_se3"
+                primary_source = "generative_se3"
+                primary_df = se3.filter(pl.col("target_id") == tid)
+            else:
+                raise_error(stage, location, "nenhuma predicao primaria ou fallback disponivel", impact="1", examples=[tid])
 
         if primary_source in {"boltz1", "chai1", "chai1+boltz1", "rnapro"}:
             _aggressive_foundation_offload(model=None, stage=stage, location=location, context=f"{tid}:{primary_source}")

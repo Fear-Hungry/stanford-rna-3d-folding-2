@@ -1063,6 +1063,22 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - Mitiga OOM no export, mas o notebook Kaggle ainda pode estourar RAM em outras etapas (ex.: materializacao de candidates muito grandes); se o rerun hidden continuar falhando, o proximo alvo e remover listas/dicts Python no notebook e fazer split/joins via Polars.
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-129 (roteador hibrido: SE(3) como fallback)
+
+- Data UTC: `2026-02-17T19:19:19Z`
+- Plano: `PLAN-129`
+- Resumo:
+  - `build_hybrid_candidates` deixa de priorizar `generative_se3` quando existem predicoes `chai1/boltz1` para o alvo.
+  - `generative_se3` vira fallback para alvos nao cobertos por Chai/Boltz (exceto `ultralong`, onde SE(3) continua obrigatorio).
+  - Novo teste cobre o caso real do Kaggle: Chai/Boltz rodando apenas em um subset e SE(3) cobrindo tudo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/hybrid_router.py`
+  - `tests/test_phase2_hybrid.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `120 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-126 (Hardening Kaggle TBM-first)
 
 - Data UTC: `2026-02-17T18:20:56Z`

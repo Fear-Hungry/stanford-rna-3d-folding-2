@@ -313,7 +313,7 @@ def test_phase2_router_falls_back_when_template_strong_without_tbm_coverage(tmp_
     assert rules["T1"] == "template_missing->chai1+boltz1"
 
 
-def test_phase2_router_prefers_se3_when_available(tmp_path: Path) -> None:
+def test_phase2_router_prefers_foundation_over_se3_when_available(tmp_path: Path) -> None:
     targets = tmp_path / "targets.csv"
     _write_csv(
         targets,
@@ -356,7 +356,78 @@ def test_phase2_router_prefers_se3_when_available(tmp_path: Path) -> None:
     )
     routing = pl.read_parquet(routed.routing_path).sort("target_id")
     rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["T2"] == "orphan_or_weak_template->generative_se3"
+    assert rules["T2"] == "orphan->chai1+boltz1"
+
+
+def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    _write_csv(
+        targets,
+        [
+            {"target_id": "T1", "sequence": "AC", "ligand_SMILES": ""},
+            {"target_id": "T2", "sequence": "GU", "ligand_SMILES": ""},
+        ],
+    )
+    retrieval = tmp_path / "retrieval.parquet"
+    pl.DataFrame(
+        [
+            {"target_id": "T1", "final_score": 0.10},
+            {"target_id": "T2", "final_score": 0.10},
+        ]
+    ).write_parquet(retrieval)
+    tbm = tmp_path / "tbm.parquet"
+    _make_tbm(tbm)
+
+    # Chai/Boltz only run for a subset (T1), so T2 must route to SE(3) fallback.
+    foundation_targets = tmp_path / "foundation_targets.csv"
+    _write_csv(
+        foundation_targets,
+        [
+            {"target_id": "T1", "sequence": "AC", "ligand_SMILES": ""},
+        ],
+    )
+
+    rna_dir, chai_dir, boltz_dir = _make_model_dirs(tmp_path / "models")
+    chai = predict_chai1_offline(repo_root=tmp_path, model_dir=chai_dir, targets_path=foundation_targets, out_path=tmp_path / "chai.parquet", n_models=5)
+    boltz = predict_boltz1_offline(repo_root=tmp_path, model_dir=boltz_dir, targets_path=foundation_targets, out_path=tmp_path / "boltz.parquet", n_models=5)
+
+    se3 = tmp_path / "se3.parquet"
+    rows = []
+    for target_id, seq in [("T1", "AC"), ("T2", "GU")]:
+        for model_id in range(1, 6):
+            for resid, base in enumerate(seq, start=1):
+                rows.append(
+                    {
+                        "target_id": target_id,
+                        "model_id": model_id,
+                        "resid": resid,
+                        "resname": base,
+                        "x": float(model_id + resid + 10),
+                        "y": float(model_id + resid + 11),
+                        "z": float(model_id + resid + 12),
+                        "source": "generative_se3",
+                        "confidence": 0.83,
+                    }
+                )
+    pl.DataFrame(rows).write_parquet(se3)
+
+    routed = build_hybrid_candidates(
+        repo_root=tmp_path,
+        targets_path=targets,
+        retrieval_path=retrieval,
+        tbm_path=tbm,
+        out_path=tmp_path / "hybrid_candidates.parquet",
+        routing_path=tmp_path / "routing.parquet",
+        template_score_threshold=0.65,
+        rnapro_path=None,
+        chai1_path=chai.predictions_path,
+        boltz1_path=boltz.predictions_path,
+        se3_path=se3,
+    )
+    routing = pl.read_parquet(routed.routing_path).sort("target_id")
+    rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
+    assert rules["T1"] == "orphan->chai1+boltz1"
+    assert rules["T2"] == "orphan_missing->generative_se3"
 
 
 def test_readiness_gate_blocks_non_improvement(tmp_path: Path) -> None:
