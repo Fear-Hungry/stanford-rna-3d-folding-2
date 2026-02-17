@@ -1539,3 +1539,26 @@ Log append-only de experimentos executados.
 - Submissao Kaggle:
   - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 91 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan129_kernel_output_v91/submission.csv --notebook-output-path runs/20260217_plan129_kernel_output_v91/submission.csv --score-json runs/20260217_plan129_score_v91/score.json --baseline-score 0.132 --message \"PLAN-128: export Polars (RAM-safe) + kernel v91 rerun\" --execute-submit`
   - Status no momento do registro: `PENDING` (submetido em `2026-02-17 19:36:26` no CLI).
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-130 (kernel v92: export/check streaming; tentar eliminar hidden RAM OOM)
+
+- Data UTC: `2026-02-17T20:12:32Z`
+- Plano: `PLAN-130`
+- Objetivo:
+  - Eliminar OOM de RAM no rerun hidden trocando export/check para modo streaming (sem materializar CSV/parquet inteiros em RAM).
+- Versao de codigo/dados:
+  - `git commit`: `169b62c`
+  - Dataset src runtime: `marcux777/stanford-rna3d-reboot-src-v2` (nova versao publicada via `kaggle datasets version -r zip`)
+- Kernel:
+  - `kaggle kernels push -p runs/20260217_plan126_kernel_source` -> version `92`
+- Artefatos (output baixado):
+  - `runs/20260217_plan130_kernel_output_v92/submission.csv`
+  - `runs/20260217_plan130_kernel_output_v92/stanford-rna3d-submit-prod-v2.log`
+- Validacao local executada:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan130_kernel_output_v92/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260217_plan130_kernel_output_v92/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260217_plan130_score_v92/score.json --report runs/20260217_plan130_score_v92/report.json`
+- Metricas/score (proxy local):
+  - `score=0.262925` (`runs/20260217_plan130_score_v92/score.json`)
+- Submissao Kaggle:
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 92 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan130_kernel_output_v92/submission.csv --notebook-output-path runs/20260217_plan130_kernel_output_v92/submission.csv --score-json runs/20260217_plan130_score_v92/score.json --baseline-score 0.132 --message \"PLAN-130: streaming export/check to avoid hidden OOM (kernel v92)\" --execute-submit`
+  - Status no momento do registro: `PENDING` (submetido em `2026-02-17 20:12:06` no CLI).
