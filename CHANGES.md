@@ -1234,6 +1234,19 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `112 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-122 (Runbook “Submarino” Kaggle offline)
+
+- Data UTC: `2026-02-17T15:17:11Z`
+- Plano: `PLAN-122`
+- Resumo:
+  - Adicionado runbook técnico (sem marketing) para execução offline no Kaggle, alinhado com o CLI atual, wheelhouse `phase2`, assets phase2 e contratos fail-fast.
+- Arquivos principais tocados:
+  - `docs/SUBMARINO_RUNBOOK.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `ok`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

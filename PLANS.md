@@ -2048,3 +2048,14 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-122 - Documentar runbook “Submarino” (Kaggle offline)
+
+- Objetivo: reescrever o runbook de submissão offline (sem tom de marketing) para refletir o que o repositório realmente faz: wheelhouse `phase2`, assets phase2, quickstart químico, pipeline híbrido e gate `check-submission`.
+- Escopo:
+  - Adicionar `docs/SUBMARINO_RUNBOOK.md` com:
+    - Fase local (wheelhouse + assets + custom models + upload Kaggle Datasets);
+    - Fase Kaggle (internet OFF, instalação offline, execução CLI, export + validação);
+    - Observações sobre pré-requisitos reais (Python >= 3.11, quickstart químico, minimização OpenMM opcional).
+- Critérios de aceite:
+  - Doc contém comandos existentes no CLI e não assume Python 3.10.
