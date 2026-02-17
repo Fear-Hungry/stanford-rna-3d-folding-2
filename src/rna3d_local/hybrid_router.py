@@ -161,7 +161,7 @@ def build_hybrid_candidates(
         elif template_strong and (tid in tbm_targets):
             rule = "template->tbm"
             primary_source = "tbm"
-            primary_df = tbm.filter(pl.col("target_id") == tid)
+            primary_df = tbm.filter(pl.col("target_id") == tid).with_columns(pl.coalesce([pl.col("confidence"), pl.lit(float(score))]).alias("confidence"))
         elif tid in se3_targets:
             if template_strong:
                 rule = "template_missing->generative_se3"

@@ -1073,6 +1073,23 @@ Log append-only de mudancas implementadas.
   - Padding do TBM reduz diversidade efetiva quando faltam templates (ex.: duplica o melhor); manter monitoramento via score local.
   - Hidden rerun pode conter alvos sem template cobrindo 1..L; kernel precisou de split por cobertura + fallback para evitar crash.
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-127 (Hybrid: calibrar `confidence` TBM + RNAPro)
+
+- Data UTC: `2026-02-17T18:58:06Z`
+- Plano: `PLAN-127`
+- Resumo:
+  - `HYBRID_ROUTER`: TBM sem `confidence` passa a receber `confidence=template_score` (max score do retrieval) na rota `template->tbm`, evitando que o Top-5 híbrido descarte TBM por `confidence=null/0`.
+  - `RNAPRO_RUNNER`: normalização do `ranking_score` para `[0,1]` quando vier em escala 0..100, evitando dominar Chai/Boltz na seleção por escala incompatível.
+- Arquivos principais tocados:
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/runners/rnapro.py`
+  - `tests/test_phase2_hybrid.py`
+  - `tests/test_rnapro_confidence_scale.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `119 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - ADHOC (log de submit + re-score)
 
 - Data UTC: `2026-02-17T15:34:44Z`

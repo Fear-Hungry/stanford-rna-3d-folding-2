@@ -231,6 +231,45 @@ def test_phase2_router_and_top5_selection(tmp_path: Path) -> None:
     assert per_target.filter(pl.col("n_models") != 5).height == 0
 
 
+def test_hybrid_router_injects_tbm_confidence_from_template_score(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    _write_csv(
+        targets,
+        [
+            {"target_id": "T1", "sequence": "AC", "ligand_SMILES": ""},
+        ],
+    )
+    retrieval = tmp_path / "retrieval.parquet"
+    pl.DataFrame([{"target_id": "T1", "final_score": 0.88}]).write_parquet(retrieval)
+
+    tbm = tmp_path / "tbm.parquet"
+    pl.DataFrame(
+        [
+            {"target_id": "T1", "model_id": 1, "resid": 1, "resname": "A", "x": 0.0, "y": 0.0, "z": 0.0},
+            {"target_id": "T1", "model_id": 1, "resid": 2, "resname": "C", "x": 1.0, "y": 0.0, "z": 0.0},
+        ]
+    ).write_parquet(tbm)
+
+    out = build_hybrid_candidates(
+        repo_root=tmp_path,
+        targets_path=targets,
+        retrieval_path=retrieval,
+        tbm_path=tbm,
+        out_path=tmp_path / "hybrid_candidates.parquet",
+        routing_path=tmp_path / "routing.parquet",
+        template_score_threshold=0.65,
+        rnapro_path=None,
+        chai1_path=None,
+        boltz1_path=None,
+        se3_path=None,
+    )
+    candidates = pl.read_parquet(out.candidates_path)
+    tbm_rows = candidates.filter(pl.col("source") == "tbm")
+    assert tbm_rows.height == 2
+    conf = tbm_rows.select(pl.col("confidence").drop_nulls()).get_column("confidence").unique().to_list()
+    assert conf == [pytest.approx(0.88)]
+
+
 def test_phase2_router_falls_back_when_template_strong_without_tbm_coverage(tmp_path: Path) -> None:
     targets = tmp_path / "targets.csv"
     _write_csv(

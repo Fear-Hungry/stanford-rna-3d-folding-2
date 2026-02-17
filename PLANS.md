@@ -2136,3 +2136,16 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Kernel completa sem erro (`COMPLETE`) com `enable_internet=false`.
   - `check-submission` ok para o `submission.csv` do output do kernel.
   - Score local USalign melhora vs candidato atual e logs/artefatos ficam em `runs/` + registro em `EXPERIMENTS.md`.
+
+## PLAN-127 - Hybrid: calibrar `confidence` (TBM + RNAPro)
+
+- Objetivo:
+  - Evitar que o Top-5 híbrido descarte TBM (confidence `null/0`) e evitar que RNAPro (ranking_score 0..100) domine a seleção por escala incompatível.
+- Mudanças:
+  - `hybrid_router.py`: quando a rota for `template->tbm`, preencher `confidence` do TBM com o `template_score` (max score do retrieval) se estiver `null`.
+  - `runners/rnapro.py`: normalizar `ranking_score` para `[0,1]` quando vier em escala 0..100.
+- Critérios de aceite:
+  - `pytest -q` passa.
+  - Testes cobrem:
+    - TBM sem `confidence` recebe `confidence=template_score` no pool.
+    - `ranking_score=85.0` vira `0.85` e valores fora do intervalo falham cedo.

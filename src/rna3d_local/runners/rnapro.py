@@ -13,6 +13,22 @@ from ..errors import raise_error
 from ..io_tables import read_table, write_table
 
 
+def _normalize_rnapro_ranking_score(raw: float, *, stage: str, location: str, target_id: str) -> float:
+    if not float(raw) == float(raw):  # NaN
+        raise_error(stage, location, "ranking_score do rnapro e NaN", impact="1", examples=[target_id])
+    if float(raw) < 0.0:
+        raise_error(stage, location, "ranking_score do rnapro negativo", impact="1", examples=[target_id, str(raw)])
+    score = float(raw)
+    if score > 1.0:
+        if score <= 100.0:
+            score = score / 100.0
+        else:
+            raise_error(stage, location, "ranking_score do rnapro fora do intervalo esperado", impact="1", examples=[target_id, str(raw)])
+    if score < 0.0 or score > 1.0:
+        raise_error(stage, location, "ranking_score do rnapro apos normalizacao fora de [0,1]", impact="1", examples=[target_id, str(score)])
+    return float(score)
+
+
 def _normalize_seq_parts(
     *,
     seq: str,
@@ -309,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
                 payload = json.loads(conf_path.read_text(encoding="utf-8"))
                 if "ranking_score" not in payload:
                     raise_error(stage, location, "summary_confidence sem ranking_score", impact="1", examples=[tid, str(conf_path)])
-                confidence = float(payload["ranking_score"])
+                confidence = _normalize_rnapro_ranking_score(float(payload["ranking_score"]), stage=stage, location=location, target_id=tid)
                 coords = _extract_c1_from_cif(cif_path=cif_path, expected_seq_parts=seq_parts, stage=stage, location=location, target_id=tid)
                 if len(coords) != concat_len:
                     raise_error(stage, location, "comprimento de coordenadas divergente", impact="1", examples=[tid, f"expected={concat_len}", f"actual={len(coords)}"])
