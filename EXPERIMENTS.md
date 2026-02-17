@@ -1293,3 +1293,35 @@ Log append-only de experimentos executados.
   - `check-submission`: `ok=true` (contra sample subset).
 - Conclusao:
   - Pipeline real do RNAPro (offline) executa e exporta em formato estrito; para GPU `sm_120`, requer `torch==2.9.1+cu128` (o pin upstream `torch==2.7.1+cu126` nao roda nesta GPU).
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-118 (SE(3) smoke train + métricas)
+
+- Data UTC: `2026-02-17T14:07:46Z`
+- Plano: `PLAN-118`
+- Objetivo:
+  - Rodar um treino curto do gerador SE(3) para validar integração (após correções de equivariância + `mamba_like` bidirecional) e coletar métricas locais.
+- Comandos executados:
+  - Treino (usa `training_store.zarr` lazy; sem extração MSA/termo em runtime):
+    - `python -m rna3d_local train-se3-generator --targets runs/20260216_full_local_run/train_targets_256.csv --pairings runs/20260216_full_local_run/pairings_train_256.parquet --chemical-features runs/20260216_full_local_run/chemical_train_256.parquet --labels runs/20260216_full_local_run/train_labels_256.parquet --config runs/20260217_plan118_se3_smoke_20260217T140224Z/config.json --out-dir runs/20260217_plan118_se3_smoke_20260217T140224Z/se3_model --seed 123 --training-store runs/20260216_full_local_run/phase1_data_lab_256/training_store.zarr`
+- Configuracao efetiva:
+  - `runs/20260217_plan118_se3_smoke_20260217T140224Z/se3_model/config_effective.json`
+  - Observacao: `mmseqs_db` foi preenchido com um path local apenas para satisfazer a validação da config; como o treino usou `training_store.zarr`, não houve chamada ao `mmseqs2` neste experimento.
+- Seeds:
+  - `seed=123`
+- Versao de codigo/dados:
+  - `git commit`: `9077e94`
+  - Dados/artefatos de entrada: `runs/20260216_full_local_run/phase1_data_lab_256/training_store.zarr`
+- Artefatos:
+  - Modelo: `runs/20260217_plan118_se3_smoke_20260217T140224Z/se3_model/`
+  - Métricas: `runs/20260217_plan118_se3_smoke_20260217T140224Z/se3_model/metrics.json`
+  - Manifest: `runs/20260217_plan118_se3_smoke_20260217T140224Z/se3_model/train_manifest.json`
+- Metricas/score/custo:
+  - `n_targets=256`
+  - `loss_final=193320.194946`
+  - `loss_fape_final=0.898596`
+  - `loss_tm_final=0.992462`
+  - `loss_clash_final=38663.165365`
+  - `loss_generative_final=2.477586`
+  - `crop_length_mean_final=41.300781`
+- Conclusao:
+  - Treino concluiu em CUDA e gerou métricas finitas (sem NaN/inf), validando o caminho de treino SE(3) neste snapshot.

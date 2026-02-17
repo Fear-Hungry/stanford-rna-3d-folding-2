@@ -1999,3 +1999,13 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-118 - Experimento local: treino SE(3) smoke + validação de métricas
+
+- Objetivo: executar um treino curto do gerador SE(3) (após correções de equivariância + mamba_like bidirecional) para validar integração end-to-end e coletar métricas numéricas (losses) localmente com seed fixo.
+- Escopo:
+  - Treinar via `python -m rna3d_local train-se3-generator` com `training_store.zarr` existente (sem download de MSA/termo em tempo de treino).
+  - Registrar artefatos em `runs/` e métricas em `EXPERIMENTS.md` (com comandos, seed, config e commit).
+- Critérios de aceite:
+  - Treino conclui sem erro e gera `model_dir` + `metrics.json`.
+  - `loss`, `tm`, `fape` e `clash` no `metrics.json` são finitos (sem NaN/inf).
