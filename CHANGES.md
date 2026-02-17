@@ -1185,6 +1185,22 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `108 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-117 (SequenceTower: mamba_like bidirecional)
+
+- Data UTC: `2026-02-17T13:50:01Z`
+- Plano: `PLAN-117`
+- Resumo:
+  - `_MambaLikeBlock` deixou de ser estritamente causal: agora executa varredura 5'→3' e 3'→5' e combina (média) os estados antes do `out_proj`.
+  - Teste de regressão garante que mudanças no final da sequência afetam o início (uso de contexto futuro).
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sequence_tower.py`
+  - `tests/test_sequence_tower.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `109 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

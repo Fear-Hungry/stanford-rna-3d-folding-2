@@ -1987,3 +1987,15 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-117 - SequenceTower mamba_like bidirecional (contexto 5'↔3')
+
+- Objetivo: evitar que a torre `mamba_like` seja estritamente causal (5'→3'), incorporando também contexto 3'→5' e combinando as duas passagens.
+- Escopo:
+  - `se3/sequence_tower.py`:
+    - em `_MambaLikeBlock`, adicionar varredura reversa e combinar `forward/backward` (média) antes do `out_proj`.
+  - Testes:
+    - teste garantindo que alterações no fim da sequência afetam tokens no início (não-causalidade).
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.

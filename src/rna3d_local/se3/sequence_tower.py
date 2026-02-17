@@ -68,12 +68,19 @@ class _MambaLikeBlock(nn.Module):
         u = self.in_proj(hidden)
         gate = torch.sigmoid(self.gate_proj(hidden))
         decay = torch.sigmoid(self.state_decay).to(dtype=x.dtype, device=x.device)
-        state = torch.zeros((x.shape[1],), dtype=x.dtype, device=x.device)
-        outputs: list[torch.Tensor] = []
+        state_f = torch.zeros((x.shape[1],), dtype=x.dtype, device=x.device)
+        forward_out = torch.zeros_like(u)
         for index in range(int(x.shape[0])):
-            state = (decay * state) + u[index]
-            outputs.append(state * gate[index])
-        state_out = torch.stack(outputs, dim=0)
+            state_f = (decay * state_f) + u[index]
+            forward_out[index] = state_f * gate[index]
+
+        state_b = torch.zeros((x.shape[1],), dtype=x.dtype, device=x.device)
+        backward_out = torch.zeros_like(u)
+        for index in reversed(range(int(x.shape[0]))):
+            state_b = (decay * state_b) + u[index]
+            backward_out[index] = state_b * gate[index]
+
+        state_out = 0.5 * (forward_out + backward_out)
         x = x + self.out_proj(state_out)
         x = x + self.ff(self.norm_ff(x))
         return x
