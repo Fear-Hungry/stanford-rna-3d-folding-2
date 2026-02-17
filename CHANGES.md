@@ -1046,6 +1046,32 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-126 (Hardening Kaggle TBM-first)
+
+- Data UTC: `2026-02-17T18:20:56Z`
+- Plano: `PLAN-126`
+- Resumo:
+  - `build-phase2-assets` passou a aceitar `config.json` de modelos sem `entrypoint` (para manifest/runtime), mantendo `entrypoint` **obrigatorio** apenas nos runners offline.
+  - Reintroduzido `encoder=mock` (k-mer hash) para `build-embedding-index` e `retrieve-templates-latent` quando `ribonanzanet2` nao esta empacotado no kernel Kaggle.
+  - `predict-tbm` agora garante `n_models` por alvo via padding/repeat quando houver ao menos 1 template valido, permitindo export estrito (`export-submission`) sem falhas por falta do modelo 5.
+- Arquivos principais tocados:
+  - `src/rna3d_local/predictor_common.py`
+  - `src/rna3d_local/phase2_assets.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/encoder.py`
+  - `src/rna3d_local/tbm.py`
+  - `tests/test_phase2_assets.py`
+  - `tests/test_encoder_torchscript.py`
+  - `tests/test_tbm.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local` -> `ok`
+  - `pytest -q` -> `115 passed`
+- Riscos conhecidos / follow-ups:
+  - `encoder=mock` e uma heuristica; ideal e empacotar `ribonanzanet2` + `model_path` real para retrieval.
+  - Padding do TBM reduz diversidade efetiva quando faltam templates (ex.: duplica o melhor); manter monitoramento via score local.
+
 ## 2026-02-17 - marcusvinicius/Codex - ADHOC (log de submit + re-score)
 
 - Data UTC: `2026-02-17T15:34:44Z`

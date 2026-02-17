@@ -1473,3 +1473,28 @@ Log append-only de experimentos executados.
   - `confidence_scale=2.0`: `score=0.17425`
 - Conclusao:
   - O melhor ponto neste sweep foi manter a escala original (`confidence_scale=1.0`); reduzir ou aumentar piorou o score.
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-126 (Kaggle TBM-first kernel v89 + score local)
+
+- Data UTC: `2026-02-17T18:20:56Z`
+- Plano: `PLAN-126`
+- Objetivo:
+  - Gerar `submission.csv` via TBM-first (sem hybrid/foundation) que passe contrato estrito e melhore o proxy local USalign vs o candidato `0.132`.
+- Setup:
+  - Kernel: `marcux777/stanford-rna3d-submit-prod-v2` (version `89`, `enable_internet=false`)
+  - Output: `runs/20260217_plan126_kernel_output_v89/`
+  - Sample: `input/stanford-rna-3d-folding-2/sample_submission.csv`
+  - Ground truth (proxy): `input/stanford-rna-3d-folding-2/validation_labels.csv`
+  - USalign: `src/rna3d_local/evaluation/USalign`
+- Observacao (bug real encontrado):
+  - `predict-tbm` pode retornar menos de `n_models` para alguns alvos (ex.: `9MME` com 4 templates validos), o que fazia `export-submission` falhar no modelo 5; a execucao do kernel v89 incluiu padding de TBM para cumprir contrato.
+- Validacao local executada:
+  - Contrato estrito:
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan126_kernel_output_v89/submission.csv`
+  - Score “de verdade” (proxy full28, `single`):
+    - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260217_plan126_kernel_output_v89/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260217_plan126_score_v89/score.json --report runs/20260217_plan126_score_v89/report.json`
+- Metricas/score:
+  - `score=0.262925` (`runs/20260217_plan126_score_v89/score.json`)
+- Submissao Kaggle:
+  - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 89 -m "PLAN-126: TBM-first + pad missing model ids (local USalign 0.2629)"`
+  - Status no momento do registro: `PENDING` (submetido em `2026-02-17 18:13:11` no CLI).
