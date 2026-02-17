@@ -1072,6 +1072,19 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `python -m compileall -q src/rna3d_local` -> ok
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-124 (planejamento + experimento de ablação confidence)
+
+- Data UTC: `2026-02-17T16:12:42Z`
+- Plano: `PLAN-124`
+- Resumo:
+  - Adicionado o `PLAN-124` em `PLANS.md` e executada a ablação de `confidence` no pool híbrido, registrando score USalign por variante em `runs/`.
+- Arquivos principais tocados:
+  - `PLANS.md`
+  - `EXPERIMENTS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local` -> ok
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-109 (SE3 frames: eixos em colunas)
 
 - Data UTC: `2026-02-17T13:01:17Z`

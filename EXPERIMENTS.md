@@ -1414,3 +1414,37 @@ Log append-only de experimentos executados.
   - `lambda=0.75`: `score=0.1753785714285714`
 - Conclusao:
   - O sweep melhorou o score full28 em `+0.0011285714` vs baseline; qualquer um dos lambdas testados empatou no melhor score desta rodada.
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-124 (Ablacao de `confidence` no pool híbrido)
+
+- Data UTC: `2026-02-17T16:12:42Z`
+- Plano: `PLAN-124`
+- Objetivo:
+  - Quantificar o impacto do campo `confidence` na selecao Top-5 híbrida, mantendo coordenadas fixas e medindo score USalign full28.
+- Setup (inputs fixos):
+  - Candidates base: `runs/20260216_plan077_kernel_output_v84/run_phase1_phase2_full_v2/hybrid_candidates.parquet`
+  - Sample: `input/stanford-rna-3d-folding-2/sample_submission.csv`
+  - Ground truth: `input/stanford-rna-3d-folding-2/validation_labels.csv`
+  - USalign: `src/rna3d_local/evaluation/USalign`
+  - Seletor: `select-top5-hybrid` com `n_models=5`, `diversity_lambda=0.0`
+- Variantes:
+  - `variant_conf_zero`: `confidence=0.0` em todas as linhas.
+  - `variant_conf_center`: `confidence` centralizado por `target_id+source` (de-bias por fonte).
+- Comandos executados (por variante):
+  - Gerar candidates variante:
+    - (polars) escrever `candidates.parquet` em `runs/<run_dir>/<variant>/candidates.parquet`
+  - `python -m rna3d_local select-top5-hybrid --candidates <candidates.parquet> --out <hybrid_top5.parquet> --n-models 5 --diversity-lambda 0.0`
+  - `python -m rna3d_local export-submission --sample <sample_submission.csv> --predictions <hybrid_top5.parquet> --out <submission.csv>`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth <validation_labels.csv> --submission <submission.csv> --usalign-bin <USalign> --timeout-seconds 900 --ground-truth-mode single --score-json <score.json> --report <report.json>`
+- Versao de codigo/dados:
+  - `git commit`: `f67dc3e`
+- Artefatos:
+  - `runs/20260217_plan124_conf_ablation_20260217T161242Z/scores.csv`
+  - `runs/20260217_plan124_conf_ablation_20260217T161242Z/ablation.log`
+  - `runs/20260217_plan124_conf_ablation_20260217T161242Z/variant_conf_zero/*`
+  - `runs/20260217_plan124_conf_ablation_20260217T161242Z/variant_conf_center/*`
+- Metricas/score:
+  - `variant_conf_zero`: `score=0.1699`
+  - `variant_conf_center`: `score=0.1699`
+- Conclusao:
+  - Remover/centralizar `confidence` degradou o score vs o melhor atual desta rodada (`0.1753785714`), sugerindo que `confidence` carrega sinal util neste pool e nao deve ser descartado sem substituir por um QA melhor.

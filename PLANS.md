@@ -2075,3 +2075,22 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Todos os candidatos gerados passam `check-submission` (contrato estrito).
   - Artefatos completos em `runs/` (top5 parquet, submission.csv, score.json, report.json) para cada `diversity_lambda`.
   - Se algum `diversity_lambda` superar o baseline full28 atual registrado em `EXPERIMENTS.md`, registrar o resultado em `EXPERIMENTS.md` e propor o próximo experimento mínimo (ablação).
+
+## PLAN-124 - Experimento: ablação de `confidence` no pool híbrido (score USalign)
+
+- Objetivo:
+  - Medir o quanto o `confidence` (potencialmente default/por-fonte) está influenciando a seleção Top-5 híbrida e o score local USalign.
+- Hipótese:
+  - Se `confidence` estiver dominando a ordenação, zerar/normalizar esse campo pode alterar o Top-5 e melhorar (ou piorar) o score; isso guia se vale implementar um QA ranker C1'-only em código.
+- Escopo:
+  - Reusar o mesmo pool fixo do kernel `PLAN-077`:
+    - candidates: `runs/20260216_plan077_kernel_output_v84/run_phase1_phase2_full_v2/hybrid_candidates.parquet`
+  - Gerar variantes do candidates (sem mudar coordenadas):
+    - `confidence=0.0` (remove sinal do modelo).
+    - `confidence` normalizado por `target_id+source` (centering; de-bias entre fontes).
+  - Para cada variante:
+    - rodar `select-top5-hybrid` (fixar `diversity_lambda=0.0` para reduzir variáveis),
+    - exportar submissão e medir USalign full28 (`single`).
+- Critérios de aceite:
+  - Todas as variantes passam contrato estrito (`export-submission`/`check-submission`).
+  - Score USalign e artefatos completos registrados em `runs/` por variante.
