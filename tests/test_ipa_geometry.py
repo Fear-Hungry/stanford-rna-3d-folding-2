@@ -47,6 +47,14 @@ def test_build_rna_local_frames_is_finite_and_orthonormal() -> None:
     identity = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand_as(gram)
     assert torch.allclose(gram, identity, atol=1e-4, rtol=1e-4)
 
+    # Convention check: local basis vectors are stored in columns (local->global).
+    # x-axis should align with the (C4' - P) proxy direction used in geometry.py.
+    axis_x_dir = c4_proxy - p_proxy
+    axis_x_dir = axis_x_dir / torch.clamp(torch.linalg.norm(axis_x_dir, dim=-1, keepdim=True), min=1e-6)
+    x_col = frames[:, :, 0]
+    dot = torch.sum(x_col * axis_x_dir, dim=-1)
+    assert torch.all(dot > 0.90)
+
 
 def test_rotation_matrix_from_6d_is_orthonormal() -> None:
     x = torch.randn(12, 6, dtype=torch.float32)

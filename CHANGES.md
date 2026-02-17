@@ -1046,6 +1046,22 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-109 (SE3 frames: eixos em colunas)
+
+- Data UTC: `2026-02-17T13:01:17Z`
+- Plano: `PLAN-109`
+- Resumo:
+  - Corrigida a convenção de `frames` em `build_rna_local_frames` para armazenar os eixos como **colunas** (compatível com `rotation_matrix_from_6d` e einsums do IPA/FAPE), evitando projeções locais/global incoerentes.
+  - Adicionado teste que valida a convenção (x-axis na coluna 0 alinha com a direção `(C4' - P)` dos proxies).
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/geometry.py`
+  - `tests/test_ipa_geometry.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `94 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

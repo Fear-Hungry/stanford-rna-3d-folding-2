@@ -92,7 +92,9 @@ def build_rna_local_frames(
     axis_y = _safe_direction(axis_y, fallback=sugar_dir)
     axis_z = _safe_direction(_safe_cross(axis_x, axis_y), fallback=normal_dir)
     axis_y = _safe_direction(_safe_cross(axis_z, axis_x), fallback=axis_y)
-    frames = torch.stack([axis_x, axis_y, axis_z], dim=1)
+    # Convention: columns are local basis vectors in global coordinates (local->global).
+    # This matches rotation_matrix_from_6d() and downstream einsums in ipa_backbone/losses_se3.
+    frames = torch.stack([axis_x, axis_y, axis_z], dim=-1)
     return frames, p_proxy, c4_proxy, n_proxy
 
 

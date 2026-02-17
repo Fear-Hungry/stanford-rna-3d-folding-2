@@ -1877,3 +1877,16 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q` verde.
   - `build-hybrid-candidates` não produz mais `source=chai1_boltz1_ensemble`.
   - `select-top5-hybrid` produz exatamente `n_models` por alvo (1..n_models) e falha cedo se faltar cobertura.
+
+## PLAN-109 - Corrigir convenção de frames SE(3) (eixos em colunas)
+
+- Objetivo: alinhar a convenção de matrizes de rotação/frames (eixos como colunas) entre `build_rna_local_frames`, `rotation_matrix_from_6d` e os einsums em IPA/FAPE para evitar distorções geométricas.
+- Escopo:
+  - `se3/geometry.py`:
+    - montar `frames` com eixos em colunas (`torch.stack(..., dim=-1)`).
+  - Testes:
+    - adicionar teste que valida a convenção (coluna 0 alinha com a direção `(C4' - P)` dos proxies).
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.
+  - teste falha se frames forem retornados com eixos em linhas.
