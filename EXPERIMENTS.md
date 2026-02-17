@@ -1377,3 +1377,40 @@ Log append-only de experimentos executados.
   - Score preexistente do candidato (usado no gate do submit): `runs/20260216_plan077_kernel_output_v84/score_full.json` -> `score=0.18032857142857142`
 - Observacoes:
   - O re-score (código atual) divergiu do score preexistente em 5 targets (`9EBP`, `9JFO`, `9LJN`, `9OD4`, `9G4J`); usar `runs/20260217_score_plan077_v84_recheck/*` como referencia atual para comparacoes futuras.
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-123 (Sweep `diversity_lambda` no Top-5 híbrido)
+
+- Data UTC: `2026-02-17T15:47:53Z`
+- Plano: `PLAN-123`
+- Objetivo:
+  - Ajustar apenas `diversity_lambda` no `select-top5-hybrid` (sem mudar pipeline/modelos) e medir ganho no score local “de verdade” (USalign Best-of-5) no full28.
+- Baseline:
+  - Baseline full28 do mesmo pool híbrido (lambda do notebook): `score=0.17425` (exportado de `hybrid_top5.parquet` do kernel).
+- Setup (inputs fixos):
+  - Candidates: `runs/20260216_plan077_kernel_output_v84/run_phase1_phase2_full_v2/hybrid_candidates.parquet`
+  - Sample: `input/stanford-rna-3d-folding-2/sample_submission.csv`
+  - Ground truth: `input/stanford-rna-3d-folding-2/validation_labels.csv`
+  - USalign: `src/rna3d_local/evaluation/USalign`
+- Comandos executados (por variante):
+  - `python -m rna3d_local select-top5-hybrid --candidates <hybrid_candidates.parquet> --out <hybrid_top5_lambda_X.parquet> --n-models 5 --diversity-lambda X`
+  - `python -m rna3d_local export-submission --sample <sample_submission.csv> --predictions <hybrid_top5_lambda_X.parquet> --out <submission_lambda_X.csv>`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth <validation_labels.csv> --submission <submission_lambda_X.csv> --usalign-bin <USalign> --timeout-seconds 900 --ground-truth-mode single --score-json <score_lambda_X.json> --report <report_lambda_X.json>`
+- Versao de codigo/dados:
+  - `git commit`: `21ea3a1`
+- Artefatos:
+  - `runs/20260217_plan123_hybrid_lambda_sweep_20260217T154753Z/scores.csv`
+  - `runs/20260217_plan123_hybrid_lambda_sweep_20260217T154753Z/sweep.log`
+  - `runs/20260217_plan123_hybrid_lambda_sweep_20260217T154753Z/code_audit.md`
+  - `runs/20260217_plan123_hybrid_lambda_sweep_20260217T154753Z/submission_baseline_lambda_0.35.csv`
+  - `runs/20260217_plan123_hybrid_lambda_sweep_20260217T154753Z/score_baseline_lambda_0.35.json`
+  - `runs/20260217_plan123_hybrid_lambda_sweep_20260217T154753Z/report_baseline_lambda_0.35.json`
+  - Variantes (Top-5 + submission + score/report):
+    - `lambda=0.0`, `0.15`, `0.55`, `0.75`
+- Metricas/score:
+  - Baseline `lambda=0.35`: `score=0.17425`
+  - `lambda=0.0`: `score=0.1753785714285714`
+  - `lambda=0.15`: `score=0.1753785714285714`
+  - `lambda=0.55`: `score=0.1753785714285714`
+  - `lambda=0.75`: `score=0.1753785714285714`
+- Conclusao:
+  - O sweep melhorou o score full28 em `+0.0011285714` vs baseline; qualquer um dos lambdas testados empatou no melhor score desta rodada.

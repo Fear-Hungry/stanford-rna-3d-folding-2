@@ -1059,6 +1059,19 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src/rna3d_local` -> ok
   - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_plan077_kernel_output_v84/submission.csv` -> ok
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-123 (planejamento + experimento de sweep)
+
+- Data UTC: `2026-02-17T15:47:53Z`
+- Plano: `PLAN-123`
+- Resumo:
+  - Adicionado o `PLAN-123` em `PLANS.md` e executado um sweep controlado de `diversity_lambda` no `select-top5-hybrid`, registrando artefatos e score local USalign em `runs/`.
+- Arquivos principais tocados:
+  - `PLANS.md`
+  - `EXPERIMENTS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local` -> ok
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-109 (SE3 frames: eixos em colunas)
 
 - Data UTC: `2026-02-17T13:01:17Z`

@@ -2059,3 +2059,19 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
     - Observações sobre pré-requisitos reais (Python >= 3.11, quickstart químico, minimização OpenMM opcional).
 - Critérios de aceite:
   - Doc contém comandos existentes no CLI e não assume Python 3.10.
+
+## PLAN-123 - Experimento: sweep de `diversity_lambda` no Top-5 híbrido (score USalign)
+
+- Objetivo:
+  - Verificar se apenas ajustar o trade-off diversidade vs score no seletor híbrido (`select-top5-hybrid`) melhora o score local “de verdade” (USalign Best-of-5) sem alterar o pipeline.
+- Hipótese:
+  - A configuração default (`diversity_lambda=0.35`) pode estar sub-ótima para o pool híbrido do notebook; valores menores tendem a priorizar QA/“confidence”, e valores maiores tendem a aumentar cobertura e a chance do melhor entre 5.
+- Escopo:
+  - Reusar os artefatos já existentes do kernel `PLAN-077`:
+    - candidates: `runs/20260216_plan077_kernel_output_v84/run_phase1_phase2_full_v2/hybrid_candidates.parquet`
+  - Rodar `select-top5-hybrid` em um sweep pequeno de `diversity_lambda` (ex.: `0.0, 0.15, 0.35, 0.55, 0.75`).
+  - Exportar submissão estrita via `export-submission` e medir score via `score-local-bestof5` no full28 (`ground_truth_mode=single`).
+- Critérios de aceite:
+  - Todos os candidatos gerados passam `check-submission` (contrato estrito).
+  - Artefatos completos em `runs/` (top5 parquet, submission.csv, score.json, report.json) para cada `diversity_lambda`.
+  - Se algum `diversity_lambda` superar o baseline full28 atual registrado em `EXPERIMENTS.md`, registrar o resultado em `EXPERIMENTS.md` e propor o próximo experimento mínimo (ablação).
