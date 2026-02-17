@@ -1046,6 +1046,19 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - ADHOC (log de submit + re-score)
+
+- Data UTC: `2026-02-17T15:34:44Z`
+- Plano: `ADHOC`
+- Resumo:
+  - Registrado em `EXPERIMENTS.md` o submit via notebook (competicao code-only) e o re-score local USalign (full28) do candidato.
+- Arquivos principais tocados:
+  - `EXPERIMENTS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local` -> ok
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_plan077_kernel_output_v84/submission.csv` -> ok
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-109 (SE3 frames: eixos em colunas)
 
 - Data UTC: `2026-02-17T13:01:17Z`

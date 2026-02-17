@@ -1350,3 +1350,30 @@ Log append-only de experimentos executados.
   - Full28 (`single`): `score=0.042739285714285716` (n_targets=28)
 - Conclusao:
   - O scorer USalign executou com sucesso e gerou relatórios por alvo; o modo `best_of_gt_copies` é muito mais caro em alvos ultra-longos (ex.: `9MME`), então o full foi medido em `single` nesta rodada.
+
+## 2026-02-17 - marcusvinicius/Codex - ADHOC (Submit Kaggle via notebook + re-score do candidato)
+
+- Data UTC:
+  - Submit: `2026-02-17T15:29:55Z`
+  - Re-score: `2026-02-17T15:34:44Z`
+- Objetivo:
+  - Submeter via notebook (code competition) o artefato `submission.csv` do kernel `marcux777/stanford-rna3d-submit-prod-v2` (versao `84`) e revalidar o score local “de verdade” no conjunto full (28 targets).
+- Comandos executados:
+  - `python -m compileall -q src/rna3d_local`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_plan077_kernel_output_v84/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260216_plan077_kernel_output_v84/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260217_score_plan077_v84_recheck/score.json --report runs/20260217_score_plan077_v84_recheck/report.json`
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 84 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_plan077_kernel_output_v84/submission.csv --notebook-output-path runs/20260216_plan077_kernel_output_v84/submission.csv --score-json runs/20260216_plan077_kernel_output_v84/score_full.json --baseline-score 0.04443 --message "ADHOC: submit v84 (local USalign=0.18033 > baseline=0.04443)" --execute-submit`
+- Versao de codigo/dados:
+  - `git commit` (submit + re-score): `96d6074`
+  - Ground truth: `input/stanford-rna-3d-folding-2/validation_labels.csv`
+- Artefatos:
+  - Kernel output: `runs/20260216_plan077_kernel_output_v84/submission.csv` (sha256=`657454b44169922f7c7cf3bee1bf38043e2085653b19a5873e8ab283617aa822`)
+  - Submit report: `runs/20260216_plan077_kernel_output_v84/submit_notebook_report.json`
+  - Re-score: `runs/20260217_score_plan077_v84_recheck/score.json`
+  - Re-score report: `runs/20260217_score_plan077_v84_recheck/report.json`
+- Metricas/score/custo:
+  - `check-submission`: `ok=true`
+  - Re-score Full28 (`single`): `score=0.17425` (n_targets=28)
+  - Score preexistente do candidato (usado no gate do submit): `runs/20260216_plan077_kernel_output_v84/score_full.json` -> `score=0.18032857142857142`
+- Observacoes:
+  - O re-score (código atual) divergiu do score preexistente em 5 targets (`9EBP`, `9JFO`, `9LJN`, `9OD4`, `9G4J`); usar `runs/20260217_score_plan077_v84_recheck/*` como referencia atual para comparacoes futuras.
