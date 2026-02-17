@@ -246,8 +246,10 @@ def _build_torch_sparse_edges(
             )
         if int(edge_index.numel()) == 0:
             return None
-        src = edge_index[0].to(dtype=torch.long, device=coords.device)
-        dst = edge_index[1].to(dtype=torch.long, device=coords.device)
+        # torch_cluster returns edges in PyG convention: edge_index[0]=source (neighbor), edge_index[1]=target (center).
+        # Our convention is src=receiver/center and dst=neighbor/sender to match index_add_(..., src, ...).
+        src = edge_index[1].to(dtype=torch.long, device=coords.device)
+        dst = edge_index[0].to(dtype=torch.long, device=coords.device)
         distances = torch.linalg.norm(coords.index_select(0, src) - coords.index_select(0, dst), dim=-1).to(dtype=torch.float32)
         return src, dst, distances
 
@@ -349,8 +351,9 @@ def _build_torch_geometric_edges(
             impact=str(int(coords.shape[0])),
             examples=[f"radius={radius_angstrom}", f"max_neighbors={max_neighbors}"],
         )
-    src = edge_index[0].to(dtype=torch.long, device=coords.device)
-    dst = edge_index[1].to(dtype=torch.long, device=coords.device)
+    # PyG convention: edge_index[0]=source (neighbor), edge_index[1]=target (center).
+    src = edge_index[1].to(dtype=torch.long, device=coords.device)
+    dst = edge_index[0].to(dtype=torch.long, device=coords.device)
     distances = torch.linalg.norm(coords.index_select(0, src) - coords.index_select(0, dst), dim=-1).to(dtype=torch.float32)
     return src, dst, distances
 

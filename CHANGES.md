@@ -1097,6 +1097,22 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `100 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-112 (Sparse graph: direção de arestas src=receiver)
+
+- Data UTC: `2026-02-17T13:26:22Z`
+- Plano: `PLAN-112`
+- Resumo:
+  - Corrigida a interpretação de `edge_index` nos backends `torch_cluster` e `torch_geometric`: agora `src=edge_index[1]` (receiver/target) e `dst=edge_index[0]` (neighbor/source), consistente com a convenção usada por `EgnnBackbone`/`IpaBackbone` (`index_add_(..., src, ...)`).
+  - Testes stubbam `radius_graph` no formato PyG e garantem que a direção é aplicada corretamente.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sparse_graph.py`
+  - `tests/test_sparse_graph_edge_direction.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `102 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

@@ -1920,3 +1920,15 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-112 - Corrigir direção de arestas em radius_graph (src=receiver)
+
+- Objetivo: alinhar a convenção `src=receiver`, `dst=neighbor` em todos os backends de grafo (`torch_cluster`/PyG e fallback manual), evitando message passing invertido e garantindo que `max_neighbors` limite vizinhos por receptor.
+- Escopo:
+  - `se3/sparse_graph.py`:
+    - inverter a leitura de `edge_index` (`src=edge_index[1]`, `dst=edge_index[0]`) nos backends `torch_cluster.radius_graph` e `torch_geometric.nn.radius_graph`.
+  - Testes:
+    - adicionar testes que stubs de `radius_graph` retornam `edge_index` no formato PyG e validam que `build_sparse_radius_graph` interpreta `src` como alvo (receiver).
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.
