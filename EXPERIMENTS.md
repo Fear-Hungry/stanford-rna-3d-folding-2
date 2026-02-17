@@ -1498,3 +1498,20 @@ Log append-only de experimentos executados.
 - Submissao Kaggle:
   - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 89 -m "PLAN-126: TBM-first + pad missing model ids (local USalign 0.2629)"`
   - Status no momento do registro: `PENDING` (submetido em `2026-02-17 18:13:11` no CLI).
+
+### 2026-02-17 - Update: kernel v90 (coverage split + DRfold2 fallback) + submit
+
+- Data UTC: `2026-02-17T18:46:22Z`
+- Kernel:
+  - `marcux777/stanford-rna3d-submit-prod-v2` version `90`
+- Mudanca:
+  - Split de targets por cobertura real de templates (TBM vs fallback) para evitar crash no rerun hidden.
+  - Fallback usa `DRfold_infer.py` do dataset `marcux777/stanford-rna3d-drfold2-official-v1` e exporta C1' replicado em `model_id=1..5`.
+- Artefatos:
+  - `runs/20260217_plan126_kernel_output_v90/submission.csv`
+  - `runs/20260217_plan126_score_v90/score.json` (proxy local)
+- Metricas/score:
+  - `score=0.262925` (igual ao v89 no full28 public; fallback_targets=0 no dataset local)
+- Submissao Kaggle:
+  - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 90 -m "PLAN-126: TBM-first with coverage split + DRfold2 fallback for no-template targets"`
+  - Status no momento do registro: `PENDING` (submetido em `2026-02-17 18:46:10` no CLI).

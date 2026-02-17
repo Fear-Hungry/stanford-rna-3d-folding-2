@@ -1071,6 +1071,7 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - `encoder=mock` e uma heuristica; ideal e empacotar `ribonanzanet2` + `model_path` real para retrieval.
   - Padding do TBM reduz diversidade efetiva quando faltam templates (ex.: duplica o melhor); manter monitoramento via score local.
+  - Hidden rerun pode conter alvos sem template cobrindo 1..L; kernel precisou de split por cobertura + fallback para evitar crash.
 
 ## 2026-02-17 - marcusvinicius/Codex - ADHOC (log de submit + re-score)
 
