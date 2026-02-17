@@ -1079,6 +1079,24 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `96 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-111 (Geradores SE(3) equivariantes)
+
+- Data UTC: `2026-02-17T13:22:32Z`
+- Plano: `PLAN-111`
+- Resumo:
+  - `Se3Diffusion` e `Se3FlowMatching` deixaram de concatenar coordenadas absolutas em MLP: agora usam deltas (`x_noisy - x_cond` / `x_t - x_cond`) projetados em frames construídos a partir de vetores locais (tangente/curvatura), preservando equivariância a rotações e translações.
+  - A amostragem do `Se3Diffusion` passou a operar no espaço de deltas (`delta = x - x_cond`) para evitar drift de translação induzido pela prior do DDPM.
+  - Testes unitários cobrem equivariância por rotação e por translação para predição e amostragem com seed fixo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/generative/diffusion_se3.py`
+  - `src/rna3d_local/generative/flow_matching_se3.py`
+  - `tests/test_se3_generative_symmetry.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `100 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

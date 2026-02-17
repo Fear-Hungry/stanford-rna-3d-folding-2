@@ -1903,3 +1903,20 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-111 - Geradores SE(3) equivariantes (diffusion/flow no frame local)
+
+- Objetivo: remover dependência de coordenadas absolutas em MLPs densas nos geradores (`diffusion_se3` e `flow_matching_se3`), garantindo equivariância a rotações e translações.
+- Escopo:
+  - `generative/diffusion_se3.py`:
+    - usar apenas deltas `x_noisy - x_cond` como entrada geométrica;
+    - projetar deltas para frame local derivado de `x_cond` e prever ruído em coordenadas locais;
+    - mapear a predição de volta para o global via `frames`.
+    - inicialização de amostragem deve ser definida no frame local para preservar equivariância com seed fixo.
+  - `generative/flow_matching_se3.py`:
+    - prever velocidade no frame local e mapear para o global; entrada geométrica via `x_t - x_cond`.
+  - Testes:
+    - adicionar testes de equivariância por rotação e por translação para `_predict_noise/_predict_velocity` e para `sample()` (seed fixo).
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.
