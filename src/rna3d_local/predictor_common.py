@@ -61,6 +61,27 @@ def load_model_entrypoint(*, model_dir: Path, stage: str, location: str) -> list
     return cleaned
 
 
+def load_model_entrypoint_optional(*, model_dir: Path, stage: str, location: str) -> list[str] | None:
+    config_path = model_dir / "config.json"
+    if not config_path.exists():
+        raise_error(stage, location, "config.json do modelo ausente", impact="1", examples=[str(config_path)])
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise_error(stage, location, "config.json invalido (nao e JSON)", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+    if "entrypoint" not in payload:
+        return None
+    entrypoint = payload.get("entrypoint")
+    if entrypoint is None:
+        return None
+    if not isinstance(entrypoint, list):
+        raise_error(stage, location, "config.json com entrypoint invalido (esperado lista)", impact="1", examples=[str(config_path)])
+    cleaned = [str(item) for item in entrypoint if isinstance(item, str) and str(item).strip()]
+    if len(cleaned) != len(entrypoint) or not cleaned:
+        raise_error(stage, location, "config.json com entrypoint invalido (itens vazios/nao-string)", impact="1", examples=[str(entrypoint)[:200]])
+    return cleaned
+
+
 def render_entrypoint(
     entrypoint: list[str],
     *,

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import raise_error
-from .predictor_common import load_model_entrypoint
+from .predictor_common import load_model_entrypoint_optional
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
 
@@ -45,7 +45,7 @@ def build_phase2_assets_manifest(
         section_key = str(section_path.relative_to(assets_dir))
         entrypoint = None
         if section_key.startswith("models/"):
-            entrypoint = load_model_entrypoint(model_dir=section_path, stage=stage, location=location)
+            entrypoint = load_model_entrypoint_optional(model_dir=section_path, stage=stage, location=location)
         sections[section_key] = {
             "n_files": len(files),
             "entrypoint": entrypoint,

@@ -2111,3 +2111,25 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - Todas as variantes passam contrato estrito.
   - Se algum `confidence_scale` superar o melhor score atual registrado, registrar em `EXPERIMENTS.md` e recomendar o ajuste correspondente no notebook de submissão (ou em código, se você pedir).
+
+## PLAN-126 - Kaggle: notebook TBM-first + novo kernel (substituir submit 0.132)
+
+- Objetivo:
+  - Substituir o notebook atual (kernel `v84`, publicScore `0.132`) por um novo kernel que prioriza TBM quando possível, evitando que a seleção híbrida descarte TBM por `confidence` descalibrado.
+- Hipótese:
+  - Exportar `submission.csv` diretamente de `tbm_predictions.parquet` (quando o export estrito passar) aumenta o score local USalign e deve melhorar o publicScore vs `0.132`.
+- Mudança mínima (notebook-only):
+  - Após `predict-tbm`, tentar:
+    - `export-submission` usando `tbm_predictions.parquet` como `--predictions`.
+  - Se o export falhar por falta de cobertura/keys, cair para o fluxo híbrido atual (foundation + `build-hybrid-candidates` + `select-top5-hybrid`), com `--diversity-lambda 0.0` no seletor.
+- Escopo:
+  - Publicar nova versão do dataset de src: `marcux777/stanford-rna3d-reboot-src-v2` (apontando para o `src/` atual).
+  - `kaggle kernels push` do notebook `marcux777/stanford-rna3d-submit-prod-v2`.
+  - Baixar output do kernel e validar localmente:
+    - `check-submission` estrito
+    - `score-local-bestof5` contra `validation_labels.csv` (proxy de qualidade)
+  - Submeter à competição somente se o score local superar o baseline do candidato atual.
+- Critérios de aceite:
+  - Kernel completa sem erro (`COMPLETE`) com `enable_internet=false`.
+  - `check-submission` ok para o `submission.csv` do output do kernel.
+  - Score local USalign melhora vs candidato atual e logs/artefatos ficam em `runs/` + registro em `EXPERIMENTS.md`.
