@@ -105,3 +105,16 @@ def build_ribose_like_frames(x: torch.Tensor) -> torch.Tensor:
     base_features[:, 0] = 1.0
     frames, _p_proxy, _c4_proxy, _n_proxy = build_rna_local_frames(c1_coords=x, base_features=base_features)
     return frames
+
+
+def rotation_matrix_from_6d(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    if x.ndim != 2 or int(x.shape[-1]) != 6:
+        raise ValueError(f"x com shape invalido para rotation_matrix_from_6d: {tuple(x.shape)}")
+    a1 = x[:, 0:3]
+    a2 = x[:, 3:6]
+    b1 = normalize_vector(a1, eps=eps)
+    proj = torch.sum(b1 * a2, dim=-1, keepdim=True)
+    b2 = normalize_vector(a2 - (proj * b1), eps=eps)
+    b3 = normalize_vector(_safe_cross(b1, b2), eps=eps)
+    # columns = [b1 b2 b3] to match frame convention used in ipa_backbone (local->global).
+    return torch.stack([b1, b2, b3], dim=-1)

@@ -24,6 +24,11 @@ class Se3TrainConfig:
     radius_angstrom: float
     max_neighbors: int
     graph_chunk_size: int
+    graph_pair_edges: str
+    graph_pair_min_prob: float
+    graph_pair_max_per_node: int
+    thermo_pair_min_prob: float
+    thermo_pair_max_per_node: int
     thermo_backend: str
     rnafold_bin: str
     linearfold_bin: str
@@ -72,6 +77,22 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
     graph_backend = str(payload.get("graph_backend", "torch_sparse")).strip().lower()
     if graph_backend not in {"torch_sparse", "torch_geometric"}:
         raise_error(stage, location, "graph_backend invalido na config", impact="1", examples=[graph_backend])
+    graph_pair_edges = str(payload.get("graph_pair_edges", "none")).strip().lower()
+    if graph_pair_edges not in {"none", "bpp"}:
+        raise_error(stage, location, "graph_pair_edges invalido na config", impact="1", examples=[graph_pair_edges])
+    graph_pair_min_prob = float(payload.get("graph_pair_min_prob", 0.10))
+    graph_pair_max_per_node = int(payload.get("graph_pair_max_per_node", 8))
+    if graph_pair_edges != "none":
+        if not (0.0 <= float(graph_pair_min_prob) <= 1.0):
+            raise_error(stage, location, "graph_pair_min_prob fora de [0,1]", impact="1", examples=[str(graph_pair_min_prob)])
+        if int(graph_pair_max_per_node) <= 0:
+            raise_error(stage, location, "graph_pair_max_per_node invalido (<=0)", impact="1", examples=[str(graph_pair_max_per_node)])
+    thermo_pair_min_prob = float(payload.get("thermo_pair_min_prob", graph_pair_min_prob if graph_pair_edges != "none" else 0.0))
+    thermo_pair_max_per_node = int(payload.get("thermo_pair_max_per_node", graph_pair_max_per_node if graph_pair_edges != "none" else 0))
+    if not (0.0 <= float(thermo_pair_min_prob) <= 1.0):
+        raise_error(stage, location, "thermo_pair_min_prob fora de [0,1]", impact="1", examples=[str(thermo_pair_min_prob)])
+    if int(thermo_pair_max_per_node) < 0:
+        raise_error(stage, location, "thermo_pair_max_per_node invalido (<0)", impact="1", examples=[str(thermo_pair_max_per_node)])
     thermo_backend = str(payload.get("thermo_backend", "rnafold")).strip().lower()
     if thermo_backend not in {"rnafold", "linearfold", "viennarna"}:
         raise_error(stage, location, "thermo_backend invalido na config", impact="1", examples=[thermo_backend])
@@ -97,6 +118,11 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         radius_angstrom=float(payload.get("radius_angstrom", 14.0)),
         max_neighbors=int(payload.get("max_neighbors", 64)),
         graph_chunk_size=int(payload.get("graph_chunk_size", 512)),
+        graph_pair_edges=graph_pair_edges,
+        graph_pair_min_prob=float(graph_pair_min_prob),
+        graph_pair_max_per_node=int(graph_pair_max_per_node),
+        thermo_pair_min_prob=float(thermo_pair_min_prob),
+        thermo_pair_max_per_node=int(thermo_pair_max_per_node),
         thermo_backend=thermo_backend,
         rnafold_bin=str(payload.get("rnafold_bin", "RNAfold")).strip(),
         linearfold_bin=str(payload.get("linearfold_bin", "linearfold")).strip(),
@@ -156,6 +182,22 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         raise_error(stage, location, "training_protocol invalido", impact="1", examples=[str(cfg.training_protocol)])
     if cfg.radius_angstrom <= 0:
         raise_error(stage, location, "radius_angstrom invalido (<=0)", impact="1", examples=[str(cfg.radius_angstrom)])
+    if cfg.graph_pair_edges != "none" and int(cfg.graph_pair_max_per_node) > int(cfg.max_neighbors):
+        raise_error(
+            stage,
+            location,
+            "graph_pair_max_per_node nao pode exceder max_neighbors",
+            impact="1",
+            examples=[f"pair_max={int(cfg.graph_pair_max_per_node)}", f"max_neighbors={int(cfg.max_neighbors)}"],
+        )
+    if int(cfg.thermo_pair_max_per_node) > 0 and int(cfg.thermo_pair_max_per_node) > int(cfg.max_neighbors):
+        raise_error(
+            stage,
+            location,
+            "thermo_pair_max_per_node nao pode exceder max_neighbors",
+            impact="1",
+            examples=[f"thermo_pair_max={int(cfg.thermo_pair_max_per_node)}", f"max_neighbors={int(cfg.max_neighbors)}"],
+        )
     if cfg.fape_clamp_distance <= 0:
         raise_error(stage, location, "fape_clamp_distance invalido (<=0)", impact="1", examples=[str(cfg.fape_clamp_distance)])
     if cfg.fape_length_scale <= 0:

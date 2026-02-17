@@ -75,6 +75,8 @@ def sample_se3_ensemble(
         rnafold_bin=runtime.config.rnafold_bin,
         linearfold_bin=runtime.config.linearfold_bin,
         thermo_cache_dir=(None if runtime.config.thermo_cache_dir is None else (repo_root / runtime.config.thermo_cache_dir).resolve()),
+        thermo_pair_min_prob=float(getattr(runtime.config, "thermo_pair_min_prob", 0.0)),
+        thermo_pair_max_per_node=int(getattr(runtime.config, "thermo_pair_max_per_node", 0)),
         msa_backend=runtime.config.msa_backend,
         mmseqs_bin=runtime.config.mmseqs_bin,
         mmseqs_db=runtime.config.mmseqs_db,

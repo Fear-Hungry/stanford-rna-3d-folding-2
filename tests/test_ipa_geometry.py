@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from rna3d_local.se3.geometry import build_rna_local_frames
+from rna3d_local.se3.geometry import rotation_matrix_from_6d
 from rna3d_local.se3.ipa_backbone import IpaBackbone
 
 
@@ -47,6 +48,16 @@ def test_build_rna_local_frames_is_finite_and_orthonormal() -> None:
     assert torch.allclose(gram, identity, atol=1e-4, rtol=1e-4)
 
 
+def test_rotation_matrix_from_6d_is_orthonormal() -> None:
+    x = torch.randn(12, 6, dtype=torch.float32)
+    rot = rotation_matrix_from_6d(x)
+    assert rot.shape == (12, 3, 3)
+    assert torch.isfinite(rot).all()
+    gram = torch.matmul(rot.transpose(1, 2), rot)
+    identity = torch.eye(3, dtype=torch.float32).unsqueeze(0).expand_as(gram)
+    assert torch.allclose(gram, identity, atol=1e-4, rtol=1e-4)
+
+
 def test_ipa_backbone_requires_valid_base_features_and_runs() -> None:
     model = IpaBackbone(
         input_dim=8,
@@ -57,6 +68,9 @@ def test_ipa_backbone_requires_valid_base_features_and_runs() -> None:
         radius_angstrom=8.0,
         max_neighbors=3,
         graph_chunk_size=8,
+        graph_pair_edges="none",
+        graph_pair_min_prob=0.0,
+        graph_pair_max_per_node=0,
         stage="TEST",
         location="tests/test_ipa_geometry.py:test_ipa_backbone_requires_valid_base_features_and_runs",
     )

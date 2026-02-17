@@ -66,6 +66,135 @@ def compute_chain_relative_features(
     return rel_offset, break_mask
 
 
+def _select_topk_pair_edges_per_src(
+    *,
+    pair_src: torch.Tensor,
+    pair_dst: torch.Tensor,
+    pair_prob: torch.Tensor,
+    n_nodes: int,
+    min_prob: float,
+    max_per_node: int,
+    stage: str,
+    location: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if max_per_node <= 0 or int(pair_src.numel()) == 0:
+        empty_long = torch.zeros((0,), dtype=torch.long, device=pair_src.device)
+        empty_float = torch.zeros((0,), dtype=torch.float32, device=pair_src.device)
+        return empty_long, empty_long, empty_float
+    if pair_src.ndim != 1 or pair_dst.ndim != 1 or pair_prob.ndim != 1:
+        raise_error(
+            stage,
+            location,
+            "pares esparsos com shape invalido (esperado vetores 1D)",
+            impact="1",
+            examples=[f"src={tuple(pair_src.shape)}", f"dst={tuple(pair_dst.shape)}", f"prob={tuple(pair_prob.shape)}"],
+        )
+    if int(pair_src.numel()) != int(pair_dst.numel()) or int(pair_src.numel()) != int(pair_prob.numel()):
+        raise_error(
+            stage,
+            location,
+            "pares esparsos com comprimentos inconsistentes",
+            impact="1",
+            examples=[f"src={int(pair_src.numel())}", f"dst={int(pair_dst.numel())}", f"prob={int(pair_prob.numel())}"],
+        )
+    if not (0.0 <= float(min_prob) <= 1.0):
+        raise_error(stage, location, "min_prob fora de [0,1] para pares esparsos", impact="1", examples=[str(min_prob)])
+    src = pair_src.to(dtype=torch.long)
+    dst = pair_dst.to(dtype=torch.long)
+    prob = pair_prob.to(dtype=torch.float32)
+    if int(src.numel()) == 0:
+        empty_long = torch.zeros((0,), dtype=torch.long, device=src.device)
+        empty_float = torch.zeros((0,), dtype=torch.float32, device=src.device)
+        return empty_long, empty_long, empty_float
+    if int(src.min().item()) < 0 or int(dst.min().item()) < 0:
+        raise_error(
+            stage,
+            location,
+            "pares esparsos com indices negativos",
+            impact="1",
+            examples=[f"src_min={int(src.min().item())}", f"dst_min={int(dst.min().item())}"],
+        )
+    if int(src.max().item()) >= int(n_nodes) or int(dst.max().item()) >= int(n_nodes):
+        bad_mask = (src >= int(n_nodes)) | (dst >= int(n_nodes))
+        bad_idx = torch.nonzero(bad_mask, as_tuple=False).flatten()[:8]
+        examples = [f"{int(src[i].item())}->{int(dst[i].item())}" for i in bad_idx.tolist()]
+        raise_error(
+            stage,
+            location,
+            "pares esparsos com indices fora do intervalo do grafo",
+            impact=str(int(bad_mask.sum().item())),
+            examples=examples,
+        )
+    keep = (src != dst) & (prob >= float(min_prob))
+    if not bool(keep.any()):
+        empty_long = torch.zeros((0,), dtype=torch.long, device=src.device)
+        empty_float = torch.zeros((0,), dtype=torch.float32, device=src.device)
+        return empty_long, empty_long, empty_float
+    src = src[keep]
+    dst = dst[keep]
+    prob = prob[keep]
+
+    # Ordena por prob desc; depois ordena estavelmente por src asc -> (src asc, prob desc) por grupo.
+    order = torch.argsort(prob, descending=True, stable=True)
+    src = src.index_select(0, order)
+    dst = dst.index_select(0, order)
+    prob = prob.index_select(0, order)
+    order = torch.argsort(src, descending=False, stable=True)
+    src = src.index_select(0, order)
+    dst = dst.index_select(0, order)
+    prob = prob.index_select(0, order)
+
+    counts = torch.bincount(src, minlength=int(n_nodes))
+    starts = torch.cumsum(counts, dim=0) - counts
+    positions = torch.arange(int(src.numel()), device=src.device, dtype=torch.long)
+    rank = positions - starts.index_select(0, src)
+    keep = rank < int(max_per_node)
+    src = src[keep]
+    dst = dst[keep]
+    prob = prob[keep]
+    return src, dst, prob
+
+
+def _sort_edges_by_src_then_metric(
+    *,
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    metric: torch.Tensor,
+    metric_desc: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if int(src.numel()) == 0:
+        return src, dst, metric
+    order = torch.argsort(metric, descending=bool(metric_desc), stable=True)
+    src = src.index_select(0, order)
+    dst = dst.index_select(0, order)
+    metric = metric.index_select(0, order)
+    order = torch.argsort(src, descending=False, stable=True)
+    src = src.index_select(0, order)
+    dst = dst.index_select(0, order)
+    metric = metric.index_select(0, order)
+    return src, dst, metric
+
+
+def _dedupe_directed_edges_keep_first(
+    *,
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    values: torch.Tensor,
+    n_nodes: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if int(src.numel()) == 0:
+        return src, dst, values
+    keys = (src.to(dtype=torch.long) * int(n_nodes)) + dst.to(dtype=torch.long)
+    order = torch.argsort(keys, stable=True)
+    sorted_keys = keys.index_select(0, order)
+    keep_sorted = torch.ones((int(sorted_keys.numel()),), dtype=torch.bool, device=sorted_keys.device)
+    keep_sorted[1:] = sorted_keys[1:] != sorted_keys[:-1]
+    keep_indices = order.index_select(0, torch.nonzero(keep_sorted, as_tuple=False).flatten())
+    keep_mask = torch.zeros((int(src.numel()),), dtype=torch.bool, device=src.device)
+    keep_mask[keep_indices] = True
+    return src[keep_mask], dst[keep_mask], values[keep_mask]
+
+
 def _enforce_min_degree(
     *,
     src: torch.Tensor,
@@ -233,6 +362,11 @@ def build_sparse_radius_graph(
     max_neighbors: int,
     backend: str,
     chunk_size: int,
+    pair_src: torch.Tensor | None = None,
+    pair_dst: torch.Tensor | None = None,
+    pair_prob: torch.Tensor | None = None,
+    pair_min_prob: float = 0.0,
+    pair_max_per_node: int = 0,
     stage: str,
     location: str,
 ) -> SparseRadiusGraph:
@@ -267,6 +401,58 @@ def build_sparse_radius_graph(
         )
     else:
         raise_error(stage, location, "backend de grafo invalido", impact="1", examples=[backend_name])
+
+    # Opcional: injeta pares esparsos (ex.: BPP) como arestas topologicas, mantendo o budget total por src.
+    if pair_src is not None or pair_dst is not None or pair_prob is not None:
+        if pair_src is None or pair_dst is None or pair_prob is None:
+            raise_error(
+                stage,
+                location,
+                "pares esparsos incompletos (src/dst/prob)",
+                impact="1",
+                examples=[f"src={pair_src is not None}", f"dst={pair_dst is not None}", f"prob={pair_prob is not None}"],
+            )
+        pair_src_dev = pair_src.to(device=coords.device)
+        pair_dst_dev = pair_dst.to(device=coords.device)
+        pair_prob_dev = pair_prob.to(device=coords.device)
+        pair_src_sel, pair_dst_sel, pair_prob_sel = _select_topk_pair_edges_per_src(
+            pair_src=pair_src_dev,
+            pair_dst=pair_dst_dev,
+            pair_prob=pair_prob_dev,
+            n_nodes=n_nodes,
+            min_prob=float(pair_min_prob),
+            max_per_node=int(pair_max_per_node),
+            stage=stage,
+            location=location,
+        )
+        if int(pair_src_sel.numel()) > 0:
+            pair_dist = torch.linalg.norm(coords.index_select(0, pair_src_sel) - coords.index_select(0, pair_dst_sel), dim=-1).to(dtype=torch.float32)
+            order = torch.argsort(pair_prob_sel, descending=True, stable=True)
+            pair_src_sel = pair_src_sel.index_select(0, order)
+            pair_dst_sel = pair_dst_sel.index_select(0, order)
+            pair_dist = pair_dist.index_select(0, order)
+            order = torch.argsort(pair_src_sel, descending=False, stable=True)
+            pair_src_sel = pair_src_sel.index_select(0, order)
+            pair_dst_sel = pair_dst_sel.index_select(0, order)
+            pair_dist = pair_dist.index_select(0, order)
+            src, dst, distances = _sort_edges_by_src_then_metric(src=src, dst=dst, metric=distances, metric_desc=False)
+            src = torch.cat([pair_src_sel, src], dim=0)
+            dst = torch.cat([pair_dst_sel, dst], dim=0)
+            distances = torch.cat([pair_dist, distances], dim=0)
+            order = torch.argsort(src, descending=False, stable=True)
+            src = src.index_select(0, order)
+            dst = dst.index_select(0, order)
+            distances = distances.index_select(0, order)
+            src, dst, distances = _dedupe_directed_edges_keep_first(src=src, dst=dst, values=distances, n_nodes=n_nodes)
+            counts = torch.bincount(src, minlength=int(n_nodes))
+            starts = torch.cumsum(counts, dim=0) - counts
+            positions = torch.arange(int(src.numel()), device=src.device, dtype=torch.long)
+            rank = positions - starts.index_select(0, src)
+            keep = rank < int(max_neighbors)
+            src = src[keep]
+            dst = dst[keep]
+            distances = distances[keep]
+
     _enforce_min_degree(src=src, dst=dst, n_nodes=n_nodes, stage=stage, location=location)
     indices = torch.stack([src, dst], dim=0)
     adjacency = torch.sparse_coo_tensor(

@@ -14,7 +14,12 @@
   "radius_angstrom": 14.0,
   "max_neighbors": 64,
   "graph_chunk_size": 512,
+  "graph_pair_edges": "bpp",
+  "graph_pair_min_prob": 0.1,
+  "graph_pair_max_per_node": 8,
   "thermo_backend": "rnafold",
+  "thermo_pair_min_prob": 0.1,
+  "thermo_pair_max_per_node": 8,
   "rnafold_bin": "RNAfold",
   "linearfold_bin": "linearfold",
   "thermo_cache_dir": "runs/cache/thermo",
@@ -44,4 +49,3 @@
   "autocast_bfloat16": true,
   "training_protocol": "local_16gb"
 }
-

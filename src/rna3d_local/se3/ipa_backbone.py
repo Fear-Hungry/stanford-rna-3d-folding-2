@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from .geometry import build_rna_local_frames
+from .geometry import rotation_matrix_from_6d
 from .sparse_graph import build_sparse_radius_graph, compute_chain_relative_features, lookup_sparse_pair_bias
 
 
@@ -51,6 +52,12 @@ class IpaBlock(nn.Module):
         self.rel_bias = nn.Linear(1, heads)
         self.chain_break_bias = nn.Linear(1, heads)
         self.orientation_bias = nn.Linear(3, heads)
+        self.base_orientation_bias = nn.Linear(3, heads)
+        self.base_frame_delta = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 6),
+        )
         self.coord_gate = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
@@ -76,6 +83,9 @@ class IpaBlock(nn.Module):
         node_count = int(h.shape[0])
         if frames.ndim != 3 or int(frames.shape[0]) != node_count or int(frames.shape[1]) != 3 or int(frames.shape[2]) != 3:
             raise ValueError(f"frames com shape invalido para IpaBlock: {tuple(frames.shape)}")
+        # Base frame: rotation relative to ribose frame (SO(3) per residue).
+        delta_rot = rotation_matrix_from_6d(self.base_frame_delta(h).to(dtype=torch.float32)).to(dtype=frames.dtype)
+        base_frames = torch.einsum("nij,njk->nik", frames, delta_rot)
         q = self.query(h).view(node_count, self.heads, self.head_dim)
         k = self.key(h).view(node_count, self.heads, self.head_dim)
         v = self.value(h).view(node_count, self.heads, self.head_dim)
@@ -87,6 +97,10 @@ class IpaBlock(nn.Module):
         edge_local_delta = torch.einsum("eij,ej->ei", src_frames.transpose(1, 2), edge_delta)
         edge_local_norm = torch.clamp(torch.linalg.norm(edge_local_delta, dim=-1, keepdim=True), min=1e-6)
         edge_local_unit = edge_local_delta / edge_local_norm
+        src_base_frames = base_frames.index_select(0, src)
+        base_local_delta = torch.einsum("eij,ej->ei", src_base_frames.transpose(1, 2), edge_delta)
+        base_local_norm = torch.clamp(torch.linalg.norm(base_local_delta, dim=-1, keepdim=True), min=1e-6)
+        base_local_unit = base_local_delta / base_local_norm
         logits = torch.einsum("ehd,ehd->he", q_src, k_dst) / math.sqrt(float(self.head_dim))
         bias = self.dist_bias((distances * distances).unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
         bpp_term = self.bpp_bias(bpp_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
@@ -95,8 +109,9 @@ class IpaBlock(nn.Module):
         rel_term = self.rel_bias(relative_offset.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
         chain_term = self.chain_break_bias(chain_break_mask.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
         orientation_term = (0.1 * torch.tanh(self.orientation_bias(edge_local_unit.to(dtype=h.dtype)))).transpose(0, 1)
+        base_orientation_term = (0.1 * torch.tanh(self.base_orientation_bias(base_local_unit.to(dtype=h.dtype)))).transpose(0, 1)
         weights = _segment_softmax(
-            logits=logits - bias + bpp_term + msa_term + chem_term + rel_term + chain_term + orientation_term,
+            logits=logits - bias + bpp_term + msa_term + chem_term + rel_term + chain_term + orientation_term + base_orientation_term,
             src=src,
             node_count=node_count,
         )
@@ -136,6 +151,9 @@ class IpaBackbone(nn.Module):
         radius_angstrom: float,
         max_neighbors: int,
         graph_chunk_size: int,
+        graph_pair_edges: str,
+        graph_pair_min_prob: float,
+        graph_pair_max_per_node: int,
         stage: str,
         location: str,
     ) -> None:
@@ -146,6 +164,9 @@ class IpaBackbone(nn.Module):
         self.radius_angstrom = float(radius_angstrom)
         self.max_neighbors = int(max_neighbors)
         self.graph_chunk_size = int(graph_chunk_size)
+        self.graph_pair_edges = str(graph_pair_edges).strip().lower()
+        self.graph_pair_min_prob = float(graph_pair_min_prob)
+        self.graph_pair_max_per_node = int(graph_pair_max_per_node)
         self.input_proj = nn.Linear(input_dim, hidden_dim)
         self.layers = nn.ModuleList([IpaBlock(hidden_dim=hidden_dim, heads=heads) for _ in range(int(num_layers))])
         self.norm = nn.LayerNorm(hidden_dim)
@@ -172,30 +193,52 @@ class IpaBackbone(nn.Module):
         h = self.input_proj(node_features)
         x = coords
         base_features_layer = base_features.to(device=x.device, dtype=x.dtype)
+        bpp_pair_src_dev = bpp_pair_src.to(device=x.device)
+        bpp_pair_dst_dev = bpp_pair_dst.to(device=x.device)
+        bpp_pair_prob_dev = bpp_pair_prob.to(device=x.device)
+        msa_pair_src_dev = msa_pair_src.to(device=x.device)
+        msa_pair_dst_dev = msa_pair_dst.to(device=x.device)
+        msa_pair_prob_dev = msa_pair_prob.to(device=x.device)
         for layer in self.layers:
+            pair_src = None
+            pair_dst = None
+            pair_prob = None
+            pair_min_prob = 0.0
+            pair_max_per_node = 0
+            if self.graph_pair_edges == "bpp":
+                pair_src = bpp_pair_src_dev
+                pair_dst = bpp_pair_dst_dev
+                pair_prob = bpp_pair_prob_dev
+                pair_min_prob = float(self.graph_pair_min_prob)
+                pair_max_per_node = int(self.graph_pair_max_per_node)
             graph = build_sparse_radius_graph(
                 coords=x,
                 radius_angstrom=self.radius_angstrom,
                 max_neighbors=self.max_neighbors,
                 backend=self.graph_backend,
                 chunk_size=self.graph_chunk_size,
+                pair_src=pair_src,
+                pair_dst=pair_dst,
+                pair_prob=pair_prob,
+                pair_min_prob=pair_min_prob,
+                pair_max_per_node=pair_max_per_node,
                 stage=self.stage,
                 location=self.location,
             )
             bpp_edge_bias = lookup_sparse_pair_bias(
                 src=graph.src,
                 dst=graph.dst,
-                pair_src=bpp_pair_src.to(device=graph.src.device),
-                pair_dst=bpp_pair_dst.to(device=graph.src.device),
-                pair_prob=bpp_pair_prob.to(device=graph.src.device),
+                pair_src=bpp_pair_src_dev.to(device=graph.src.device),
+                pair_dst=bpp_pair_dst_dev.to(device=graph.src.device),
+                pair_prob=bpp_pair_prob_dev.to(device=graph.src.device),
                 n_nodes=int(h.shape[0]),
             )
             msa_edge_bias = lookup_sparse_pair_bias(
                 src=graph.src,
                 dst=graph.dst,
-                pair_src=msa_pair_src.to(device=graph.src.device),
-                pair_dst=msa_pair_dst.to(device=graph.src.device),
-                pair_prob=msa_pair_prob.to(device=graph.src.device),
+                pair_src=msa_pair_src_dev.to(device=graph.src.device),
+                pair_dst=msa_pair_dst_dev.to(device=graph.src.device),
+                pair_prob=msa_pair_prob_dev.to(device=graph.src.device),
                 n_nodes=int(h.shape[0]),
             )
             chem_values = chem_exposure.to(device=graph.src.device, dtype=torch.float32)

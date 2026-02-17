@@ -56,6 +56,8 @@ def prepare_phase1_data_lab(
         rnafold_bin=rnafold_bin,
         linearfold_bin=linearfold_bin,
         thermo_cache_dir=thermo_cache_dir,
+        thermo_pair_min_prob=0.0,
+        thermo_pair_max_per_node=0,
         msa_backend=msa_backend,
         mmseqs_bin=mmseqs_bin,
         mmseqs_db=mmseqs_db,

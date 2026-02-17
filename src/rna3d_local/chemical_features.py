@@ -100,6 +100,7 @@ def _prepare_from_reactivity_table(table: pl.DataFrame, *, stage: str, location:
 
 def _prepare_from_template_coordinates(table: pl.DataFrame, *, stage: str, location: str) -> tuple[pl.DataFrame, str]:
     require_columns(table, ["ID", "resid"], stage=stage, location=location, label="ribonanza_template_quickstart")
+    has_plain_xyz = all(column in table.columns for column in ["x", "y", "z"])
     suffixes = sorted(
         {
             column.split("_", 1)[1]
@@ -109,7 +110,7 @@ def _prepare_from_template_coordinates(table: pl.DataFrame, *, stage: str, locat
         key=lambda item: int(item),
     )
     valid_suffixes = [suffix for suffix in suffixes if f"x_{suffix}" in table.columns and f"y_{suffix}" in table.columns and f"z_{suffix}" in table.columns]
-    if len(valid_suffixes) < 1:
+    if not has_plain_xyz and len(valid_suffixes) < 1:
         raise_error(
             stage,
             location,
@@ -118,9 +119,16 @@ def _prepare_from_template_coordinates(table: pl.DataFrame, *, stage: str, locat
             examples=valid_suffixes[:8],
         )
 
-    x_cols = [f"x_{suffix}" for suffix in valid_suffixes]
-    y_cols = [f"y_{suffix}" for suffix in valid_suffixes]
-    z_cols = [f"z_{suffix}" for suffix in valid_suffixes]
+    if has_plain_xyz:
+        x_cols = ["x"]
+        y_cols = ["y"]
+        z_cols = ["z"]
+        schema_mode = "template_coordinates_triplets=1_plain_xyz"
+    else:
+        x_cols = [f"x_{suffix}" for suffix in valid_suffixes]
+        y_cols = [f"y_{suffix}" for suffix in valid_suffixes]
+        z_cols = [f"z_{suffix}" for suffix in valid_suffixes]
+        schema_mode = f"template_coordinates_triplets={len(valid_suffixes)}"
     view = table.select(
         pl.col("ID").cast(pl.Utf8).alias("_id"),
         pl.col("resid").cast(pl.Int32),
@@ -140,7 +148,21 @@ def _prepare_from_template_coordinates(table: pl.DataFrame, *, stage: str, locat
     mean_z = z.mean(axis=1)
     spread = (x.std(axis=1) + y.std(axis=1) + z.std(axis=1)) / 3.0
     ids = view.select("_id").to_series().to_list()
-    target_ids = [str(item).split(":", 1)[0].strip() for item in ids]
+    resids = view.select("resid").to_series().to_list()
+    target_ids: list[str] = []
+    for raw_id, resid in zip(ids, resids, strict=True):
+        text = str(raw_id).strip()
+        if ":" in text:
+            text = text.split(":", 1)[0].strip()
+        elif "_" in text:
+            prefix, suffix = text.rsplit("_", 1)
+            if suffix.isdigit():
+                try:
+                    if int(suffix) == int(resid):
+                        text = str(prefix).strip()
+                except Exception:
+                    pass
+        target_ids.append(text)
     blank_targets = [str(ids[idx]) for idx, target_id in enumerate(target_ids) if not target_id]
     if blank_targets:
         raise_error(stage, location, "ID invalido sem target_id", impact=str(len(blank_targets)), examples=blank_targets[:8])
@@ -170,10 +192,10 @@ def _prepare_from_template_coordinates(table: pl.DataFrame, *, stage: str, locat
             ).sqrt()
         ).alias("reactivity_2a3")
     )
-    if len(valid_suffixes) == 1:
+    if has_plain_xyz or len(valid_suffixes) == 1:
         enriched = enriched.with_columns(pl.col("reactivity_2a3").alias("reactivity_dms"))
     enriched = enriched.select("target_id", "resid", "reactivity_dms", "reactivity_2a3")
-    return _normalize_and_finalize(enriched, stage=stage, location=location), f"template_coordinates_triplets={len(valid_suffixes)}"
+    return _normalize_and_finalize(enriched, stage=stage, location=location), schema_mode
 
 
 def prepare_chemical_features(

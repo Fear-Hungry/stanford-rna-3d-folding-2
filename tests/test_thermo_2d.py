@@ -93,6 +93,50 @@ def test_compute_thermo_bpp_cache_roundtrip(tmp_path: Path, monkeypatch: pytest.
     assert float(first["T1"].paired_marginal.sum().item()) == float(second["T1"].paired_marginal.sum().item())
 
 
+def test_compute_thermo_bpp_pruning_limits_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _dense_pairs(sequence: str) -> list[tuple[int, int, float]]:
+        length = len(sequence)
+        pairs: list[tuple[int, int, float]] = []
+        for i in range(1, length):
+            for k in range(1, min(5, (length - i) + 1)):
+                j = i + k
+                pairs.append((i, j, 0.08 / float(k)))
+        return pairs
+
+    def _fake_run_rnafold_pairs(*, sequence: str, target_id: str, rnafold_bin: str, stage: str, location: str) -> list[tuple[int, int, float]]:
+        return _dense_pairs(sequence)
+
+    monkeypatch.setattr(thermo_2d, "_run_rnafold_pairs", _fake_run_rnafold_pairs)
+    targets = pl.DataFrame([{"target_id": "T1", "sequence": "ACGUACGUACGU", "temporal_cutoff": "2024-01-01"}])
+    full = compute_thermo_bpp(
+        targets=targets,
+        backend="rnafold",
+        rnafold_bin="RNAfold",
+        linearfold_bin="linearfold",
+        cache_dir=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_pruning_limits_pairs:full",
+        min_pair_prob=0.0,
+        max_pairs_per_node=0,
+    )
+    pruned = compute_thermo_bpp(
+        targets=targets,
+        backend="rnafold",
+        rnafold_bin="RNAfold",
+        linearfold_bin="linearfold",
+        cache_dir=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_pruning_limits_pairs:pruned",
+        min_pair_prob=0.0,
+        max_pairs_per_node=1,
+    )
+    assert int(pruned["T1"].pair_src.numel()) < int(full["T1"].pair_src.numel())
+    assert int(pruned["T1"].pair_src.numel()) == int(pruned["T1"].pair_dst.numel())
+    assert int(pruned["T1"].pair_src.numel()) == int(pruned["T1"].pair_prob.numel())
+
+
 def test_compute_thermo_bpp_multichain_respects_separator(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run_rnafold_pairs(*, sequence: str, target_id: str, rnafold_bin: str, stage: str, location: str) -> list[tuple[int, int, float]]:
         return _stub_pairs(sequence)

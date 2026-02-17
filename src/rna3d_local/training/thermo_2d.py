@@ -31,6 +31,60 @@ class ThermoBppTarget:
     pair_prob: torch.Tensor
 
 
+def _prune_chain_pairs(
+    *,
+    pairs_1based: list[tuple[int, int, float]],
+    chain_length: int,
+    min_pair_prob: float,
+    max_pairs_per_node: int,
+    stage: str,
+    location: str,
+    target_id: str,
+) -> list[tuple[int, int, float]]:
+    if int(chain_length) <= 0 or not pairs_1based:
+        return []
+    if float(min_pair_prob) <= 0.0 and int(max_pairs_per_node) <= 0:
+        return pairs_1based
+    if not (0.0 <= float(min_pair_prob) <= 1.0):
+        raise_error(stage, location, "min_pair_prob fora de [0,1] no pruning BPP", impact="1", examples=[str(min_pair_prob)])
+    if int(max_pairs_per_node) < 0:
+        raise_error(stage, location, "max_pairs_per_node invalido (<0) no pruning BPP", impact="1", examples=[str(max_pairs_per_node)])
+    if int(max_pairs_per_node) == 0:
+        return [(i, j, float(p)) for i, j, p in pairs_1based if float(p) >= float(min_pair_prob)]
+
+    edge_prob: dict[tuple[int, int], float] = {}
+    neighbors: list[list[tuple[float, int]]] = [[] for _ in range(int(chain_length) + 1)]
+    for i_1, j_1, prob in pairs_1based:
+        p = float(prob)
+        if p < float(min_pair_prob):
+            continue
+        i = int(i_1)
+        j = int(j_1)
+        if i < 1 or j < 1 or i > int(chain_length) or j > int(chain_length) or i == j:
+            raise_error(stage, location, "par BPP fora do intervalo no pruning", impact="1", examples=[f"{target_id}:{i_1}-{j_1}"])
+        key = (i, j) if i < j else (j, i)
+        prev = edge_prob.get(key)
+        if prev is None or p > float(prev):
+            edge_prob[key] = p
+        neighbors[i].append((p, j))
+        neighbors[j].append((p, i))
+
+    selected: set[tuple[int, int]] = set()
+    for i in range(1, int(chain_length) + 1):
+        cand = neighbors[i]
+        if not cand:
+            continue
+        cand.sort(key=lambda item: float(item[0]), reverse=True)
+        for p, j in cand[: int(max_pairs_per_node)]:
+            key = (i, int(j)) if i < int(j) else (int(j), i)
+            if key in edge_prob:
+                selected.add(key)
+
+    out = [(int(i), int(j), float(edge_prob[(int(i), int(j))])) for i, j in selected]
+    out.sort(key=lambda item: (int(item[0]), int(item[1])))
+    return out
+
+
 def _target_pairs_to_tensors(
     *,
     target_id: str,
@@ -280,6 +334,8 @@ def _compute_single_target(
     linearfold_bin: str,
     cache_root: Path | None,
     chain_separator: str,
+    min_pair_prob: float,
+    max_pairs_per_node: int,
     stage: str,
     location: str,
 ) -> tuple[str, ThermoBppTarget]:
@@ -296,7 +352,8 @@ def _compute_single_target(
     offset = 0
     for chain_idx, chain_length in enumerate(parsed.chain_lengths):
         chain_seq = seq[offset : offset + chain_length]
-        cpath = None if cache_root is None else _cache_path(cache_dir=cache_root, backend=f"{backend_name}_chain", sequence=chain_seq)
+        cache_tag = f"{backend_name}_chain_pmin{float(min_pair_prob):.4f}_k{int(max_pairs_per_node)}"
+        cpath = None if cache_root is None else _cache_path(cache_dir=cache_root, backend=cache_tag, sequence=chain_seq)
         chain_pairs: list[tuple[int, int, float]]
         if cpath is not None and cpath.exists():
             chain_pairs = _load_cache(cpath)
@@ -324,6 +381,16 @@ def _compute_single_target(
                 )
             else:
                 raise_error(stage, location, "backend termoquimico BPP invalido", impact="1", examples=[backend_name])
+            if float(min_pair_prob) > 0.0 or int(max_pairs_per_node) > 0:
+                chain_pairs = _prune_chain_pairs(
+                    pairs_1based=chain_pairs,
+                    chain_length=int(chain_length),
+                    min_pair_prob=float(min_pair_prob),
+                    max_pairs_per_node=int(max_pairs_per_node),
+                    stage=stage,
+                    location=location,
+                    target_id=tid,
+                )
             if cpath is not None:
                 _save_cache(cpath, chain_pairs)
         for i_1, j_1, prob in chain_pairs:
@@ -350,6 +417,8 @@ def compute_thermo_bpp(
     stage: str,
     location: str,
     num_workers: int = 1,
+    min_pair_prob: float = 0.0,
+    max_pairs_per_node: int = 0,
 ) -> dict[str, ThermoBppTarget]:
     require_columns(targets, ["target_id", "sequence"], stage=stage, location=location, label="targets")
     backend_name = str(backend).strip().lower()
@@ -357,6 +426,10 @@ def compute_thermo_bpp(
         raise_error(stage, location, "backend termoquimico BPP invalido", impact="1", examples=[backend_name])
     if int(num_workers) <= 0:
         raise_error(stage, location, "num_workers invalido para extracao BPP", impact="1", examples=[str(num_workers)])
+    if not (0.0 <= float(min_pair_prob) <= 1.0):
+        raise_error(stage, location, "min_pair_prob fora de [0,1] para pruning BPP", impact="1", examples=[str(min_pair_prob)])
+    if int(max_pairs_per_node) < 0:
+        raise_error(stage, location, "max_pairs_per_node invalido (<0) para pruning BPP", impact="1", examples=[str(max_pairs_per_node)])
     cache_root = None if cache_dir is None else Path(cache_dir)
     rows = [(str(target_id), str(sequence)) for target_id, sequence in targets.select("target_id", "sequence").iter_rows()]
     out: dict[str, ThermoBppTarget] = {}
@@ -370,6 +443,8 @@ def compute_thermo_bpp(
                 linearfold_bin=linearfold_bin,
                 cache_root=cache_root,
                 chain_separator=chain_separator,
+                min_pair_prob=float(min_pair_prob),
+                max_pairs_per_node=int(max_pairs_per_node),
                 stage=stage,
                 location=location,
             )
@@ -387,6 +462,8 @@ def compute_thermo_bpp(
                     linearfold_bin=linearfold_bin,
                     cache_root=cache_root,
                     chain_separator=chain_separator,
+                    min_pair_prob=float(min_pair_prob),
+                    max_pairs_per_node=int(max_pairs_per_node),
                     stage=stage,
                     location=location,
                 )

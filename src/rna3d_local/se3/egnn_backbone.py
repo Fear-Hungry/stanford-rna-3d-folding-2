@@ -85,6 +85,9 @@ class EgnnBackbone(nn.Module):
         radius_angstrom: float,
         max_neighbors: int,
         graph_chunk_size: int,
+        graph_pair_edges: str,
+        graph_pair_min_prob: float,
+        graph_pair_max_per_node: int,
         stage: str,
         location: str,
     ) -> None:
@@ -95,6 +98,9 @@ class EgnnBackbone(nn.Module):
         self.radius_angstrom = float(radius_angstrom)
         self.max_neighbors = int(max_neighbors)
         self.graph_chunk_size = int(graph_chunk_size)
+        self.graph_pair_edges = str(graph_pair_edges).strip().lower()
+        self.graph_pair_min_prob = float(graph_pair_min_prob)
+        self.graph_pair_max_per_node = int(graph_pair_max_per_node)
         self.input_proj = nn.Linear(input_dim, hidden_dim)
         self.layers = nn.ModuleList([EgnnLayer(hidden_dim=hidden_dim) for _ in range(int(num_layers))])
         self.norm = nn.LayerNorm(hidden_dim)
@@ -117,30 +123,52 @@ class EgnnBackbone(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.input_proj(node_features)
         x = coords
+        bpp_pair_src_dev = bpp_pair_src.to(device=x.device)
+        bpp_pair_dst_dev = bpp_pair_dst.to(device=x.device)
+        bpp_pair_prob_dev = bpp_pair_prob.to(device=x.device)
+        msa_pair_src_dev = msa_pair_src.to(device=x.device)
+        msa_pair_dst_dev = msa_pair_dst.to(device=x.device)
+        msa_pair_prob_dev = msa_pair_prob.to(device=x.device)
         for layer in self.layers:
+            pair_src = None
+            pair_dst = None
+            pair_prob = None
+            pair_min_prob = 0.0
+            pair_max_per_node = 0
+            if self.graph_pair_edges == "bpp":
+                pair_src = bpp_pair_src_dev
+                pair_dst = bpp_pair_dst_dev
+                pair_prob = bpp_pair_prob_dev
+                pair_min_prob = float(self.graph_pair_min_prob)
+                pair_max_per_node = int(self.graph_pair_max_per_node)
             graph = build_sparse_radius_graph(
                 coords=x,
                 radius_angstrom=self.radius_angstrom,
                 max_neighbors=self.max_neighbors,
                 backend=self.graph_backend,
                 chunk_size=self.graph_chunk_size,
+                pair_src=pair_src,
+                pair_dst=pair_dst,
+                pair_prob=pair_prob,
+                pair_min_prob=pair_min_prob,
+                pair_max_per_node=pair_max_per_node,
                 stage=self.stage,
                 location=self.location,
             )
             bpp_bias = lookup_sparse_pair_bias(
                 src=graph.src,
                 dst=graph.dst,
-                pair_src=bpp_pair_src.to(device=graph.src.device),
-                pair_dst=bpp_pair_dst.to(device=graph.src.device),
-                pair_prob=bpp_pair_prob.to(device=graph.src.device),
+                pair_src=bpp_pair_src_dev.to(device=graph.src.device),
+                pair_dst=bpp_pair_dst_dev.to(device=graph.src.device),
+                pair_prob=bpp_pair_prob_dev.to(device=graph.src.device),
                 n_nodes=int(h.shape[0]),
             )
             msa_bias = lookup_sparse_pair_bias(
                 src=graph.src,
                 dst=graph.dst,
-                pair_src=msa_pair_src.to(device=graph.src.device),
-                pair_dst=msa_pair_dst.to(device=graph.src.device),
-                pair_prob=msa_pair_prob.to(device=graph.src.device),
+                pair_src=msa_pair_src_dev.to(device=graph.src.device),
+                pair_dst=msa_pair_dst_dev.to(device=graph.src.device),
+                pair_prob=msa_pair_prob_dev.to(device=graph.src.device),
                 n_nodes=int(h.shape[0]),
             )
             chem_values = chem_exposure.to(device=graph.src.device, dtype=torch.float32)

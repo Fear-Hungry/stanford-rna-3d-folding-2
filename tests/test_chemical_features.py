@@ -67,6 +67,26 @@ def test_prepare_chemical_features_from_template_quickstart_single_triplet(tmp_p
     assert features.filter(pl.col("reactivity_dms").is_null() | pl.col("reactivity_2a3").is_null()).height == 0
 
 
+def test_prepare_chemical_features_from_template_quickstart_plain_xyz_and_underscore_id(tmp_path: Path) -> None:
+    quickstart = tmp_path / "quickstart_templates_plain.csv"
+    pl.DataFrame(
+        [
+            {"ID": "R1_1", "resname": "A", "resid": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+            {"ID": "R1_2", "resname": "C", "resid": 2, "x": 1.0, "y": 0.0, "z": 0.0},
+            {"ID": "R2_1", "resname": "G", "resid": 1, "x": 2.0, "y": 0.0, "z": 0.0},
+            {"ID": "R2_2", "resname": "U", "resid": 2, "x": 3.0, "y": 0.0, "z": 0.0},
+        ]
+    ).write_csv(quickstart)
+    out = tmp_path / "chemical.parquet"
+
+    result = prepare_chemical_features(repo_root=tmp_path, quickstart_path=quickstart, out_path=out)
+    features = pl.read_parquet(result.features_path)
+    assert features.height == 4
+    assert set(features.get_column("target_id").unique().to_list()) == {"R1", "R2"}
+    assert (features.get_column("p_open") >= 0.0).all()
+    assert (features.get_column("p_open") <= 1.0).all()
+
+
 def test_prepare_chemical_features_fails_for_unsupported_schema(tmp_path: Path) -> None:
     quickstart = tmp_path / "invalid.csv"
     pl.DataFrame([{"foo": "x", "bar": 1}]).write_csv(quickstart)

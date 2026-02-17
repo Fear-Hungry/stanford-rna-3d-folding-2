@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,6 +124,228 @@ def _identity_coverage(seq_a: str, seq_b: str) -> tuple[float, float]:
     identity = float(matches) / float(min_len)
     coverage = float(min_len) / float(max_len)
     return identity, coverage
+
+
+def _ensure_usalign_executable(path: str, *, stage: str, location: str) -> Path:
+    usalign_path = Path(str(path)).resolve()
+    if not usalign_path.exists():
+        raise_error(stage, location, "binario USalign ausente para clustering estrutural", impact="1", examples=[str(usalign_path)])
+    if not usalign_path.is_file():
+        raise_error(stage, location, "usalign_bin nao e arquivo", impact="1", examples=[str(usalign_path)])
+    if not os.access(usalign_path, os.X_OK):
+        raise_error(stage, location, "binario USalign sem permissao de execucao", impact="1", examples=[str(usalign_path)])
+    return usalign_path
+
+
+def _parse_max_tm_score(stdout: str) -> float | None:
+    matches = re.findall(r"TM-score=\s*([0-9]*\.?[0-9]+)", str(stdout or ""))
+    vals: list[float] = []
+    for item in matches:
+        try:
+            vals.append(float(item))
+        except Exception:
+            continue
+    if vals:
+        return float(max(vals))
+    lines = [line.strip() for line in str(stdout or "").splitlines() if line.strip()]
+    if len(lines) >= 2:
+        parts = re.split(r"\s+", lines[1])
+        floats: list[float] = []
+        for part in parts:
+            try:
+                floats.append(float(part))
+            except Exception:
+                continue
+        candidates = [v for v in floats if 0.0 <= float(v) <= 1.0]
+        if candidates:
+            return float(max(candidates))
+    return None
+
+
+def _write_c1_pdb(*, target_id: str, sequence: str, coords: pl.DataFrame, out_path: Path, stage: str, location: str) -> None:
+    require_columns(coords, ["resid", "x", "y", "z"], stage=stage, location=location, label="train_labels_subset")
+    length = int(len(sequence))
+    if length <= 1:
+        raise_error(stage, location, "sequencia curta demais para PDB temporario", impact="1", examples=[target_id])
+    if int(coords.height) != length:
+        raise_error(
+            stage,
+            location,
+            "train_labels com cobertura incompleta para target (esperado 1..L)",
+            impact=str(abs(length - int(coords.height))),
+            examples=[f"{target_id}:expected={length}:got={int(coords.height)}"],
+        )
+    expected = list(range(1, length + 1))
+    got = [int(item) for item in coords.get_column("resid").cast(pl.Int64).to_list()]
+    if got != expected:
+        raise_error(stage, location, "resid em train_labels fora de ordem/continuidade", impact="1", examples=[target_id])
+    bad = coords.filter(
+        pl.col("x").is_null()
+        | pl.col("y").is_null()
+        | pl.col("z").is_null()
+        | pl.col("x").is_nan()
+        | pl.col("y").is_nan()
+        | pl.col("z").is_nan()
+        | pl.col("x").is_infinite()
+        | pl.col("y").is_infinite()
+        | pl.col("z").is_infinite()
+    )
+    if bad.height > 0:
+        examples = bad.select(pl.col("resid").cast(pl.Utf8)).get_column("resid").head(8).to_list()
+        raise_error(stage, location, "train_labels com coordenadas invalidas (null/nan/inf)", impact=str(int(bad.height)), examples=[f"{target_id}:{x}" for x in examples])
+    with out_path.open("w", encoding="utf-8") as handle:
+        for resid, base in enumerate(sequence, start=1):
+            row = coords.row(resid - 1, named=True)
+            x = float(row["x"])
+            y = float(row["y"])
+            z = float(row["z"])
+            resname = str(base).strip().upper()[:1] or "A"
+            handle.write(
+                f"ATOM  {resid:5d}  C1' {resname:>3s} A{resid:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C\n"
+            )
+        handle.write("TER\nEND\n")
+    if not out_path.exists():
+        raise_error(stage, location, "falha ao escrever PDB temporario", impact="1", examples=[target_id, str(out_path)])
+
+
+def _cluster_train_by_usalign_tm(
+    *,
+    train_entries: list[_SequenceEntry],
+    train_labels_path: Path,
+    usalign_bin: str,
+    tm_threshold: float,
+    timeout_seconds: int,
+    stage: str,
+    location: str,
+) -> dict[str, str]:
+    if tm_threshold <= 0.0 or tm_threshold > 1.0:
+        raise_error(stage, location, "tm_threshold invalido", impact="1", examples=[str(tm_threshold)])
+    if int(timeout_seconds) <= 0:
+        raise_error(stage, location, "usalign_timeout_seconds invalido (<=0)", impact="1", examples=[str(timeout_seconds)])
+    usalign_path = _ensure_usalign_executable(usalign_bin, stage=stage, location=location)
+    labels = read_table(train_labels_path, stage=stage, location=location)
+    require_columns(labels, ["target_id", "resid", "x", "y", "z"], stage=stage, location=location, label="train_labels")
+
+    with TemporaryDirectory(prefix="rna3d_homology_struct_pdb_") as tmp_dir_raw:
+        tmp_dir = Path(tmp_dir_raw)
+        pdb_by_target: dict[str, Path] = {}
+        for entry in train_entries:
+            target_id = str(entry.entity_id)
+            subset = (
+                labels.filter(pl.col("target_id").cast(pl.Utf8) == str(target_id))
+                .select(
+                    pl.col("resid").cast(pl.Int64),
+                    pl.col("x").cast(pl.Float64, strict=False).alias("x"),
+                    pl.col("y").cast(pl.Float64, strict=False).alias("y"),
+                    pl.col("z").cast(pl.Float64, strict=False).alias("z"),
+                )
+                .sort("resid")
+            )
+            if subset.height == 0:
+                raise_error(stage, location, "train_labels sem linhas para target", impact="1", examples=[target_id])
+            out_path = (tmp_dir / f"{target_id}.pdb").resolve()
+            _write_c1_pdb(target_id=target_id, sequence=str(entry.sequence), coords=subset, out_path=out_path, stage=stage, location=location)
+            pdb_by_target[target_id] = out_path
+
+        ordered = sorted(train_entries, key=lambda item: (-int(item.sequence_length), item.global_id))
+        rep_globals: list[str] = []
+        rep_targets: list[str] = []
+        mapping: dict[str, str] = {}
+        score_cache: dict[tuple[str, str], float] = {}
+
+        def _tm(rep_tid: str, cand_tid: str) -> float:
+            key = (rep_tid, cand_tid)
+            cached = score_cache.get(key)
+            if cached is not None:
+                return float(cached)
+            rep_pdb = pdb_by_target[rep_tid]
+            cand_pdb = pdb_by_target[cand_tid]
+            cmd = [str(usalign_path), str(cand_pdb), str(rep_pdb), "-outfmt", "2", "-mol", "RNA", "-atom", " C1'"]
+            try:
+                proc = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=int(timeout_seconds))
+            except subprocess.TimeoutExpired:
+                raise_error(
+                    stage,
+                    location,
+                    "timeout no USalign durante clustering estrutural",
+                    impact="1",
+                    examples=[f"{rep_tid}~{cand_tid}", f"timeout_seconds={timeout_seconds}"],
+                )
+            except Exception as exc:
+                raise_error(stage, location, "falha ao executar USalign no clustering estrutural", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+            if proc.returncode != 0:
+                stderr_txt = str(proc.stderr or "").strip()
+                raise_error(
+                    stage,
+                    location,
+                    "USalign retornou erro no clustering estrutural",
+                    impact="1",
+                    examples=[f"{rep_tid}~{cand_tid}", f"returncode={proc.returncode}", stderr_txt[:160]],
+                )
+            tm = _parse_max_tm_score(str(proc.stdout or ""))
+            if tm is None:
+                raise_error(
+                    stage,
+                    location,
+                    "nao foi possivel extrair TM-score do output do USalign (clustering)",
+                    impact="1",
+                    examples=[f"{rep_tid}~{cand_tid}", str(proc.stdout or "")[:200]],
+                )
+            score_cache[key] = float(tm)
+            return float(tm)
+
+        for entry in ordered:
+            tid = str(entry.entity_id)
+            if not rep_targets:
+                rep_targets.append(tid)
+                rep_globals.append(entry.global_id)
+                mapping[entry.global_id] = entry.global_id
+                continue
+            best_rep_idx: int | None = None
+            best_tm = float("-inf")
+            for idx, rep_tid in enumerate(rep_targets):
+                score = _tm(rep_tid, tid)
+                if float(score) >= float(tm_threshold) and float(score) > float(best_tm):
+                    best_tm = float(score)
+                    best_rep_idx = int(idx)
+            if best_rep_idx is None:
+                rep_targets.append(tid)
+                rep_globals.append(entry.global_id)
+                mapping[entry.global_id] = entry.global_id
+            else:
+                mapping[entry.global_id] = rep_globals[best_rep_idx]
+        return mapping
+
+
+def _build_cluster_mapping_usalign_tm(
+    *,
+    train_entries: list[_SequenceEntry],
+    pdb_entries: list[_SequenceEntry],
+    train_labels_path: Path,
+    usalign_bin: str,
+    tm_threshold: float,
+    timeout_seconds: int,
+    identity_threshold: float,
+    coverage_threshold: float,
+    stage: str,
+    location: str,
+) -> dict[str, str]:
+    train_mapping = _cluster_train_by_usalign_tm(
+        train_entries=train_entries,
+        train_labels_path=train_labels_path,
+        usalign_bin=usalign_bin,
+        tm_threshold=float(tm_threshold),
+        timeout_seconds=int(timeout_seconds),
+        stage=stage,
+        location=location,
+    )
+    pdb_mapping = _cluster_python(pdb_entries, identity_threshold=float(identity_threshold), coverage_threshold=float(coverage_threshold)) if pdb_entries else {}
+    mapping = {**train_mapping, **pdb_mapping}
+    missing = [entry.global_id for entry in train_entries + pdb_entries if entry.global_id not in mapping]
+    if missing:
+        raise_error(stage, location, "mapeamento de clusters incompleto (usalign_tm)", impact=str(len(missing)), examples=missing[:8])
+    return mapping
 
 
 def _build_train_domain_map(
@@ -570,6 +794,10 @@ def build_homology_folds(
     repo_root: Path,
     train_targets_path: Path,
     pdb_sequences_path: Path,
+    train_labels_path: Path | None = None,
+    usalign_bin: str = "USalign",
+    tm_threshold: float = 0.50,
+    usalign_timeout_seconds: int = 60,
     out_dir: Path,
     backend: str,
     identity_threshold: float,
@@ -615,16 +843,33 @@ def build_homology_folds(
         location=location,
     )
     entries = train_entries + pdb_entries
-    mapping = _build_cluster_mapping(
-        entries=entries,
-        backend=str(backend),
-        identity_threshold=float(identity_threshold),
-        coverage_threshold=float(coverage_threshold),
-        mmseqs_bin=str(mmseqs_bin),
-        cdhit_bin=str(cdhit_bin),
-        stage=stage,
-        location=location,
-    )
+    backend_name = str(backend).strip().lower()
+    if backend_name == "usalign_tm":
+        if train_labels_path is None:
+            raise_error(stage, location, "backend=usalign_tm exige train_labels_path", impact="1", examples=["--train-labels"])
+        mapping = _build_cluster_mapping_usalign_tm(
+            train_entries=train_entries,
+            pdb_entries=pdb_entries,
+            train_labels_path=train_labels_path,
+            usalign_bin=str(usalign_bin),
+            tm_threshold=float(tm_threshold),
+            timeout_seconds=int(usalign_timeout_seconds),
+            identity_threshold=float(identity_threshold),
+            coverage_threshold=float(coverage_threshold),
+            stage=stage,
+            location=location,
+        )
+    else:
+        mapping = _build_cluster_mapping(
+            entries=entries,
+            backend=backend_name,
+            identity_threshold=float(identity_threshold),
+            coverage_threshold=float(coverage_threshold),
+            mmseqs_bin=str(mmseqs_bin),
+            cdhit_bin=str(cdhit_bin),
+            stage=stage,
+            location=location,
+        )
     reps = sorted(set(mapping.values()))
     rep_to_cluster = {rep: f"C{idx:05d}" for idx, rep in enumerate(reps, start=1)}
     cluster_rows: list[dict[str, object]] = []
@@ -677,9 +922,13 @@ def build_homology_folds(
                 "train_folds": rel_or_abs(train_folds_path, repo_root),
             },
             "params": {
-                "backend": str(backend),
+                "backend": str(backend_name),
                 "identity_threshold": float(identity_threshold),
                 "coverage_threshold": float(coverage_threshold),
+                "train_labels_path": None if train_labels_path is None else rel_or_abs(train_labels_path, repo_root),
+                "usalign_bin": None if not str(usalign_bin or "").strip() else str(usalign_bin),
+                "tm_threshold": float(tm_threshold),
+                "usalign_timeout_seconds": int(usalign_timeout_seconds),
                 "n_folds": int(n_folds),
                 "chain_separator": str(chain_separator),
                 "mmseqs_bin": str(mmseqs_bin),

@@ -75,6 +75,41 @@ def test_sparse_radius_graph_limits_neighbors() -> None:
     assert int(degree.min().item()) >= 1
 
 
+def test_sparse_radius_graph_includes_pair_edges_without_exceeding_budget() -> None:
+    coords = torch.stack(
+        [
+            torch.arange(0, 48, dtype=torch.float32) * 3.0,
+            torch.zeros(48, dtype=torch.float32),
+            torch.zeros(48, dtype=torch.float32),
+        ],
+        dim=1,
+    )
+    pair_src = torch.tensor([0, 47], dtype=torch.long)
+    pair_dst = torch.tensor([47, 0], dtype=torch.long)
+    pair_prob = torch.tensor([0.90, 0.90], dtype=torch.float32)
+    graph = build_sparse_radius_graph(
+        coords=coords,
+        radius_angstrom=15.0,
+        max_neighbors=4,
+        backend="torch_sparse",
+        chunk_size=16,
+        pair_src=pair_src,
+        pair_dst=pair_dst,
+        pair_prob=pair_prob,
+        pair_min_prob=0.5,
+        pair_max_per_node=2,
+        stage="TEST",
+        location="tests/test_se3_memory.py:test_sparse_radius_graph_includes_pair_edges_without_exceeding_budget",
+    )
+    n_nodes = int(coords.shape[0])
+    keys = (graph.src.cpu() * n_nodes + graph.dst.cpu()).tolist()
+    assert 0 * n_nodes + 47 in keys
+    assert 47 * n_nodes + 0 in keys
+    degree_out = torch.zeros((n_nodes,), dtype=torch.int64)
+    degree_out.index_add_(0, graph.src.cpu(), torch.ones_like(graph.src.cpu(), dtype=torch.int64))
+    assert int(degree_out.max().item()) <= 4
+
+
 def test_torch_geometric_backend_contract() -> None:
     coords = torch.stack(
         [

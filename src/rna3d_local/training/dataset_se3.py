@@ -26,6 +26,8 @@ def load_training_graphs(
     rnafold_bin: str,
     linearfold_bin: str,
     thermo_cache_dir: Path | None,
+    thermo_pair_min_prob: float,
+    thermo_pair_max_per_node: int,
     msa_backend: str,
     mmseqs_bin: str,
     mmseqs_db: str,
@@ -53,6 +55,8 @@ def load_training_graphs(
         stage=stage,
         location=location,
         num_workers=int(thermo_num_workers),
+        min_pair_prob=float(thermo_pair_min_prob),
+        max_pairs_per_node=int(thermo_pair_max_per_node),
     )
     chem_mapping = compute_chemical_exposure_mapping(
         targets=targets,
@@ -99,6 +103,8 @@ def load_inference_graphs(
     rnafold_bin: str,
     linearfold_bin: str,
     thermo_cache_dir: Path | None,
+    thermo_pair_min_prob: float,
+    thermo_pair_max_per_node: int,
     msa_backend: str,
     mmseqs_bin: str,
     mmseqs_db: str,
@@ -125,6 +131,8 @@ def load_inference_graphs(
         stage=stage,
         location=location,
         num_workers=int(thermo_num_workers),
+        min_pair_prob=float(thermo_pair_min_prob),
+        max_pairs_per_node=int(thermo_pair_max_per_node),
     )
     chem_mapping = compute_chemical_exposure_mapping(
         targets=targets,
