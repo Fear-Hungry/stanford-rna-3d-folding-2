@@ -78,13 +78,14 @@ def predict_tbm(
             candidate_map[target_id].append(str(row[1]))
 
     out_rows: list[dict[str, object]] = []
-    skipped_targets: list[str] = []
+    no_template_targets: list[str] = []
+    padded_targets: list[str] = []
     for target_id, sequence in target_rows:
         tid = str(target_id)
         seq = str(sequence)
         choices = candidate_map.get(tid, [])
         if len(choices) == 0:
-            skipped_targets.append(f"{tid}:sem_candidatos")
+            no_template_targets.append(f"{tid}:sem_candidatos")
             continue
 
         valid_choices: list[str] = []
@@ -102,13 +103,16 @@ def predict_tbm(
             if len(valid_choices) >= n_models:
                 break
 
-        if len(valid_choices) < n_models:
-            skipped_targets.append(f"{tid}:validos={len(valid_choices)}<n_models={n_models}")
-            selected = valid_choices[:n_models]
-            if not selected:
-                continue
-        else:
-            selected = valid_choices[:n_models]
+        if not valid_choices:
+            no_template_targets.append(f"{tid}:validos=0 rejected={rejected[:2]}")
+            continue
+
+        selected = valid_choices[:n_models]
+        if len(selected) < n_models:
+            pad = int(n_models) - int(len(selected))
+            padded_targets.append(f"{tid}:validos={len(selected)} pad={pad}")
+            selected = selected + ([selected[0]] * pad)
+
         for model_id, template_uid in enumerate(selected, start=1):
             coords = template_map[template_uid]
             for resid, base in enumerate(seq, start=1):
@@ -126,6 +130,15 @@ def predict_tbm(
                         "template_resname": resname,
                     }
                 )
+
+    if no_template_targets:
+        raise_error(
+            stage,
+            location,
+            "alvos sem templates validos para TBM (cobertura insuficiente para export estrito)",
+            impact=str(len(no_template_targets)),
+            examples=no_template_targets[:8],
+        )
 
     if out_rows:
         out = pl.DataFrame(out_rows).sort(["target_id", "model_id", "resid"])
@@ -157,8 +170,8 @@ def predict_tbm(
         "stats": {
             "n_rows": int(out.height),
             "n_targets_with_tbm": int(out.get_column("target_id").n_unique()) if "target_id" in out.columns else 0,
-            "n_targets_skipped": int(len(skipped_targets)),
-            "examples_targets_skipped": [str(item) for item in skipped_targets[:8]],
+            "n_targets_padded": int(len(padded_targets)),
+            "examples_targets_padded": [str(item) for item in padded_targets[:8]],
         },
         "sha256": {"predictions.parquet": sha256_file(out_path)},
     }

@@ -96,4 +96,31 @@ def test_predict_tbm_keeps_partial_when_valid_templates_are_insufficient(tmp_pat
     )
     pred = pl.read_parquet(result.predictions_path)
     assert pred.height > 0
-    assert pred.get_column("model_id").n_unique() == 1
+    assert pred.get_column("model_id").n_unique() == 2
+    used = pred.group_by("model_id").agg(pl.col("template_uid").first().alias("t")).sort("model_id").get_column("t").to_list()
+    assert used == ["good1", "good1"]
+
+
+def test_predict_tbm_fails_when_no_valid_template_is_available(tmp_path: Path) -> None:
+    retrieval = tmp_path / "retrieval.parquet"
+    templates = tmp_path / "templates.parquet"
+    targets = tmp_path / "targets.parquet"
+    out = tmp_path / "tbm.parquet"
+    _write_retrieval(retrieval)
+    _write_targets(targets)
+    pl.DataFrame(
+        [
+            {"template_uid": "bad", "resid": 1, "resname": "A", "x": 0.0, "y": 0.0, "z": 0.0},
+            {"template_uid": "bad", "resid": 2, "resname": "C", "x": 1.0, "y": 0.0, "z": 0.0},
+        ]
+    ).write_parquet(templates)
+
+    with pytest.raises(PipelineError, match="alvos sem templates validos para TBM"):
+        predict_tbm(
+            repo_root=tmp_path,
+            retrieval_path=retrieval,
+            templates_path=templates,
+            targets_path=targets,
+            out_path=out,
+            n_models=2,
+        )

@@ -2122,6 +2122,8 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Após `predict-tbm`, tentar:
     - `export-submission` usando `tbm_predictions.parquet` como `--predictions`.
   - Se o export falhar por falta de cobertura/keys, cair para o fluxo híbrido atual (foundation + `build-hybrid-candidates` + `select-top5-hybrid`), com `--diversity-lambda 0.0` no seletor.
+- Ajuste necessário (código):
+  - Garantir que `predict-tbm` sempre produza exatamente `n_models` por alvo quando houver pelo menos 1 template válido (pad/repeat), para que o export estrito não falhe por falta do modelo 5.
 - Escopo:
   - Publicar nova versão do dataset de src: `marcux777/stanford-rna3d-reboot-src-v2` (apontando para o `src/` atual).
   - `kaggle kernels push` do notebook `marcux777/stanford-rna3d-submit-prod-v2`.
