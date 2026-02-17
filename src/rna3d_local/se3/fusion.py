@@ -14,7 +14,7 @@ class Se3Fusion(nn.Module):
             nn.Sigmoid(),
         )
         self.h_proj = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.x_proj = nn.Linear(hidden_dim, 3)
+        self.x_proj = nn.Linear(hidden_dim, 1)
         self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(
@@ -35,6 +35,6 @@ class Se3Fusion(nn.Module):
         diff = x_egnn - x_ipa
         diff_norm = torch.clamp(torch.linalg.norm(diff, dim=-1, keepdim=True), min=1e-6)
         diff_unit = diff / diff_norm
-        step = 0.25 * torch.tanh(torch.linalg.norm(self.x_proj(h), dim=-1, keepdim=True))
+        step = 0.25 * torch.tanh(self.x_proj(h))
         x = x_mix + (step * diff_unit)
         return h, x

@@ -1218,6 +1218,22 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `111 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-121 (Se3Fusion: step escalar com sinal)
+
+- Data UTC: `2026-02-17T15:11:07Z`
+- Plano: `PLAN-121`
+- Resumo:
+  - O residual da fusão SE(3) passou a usar `step` escalar **com sinal** (`0.25 * tanh(linear(h))`) em vez de `tanh(norm(...))`, permitindo deslocamento positivo ou negativo ao longo de `(x_egnn - x_ipa)`.
+  - Teste determinístico cobre os casos de step positivo e negativo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/fusion.py`
+  - `tests/test_se3_fusion.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `112 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

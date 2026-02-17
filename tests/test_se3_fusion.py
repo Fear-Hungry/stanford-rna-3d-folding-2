@@ -78,3 +78,33 @@ def test_se3_fusion_is_translation_equivariant_for_coords() -> None:
     _h_out_t, x_out_t = model(h_egnn=h_egnn, x_egnn=x_egnn + t, h_ipa=h_ipa, x_ipa=x_ipa + t)
     assert torch.allclose(x_out_t, x_out + t, atol=2e-4, rtol=2e-4)
 
+
+def test_se3_fusion_step_can_be_negative() -> None:
+    torch.manual_seed(0)
+    n = 4
+    hidden = 8
+    model = Se3Fusion(hidden_dim=hidden).eval()
+
+    with torch.no_grad():
+        for layer in model.gate:
+            if isinstance(layer, torch.nn.Linear):
+                layer.weight.zero_()
+                layer.bias.zero_()
+        model.h_proj.weight.zero_()
+        model.h_proj.bias.zero_()
+        model.x_proj.weight.zero_()
+
+    x_egnn = torch.tensor([[1.0, 0.0, 0.0]] * n, dtype=torch.float32)
+    x_ipa = torch.tensor([[-1.0, 0.0, 0.0]] * n, dtype=torch.float32)
+    h_egnn = torch.zeros((n, hidden), dtype=torch.float32)
+    h_ipa = torch.zeros((n, hidden), dtype=torch.float32)
+
+    with torch.no_grad():
+        model.x_proj.bias.fill_(10.0)
+    _h_pos, x_pos = model(h_egnn=h_egnn, x_egnn=x_egnn, h_ipa=h_ipa, x_ipa=x_ipa)
+    assert bool((x_pos[:, 0] > 0.0).all())
+
+    with torch.no_grad():
+        model.x_proj.bias.fill_(-10.0)
+    _h_neg, x_neg = model(h_egnn=h_egnn, x_egnn=x_egnn, h_ipa=h_ipa, x_ipa=x_ipa)
+    assert bool((x_neg[:, 0] < 0.0).all())

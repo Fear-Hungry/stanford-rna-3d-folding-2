@@ -2035,3 +2035,16 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-121 - Se3Fusion: step escalar com sinal (tanh de linear)
+
+- Objetivo: permitir que o residual equivarante da fusão dê passo tanto “para frente” quanto “para trás” ao longo de `(x_egnn - x_ipa)`; evitar step estritamente positivo causado por `norm()`.
+- Escopo:
+  - `se3/fusion.py`:
+    - trocar `self.x_proj: Linear(hidden_dim, 3)` por `Linear(hidden_dim, 1)`;
+    - computar `step = 0.25 * tanh(self.x_proj(h))` (intervalo `[-0.25, 0.25]`).
+  - Testes:
+    - teste determinístico garantindo que `step` pode ser negativo/positivo e afeta o sinal do deslocamento.
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.
