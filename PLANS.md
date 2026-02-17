@@ -2021,3 +2021,17 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - Score executa sem erro e gera `score.json` + `report.json`.
   - `score` e `best_tm_score` por alvo são finitos (sem NaN/inf).
+
+## PLAN-120 - Chai-1 runner: chain_separator dinâmico no normalizador de sequência
+
+- Objetivo: remover hardcode do separador de cadeias (`"|"`) no `chai1_runner`, permitindo validar sequências com `--chain-separator` arbitrário (ex.: `:`) sem falso-positivo de “símbolos inválidos”.
+- Escopo:
+  - `runners/chai1.py`:
+    - adicionar `chain_separator` à assinatura de `_normalize_seq`;
+    - usar o separador dinâmico na validação de caracteres;
+    - validar `chain_separator` (1 caractere, não-whitespace, não conflita com A/C/G/U).
+  - Testes:
+    - aceitar `:` quando `chain_separator=":"` e rejeitar `:` quando `chain_separator="|"`.
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.

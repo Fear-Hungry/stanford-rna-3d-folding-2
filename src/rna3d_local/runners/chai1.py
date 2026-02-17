@@ -11,19 +11,20 @@ from ..errors import raise_error
 from ..io_tables import read_table, write_table
 
 
-def _normalize_seq(seq: str, *, stage: str, location: str, target_id: str) -> str:
+def _normalize_seq(seq: str, *, stage: str, location: str, target_id: str, chain_separator: str) -> str:
     raw = str(seq or "").strip().upper().replace("T", "U")
     cleaned = "".join(ch for ch in raw if ch not in {" ", "\t", "\n", "\r"})
     if not cleaned:
         raise_error(stage, location, "sequencia vazia", impact="1", examples=[target_id])
-    bad = sorted({ch for ch in cleaned if ch not in {"A", "C", "G", "U", "|"}})
+    sep = str(chain_separator)
+    bad = sorted({ch for ch in cleaned if ch not in {"A", "C", "G", "U", sep}})
     if bad:
         raise_error(stage, location, "sequencia contem simbolos invalidos", impact=str(len(bad)), examples=[f"{target_id}:{''.join(bad[:8])}"])
     return cleaned
 
 
 def _write_fasta_for_target(*, fasta_path: Path, target_id: str, sequence: str, chain_separator: str, stage: str, location: str) -> list[str]:
-    seq = _normalize_seq(sequence, stage=stage, location=location, target_id=target_id)
+    seq = _normalize_seq(sequence, stage=stage, location=location, target_id=target_id, chain_separator=chain_separator)
     parts = [p for p in seq.split(chain_separator) if p]
     if not parts:
         raise_error(stage, location, "sequencia sem nucleotideos apos split de cadeias", impact="1", examples=[target_id])
@@ -137,6 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     targets_path = Path(args.targets).resolve()
     out_path = Path(args.out).resolve()
     n_models = int(args.n_models)
+    chain_separator = str(args.chain_separator)
+    if len(chain_separator) != 1 or chain_separator in {" ", "\t", "\n", "\r"}:
+        raise_error(stage, location, "chain_separator invalido (esperado 1 char nao-whitespace)", impact="1", examples=[repr(chain_separator)])
+    if chain_separator in {"A", "C", "G", "U"}:
+        raise_error(stage, location, "chain_separator conflita com alfabeto RNA", impact="1", examples=[repr(chain_separator)])
     if n_models <= 0:
         raise_error(stage, location, "n_models invalido", impact="1", examples=[str(args.n_models)])
 
@@ -157,8 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         tmp_root = Path(tmpdir)
         for target_id, sequence in targets.select("target_id", "sequence").iter_rows():
             tid = str(target_id)
-            seq = _normalize_seq(str(sequence), stage=stage, location=location, target_id=tid)
-            parts = [p for p in seq.split(str(args.chain_separator)) if p]
+            seq = _normalize_seq(str(sequence), stage=stage, location=location, target_id=tid, chain_separator=chain_separator)
+            parts = [p for p in seq.split(chain_separator) if p]
             expected_chains = [chr(ord("A") + i) for i in range(len(parts))]
             expected_seq_by_chain = parts
 
@@ -167,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
                 fasta_path=fasta,
                 target_id=tid,
                 sequence=seq,
-                chain_separator=str(args.chain_separator),
+                chain_separator=chain_separator,
                 stage=stage,
                 location=location,
             )
@@ -225,4 +231,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

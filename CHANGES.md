@@ -1201,6 +1201,23 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `109 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-120 (Chai-1 runner: chain_separator dinâmico)
+
+- Data UTC: `2026-02-17T15:07:33Z`
+- Plano: `PLAN-120`
+- Resumo:
+  - `_normalize_seq` no `chai1_runner` deixou de ter `"|"` hardcoded e passou a aceitar `chain_separator` dinâmico na validação de caracteres.
+  - Adicionada validação fail-fast do `chain_separator` (1 caractere, não-whitespace, não conflita com A/C/G/U).
+  - Teste de regressão cobre uso de `:` e rejeição quando o separador não corresponde.
+- Arquivos principais tocados:
+  - `src/rna3d_local/runners/chai1.py`
+  - `tests/test_chai1_runner_chain_separator.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `111 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`
