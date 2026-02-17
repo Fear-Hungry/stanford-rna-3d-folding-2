@@ -1152,6 +1152,22 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
   - `pytest -q` -> `106 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-115 (Homology folds: representante por tamanho)
+
+- Data UTC: `2026-02-17T13:42:34Z`
+- Plano: `PLAN-115`
+- Resumo:
+  - Corrigida a seleção do representante em `_cluster_python` (backend `python`) para preservar a ordenação por `sequence_length`, evitando escolher representante por ordenação alfabética de IDs.
+  - Adicionado teste de regressão cobrindo o caso (IDs invertidos vs comprimento).
+- Arquivos principais tocados:
+  - `src/rna3d_local/homology_folds.py`
+  - `tests/test_homology_folds.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src` -> `ok`
+  - `pytest -q` -> `107 passed`
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-107 (Oraculo local via metrica oficial do Kaggle)
 
 - Data UTC: `2026-02-17T01:50:13Z`

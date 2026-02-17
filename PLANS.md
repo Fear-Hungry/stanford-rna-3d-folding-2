@@ -1962,3 +1962,15 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `python -m compileall -q src` verde.
   - `pytest -q` verde.
+
+## PLAN-115 - Homology folds: representante consistente com sequence_length (backend python)
+
+- Objetivo: corrigir a seleção do representante no clustering `backend=python` para respeitar a ordenação por `sequence_length` (e não por ordenação alfabética de IDs), evitando clusters cujo representante é um alvo menor apenas por nome.
+- Escopo:
+  - `homology_folds.py`:
+    - em `_cluster_python`, selecionar `rep_id` pela ordem de inserção (`next(iter(unassigned))`) após ordenar por `(-sequence_length, global_id)`.
+  - Testes:
+    - adicionar teste de regressão garantindo que, em um cluster (seqs com prefixo idêntico) com comprimentos distintos, o representante é o mais longo.
+- Critérios de aceite:
+  - `python -m compileall -q src` verde.
+  - `pytest -q` verde.

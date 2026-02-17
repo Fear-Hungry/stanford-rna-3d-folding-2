@@ -454,7 +454,7 @@ def _cluster_python(entries: list[_SequenceEntry], *, identity_threshold: float,
     unassigned = {item.global_id: item for item in ordered}
     mapping: dict[str, str] = {}
     while unassigned:
-        rep_id = sorted(unassigned.keys())[0]
+        rep_id = next(iter(unassigned))
         rep = unassigned.pop(rep_id)
         mapping[rep.global_id] = rep.global_id
         members = list(unassigned.values())

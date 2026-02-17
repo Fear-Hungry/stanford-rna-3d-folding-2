@@ -62,6 +62,40 @@ def test_build_homology_folds_mock_prevents_cluster_leakage(tmp_path: Path) -> N
     assert t1 == t2
 
 
+def test_build_homology_folds_prefers_longest_sequence_as_cluster_rep(tmp_path: Path) -> None:
+    train = tmp_path / "train.csv"
+    pdb = tmp_path / "pdb.csv"
+    out_dir = tmp_path / "folds"
+    pl.DataFrame(
+        [
+            {"target_id": "A0", "sequence": "ACGUACGU"},
+            {"target_id": "Z9", "sequence": "ACGUACGUACGU"},
+        ]
+    ).write_csv(train)
+    pl.DataFrame([{"template_id": "P1", "sequence": "GGGG"}]).write_csv(pdb)
+    out = build_homology_folds(
+        repo_root=tmp_path,
+        train_targets_path=train,
+        pdb_sequences_path=pdb,
+        out_dir=out_dir,
+        backend="python",
+        identity_threshold=1.0,
+        coverage_threshold=0.6,
+        n_folds=2,
+        chain_separator="|",
+        mmseqs_bin="mmseqs",
+        cdhit_bin="cd-hit-est",
+        domain_labels_path=None,
+        domain_column="domain_label",
+        description_column="description",
+        strict_domain_stratification=False,
+    )
+    clusters = pl.read_parquet(out.clusters_path).filter(pl.col("entity_type") == "train")
+    rep_by_target = {str(row["entity_id"]): str(row["representative_global_id"]) for row in clusters.iter_rows(named=True)}
+    assert rep_by_target["A0"] == "train::Z9"
+    assert rep_by_target["Z9"] == "train::Z9"
+
+
 def test_build_homology_folds_mmseqs_missing_binary_fails(tmp_path: Path) -> None:
     train = tmp_path / "train.csv"
     pdb = tmp_path / "pdb.csv"
