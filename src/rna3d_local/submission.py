@@ -40,7 +40,8 @@ def _should_use_streaming_export(*, sample_path: Path, predictions_long_path: Pa
         total = int(sample_path.stat().st_size) + int(predictions_long_path.stat().st_size)
     except OSError:
         return False
-    threshold = int(os.environ.get("RNA3D_EXPORT_STREAMING_THRESHOLD_BYTES", str(64 * 1024 * 1024)))
+    # Force streaming for any non-empty file to prevent CPU OOM in hidden rerun.
+    threshold = int(os.environ.get("RNA3D_EXPORT_STREAMING_THRESHOLD_BYTES", str(1024 * 1024)))
     return total >= threshold
 
 

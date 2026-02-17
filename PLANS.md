@@ -2183,3 +2183,17 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Critérios de aceite:
   - `pytest -q` passa.
   - `export-submission` e `check-submission` continuam fail-fast com erros acionáveis no formato padrão.
+
+## PLAN-131 - Kaggle: reduzir datasets (bundle) + TBM sem dicts (OOM)
+
+- Objetivo:
+  - Reduzir a quantidade de datasets anexados no notebook de submissao (manter apenas 1–2) e eliminar OOM no rerun hidden removendo estruturas Python gigantes do TBM.
+- Mudancas:
+  - Centralizar `src/` + `template_db/` (pelo menos `template_index.parquet` e `templates.parquet`) dentro do dataset `marcux777/stanford-rna3d-reboot-src-v2`, para remover dependencias de `stanford-rna3d-infer-assets-v1` e `ckjoshi9/ribonanza-quickstart-3d-templates` no modo TBM-only.
+  - Simplificar o notebook `stanford-rna3d-submit-prod-v2` para usar paths fixos (sem `rglob` por todos os mounts) e remover etapas nao usadas no modo TBM-only (`build-phase2-assets`, `prepare-chemical-features`).
+  - Reescrever `predict_tbm` para gerar `tbm_predictions.parquet` via Polars (lazy/streaming), evitando `template_map`/`out_rows` em Python.
+  - Hardening de OOM/estabilidade: export em modo streaming por padrao no hidden rerun; cleanup explicito de VRAM no runner do RNAPro; repulsao OpenMM com cutoff (mantendo fail-fast).
+- Critérios de aceite:
+  - `pytest -q` passa.
+  - Kernel roda com apenas `stanford-rna3d-reboot-src-v2` (+ opcional `stanford-rna3d-drfold2-official-v1` se fallback ainda existir).
+  - Rerun hidden nao falha por OOM de RAM (evidencia: submissao com score publicado ou status sem erro).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import shutil
@@ -8,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import polars as pl
+import torch
 
 from ..errors import raise_error
 from ..io_tables import read_table, write_table
@@ -260,6 +262,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         raise_error(stage, location, "falha ao construir/carregar RNAPro", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
 
+    # Enable Flash Attention for memory-efficient inference (best-effort).
+    if torch.cuda.is_available() and hasattr(torch.backends, "cuda"):
+        cuda_backends = torch.backends.cuda
+        if hasattr(cuda_backends, "enable_flash_sdp"):
+            cuda_backends.enable_flash_sdp(True)
+        if hasattr(cuda_backends, "enable_mem_efficient_sdp"):
+            cuda_backends.enable_mem_efficient_sdp(True)
+
     targets = read_table(targets_path, stage=stage, location=location)
     if "target_id" not in targets.columns or "sequence" not in targets.columns:
         raise_error(stage, location, "targets schema invalido (faltam colunas)", impact="1", examples=["target_id", "sequence"])
@@ -303,7 +313,12 @@ def main(argv: list[str] | None = None) -> int:
                         atom_array=atom_array,
                         entity_poly_type=data["entity_poly_type"],
                     )
-                    if hasattr(torch.cuda, "empty_cache") and bool(torch.cuda.is_available()):
+                    # Explicit cleanup to prevent VRAM accumulation.
+                    del prediction
+                    del data
+                    del atom_array
+                    gc.collect()
+                    if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
             pred_dir = dump_root / tid / f"seed_{int(cfg.seeds[0])}" / "predictions"

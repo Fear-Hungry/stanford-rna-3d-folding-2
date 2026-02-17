@@ -5,9 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
-from .contracts import parse_date_column, require_columns
 from .errors import raise_error
-from .io_tables import read_table, write_table
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
 
@@ -17,24 +15,36 @@ class TbmResult:
     manifest_path: Path
 
 
-def _parse_ranking_table(retrieval: pl.DataFrame) -> pl.DataFrame:
-    if "rerank_rank" in retrieval.columns:
-        return retrieval.sort(["target_id", "rerank_rank"])
-    if "rank" in retrieval.columns:
-        return retrieval.sort(["target_id", "rank"])
-    if "final_score" in retrieval.columns:
-        return retrieval.sort(["target_id", "final_score"], descending=[False, True])
-    raise ValueError("retrieval table has no ranking columns")
+def _scan_table(path: Path, *, stage: str, location: str, label: str) -> pl.LazyFrame:
+    if not path.exists():
+        raise_error(stage, location, f"{label} ausente", impact="1", examples=[str(path)])
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".parquet":
+            return pl.scan_parquet(str(path))
+        if suffix == ".csv":
+            return pl.scan_csv(str(path))
+    except Exception as exc:  # noqa: BLE001
+        raise_error(stage, location, f"falha ao abrir {label} em modo lazy", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
+    raise_error(stage, location, f"formato nao suportado para {label}", impact="1", examples=[str(path)])
 
 
-def _missing_resid_examples(*, coords: dict[int, tuple[str, float, float, float]], seq_len: int, limit: int = 3) -> list[int]:
-    missing: list[int] = []
-    for resid in range(1, int(seq_len) + 1):
-        if resid not in coords:
-            missing.append(resid)
-            if len(missing) >= int(limit):
-                break
-    return missing
+def _require_columns_lazy(lf: pl.LazyFrame, required: list[str], *, stage: str, location: str, label: str) -> None:
+    schema = lf.collect_schema()
+    missing = [c for c in required if c not in schema.names()]
+    if missing:
+        raise_error(stage, location, f"{label} sem coluna obrigatoria", impact=str(len(missing)), examples=missing[:8])
+
+
+def _rank_column(schema_names: list[str], *, stage: str, location: str) -> tuple[str, list[str], list[bool]]:
+    if "rerank_rank" in schema_names:
+        return "rerank_rank", ["target_id", "rerank_rank"], [False, False]
+    if "rank" in schema_names:
+        return "rank", ["target_id", "rank"], [False, False]
+    if "final_score" in schema_names:
+        return "final_score", ["target_id", "final_score"], [False, True]
+    raise_error(stage, location, "retrieval sem coluna de ranking", impact="1", examples=schema_names[:8])
+    raise AssertionError("unreachable")
 
 
 def predict_tbm(
@@ -48,116 +58,178 @@ def predict_tbm(
 ) -> TbmResult:
     stage = "PREDICT_TBM"
     location = "src/rna3d_local/tbm.py:predict_tbm"
-    if n_models <= 0:
+    if int(n_models) <= 0:
         raise_error(stage, location, "n_models deve ser > 0", impact="1", examples=[str(n_models)])
-    retrieval = read_table(retrieval_path, stage=stage, location=location)
-    require_columns(retrieval, ["target_id", "template_uid"], stage=stage, location=location, label="retrieval")
-    ranked = _parse_ranking_table(retrieval)
 
-    templates = read_table(templates_path, stage=stage, location=location)
-    require_columns(templates, ["template_uid", "resid", "resname", "x", "y", "z"], stage=stage, location=location, label="templates")
-    template_map: dict[str, dict[int, tuple[str, float, float, float]]] = {}
-    for row in templates.select("template_uid", "resid", "resname", "x", "y", "z").iter_rows():
-        uid = str(row[0])
-        resid = int(row[1])
-        template_map.setdefault(uid, {})
-        if resid in template_map[uid]:
-            raise_error(stage, location, "resid duplicado no template", impact="1", examples=[f"{uid}:{resid}"])
-        template_map[uid][resid] = (str(row[2]), float(row[3]), float(row[4]), float(row[5]))
+    retrieval_lf = _scan_table(retrieval_path, stage=stage, location=location, label="retrieval")
+    _require_columns_lazy(retrieval_lf, ["target_id", "template_uid"], stage=stage, location=location, label="retrieval")
+    rank_col, sort_by, sort_desc = _rank_column(retrieval_lf.collect_schema().names(), stage=stage, location=location)
 
-    targets = read_table(targets_path, stage=stage, location=location)
-    require_columns(targets, ["target_id", "sequence", "temporal_cutoff"], stage=stage, location=location, label="targets")
-    targets = parse_date_column(targets, "temporal_cutoff", stage=stage, location=location, label="targets")
-    target_rows = targets.select("target_id", "sequence").iter_rows()
+    ranked = (
+        retrieval_lf.select(
+            pl.col("target_id").cast(pl.Utf8),
+            pl.col("template_uid").cast(pl.Utf8),
+            pl.col(rank_col),
+        )
+        .sort(sort_by, descending=sort_desc)
+        .unique(subset=["target_id", "template_uid"], keep="first")
+    )
+    candidate_uids = ranked.select(pl.col("template_uid")).unique()
 
-    candidate_map: dict[str, list[str]] = {}
-    for row in ranked.select("target_id", "template_uid").iter_rows():
-        target_id = str(row[0])
-        candidate_map.setdefault(target_id, [])
-        if str(row[1]) not in candidate_map[target_id]:
-            candidate_map[target_id].append(str(row[1]))
+    templates_lf = _scan_table(templates_path, stage=stage, location=location, label="templates")
+    _require_columns_lazy(templates_lf, ["template_uid", "resid", "resname", "x", "y", "z"], stage=stage, location=location, label="templates")
+    templates_lf = templates_lf.select(
+        pl.col("template_uid").cast(pl.Utf8),
+        pl.col("resid").cast(pl.Int32),
+        pl.col("resname").cast(pl.Utf8).alias("template_resname"),
+        pl.col("x").cast(pl.Float64),
+        pl.col("y").cast(pl.Float64),
+        pl.col("z").cast(pl.Float64),
+    )
+    templates_lf = templates_lf.join(candidate_uids, on="template_uid", how="semi")
 
-    out_rows: list[dict[str, object]] = []
-    no_template_targets: list[str] = []
-    padded_targets: list[str] = []
-    for target_id, sequence in target_rows:
-        tid = str(target_id)
-        seq = str(sequence)
-        choices = candidate_map.get(tid, [])
-        if len(choices) == 0:
-            no_template_targets.append(f"{tid}:sem_candidatos")
-            continue
+    # Validate duplicate coordinates (same template_uid+resid repeated).
+    dup = templates_lf.group_by(["template_uid", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
+    dup_count = int(dup.select(pl.len()).collect().item())
+    if dup_count > 0:
+        examples = (
+            dup.select((pl.col("template_uid") + pl.lit(":") + pl.col("resid").cast(pl.Utf8)).alias("k"))
+            .head(8)
+            .collect()
+            .get_column("k")
+            .to_list()
+        )
+        raise_error(stage, location, "resid duplicado no template", impact=str(dup_count), examples=[str(x) for x in examples])
 
-        valid_choices: list[str] = []
-        rejected: list[str] = []
-        for template_uid in choices:
-            if template_uid not in template_map:
-                rejected.append(f"{template_uid}:sem_coordenadas")
-                continue
-            coords = template_map[template_uid]
-            missing = _missing_resid_examples(coords=coords, seq_len=len(seq), limit=3)
-            if missing:
-                rejected.append(f"{template_uid}:missing={','.join(str(item) for item in missing)}")
-                continue
-            valid_choices.append(template_uid)
-            if len(valid_choices) >= n_models:
-                break
+    template_min = templates_lf.group_by("template_uid").agg(pl.col("resid").min().alias("min_resid"))
+    templates_with_norm = templates_lf.join(template_min, on="template_uid", how="left").with_columns(
+        (pl.col("resid") - pl.col("min_resid") + 1).cast(pl.Int32).alias("resid_norm")
+    )
 
-        if not valid_choices:
-            no_template_targets.append(f"{tid}:validos=0 rejected={rejected[:2]}")
-            continue
+    targets_lf = _scan_table(targets_path, stage=stage, location=location, label="targets")
+    _require_columns_lazy(targets_lf, ["target_id", "sequence", "temporal_cutoff"], stage=stage, location=location, label="targets")
+    targets_lf = targets_lf.select(
+        pl.col("target_id").cast(pl.Utf8),
+        pl.col("sequence").cast(pl.Utf8),
+        pl.col("temporal_cutoff").cast(pl.Utf8),
+    ).with_columns(pl.col("temporal_cutoff").str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias("temporal_cutoff"))
+    bad_dates_lf = targets_lf.filter(pl.col("temporal_cutoff").is_null()).select("target_id")
+    bad_dates_n = int(bad_dates_lf.select(pl.len()).collect().item())
+    if bad_dates_n > 0:
+        examples = bad_dates_lf.head(8).collect().get_column("target_id").to_list()
+        raise_error(stage, location, "targets com data invalida", impact=str(int(bad_dates_n)), examples=[str(x) for x in examples])
 
-        selected = valid_choices[:n_models]
-        if len(selected) < n_models:
-            pad = int(n_models) - int(len(selected))
-            padded_targets.append(f"{tid}:validos={len(selected)} pad={pad}")
-            selected = selected + ([selected[0]] * pad)
+    targets_len = targets_lf.with_columns(pl.col("sequence").str.len_chars().cast(pl.Int32).alias("target_len"))
 
-        for model_id, template_uid in enumerate(selected, start=1):
-            coords = template_map[template_uid]
-            for resid, base in enumerate(seq, start=1):
-                resname, x, y, z = coords[resid]
-                out_rows.append(
-                    {
-                        "target_id": tid,
-                        "model_id": model_id,
-                        "resid": resid,
-                        "resname": str(base),
-                        "x": x,
-                        "y": y,
-                        "z": z,
-                        "template_uid": template_uid,
-                        "template_resname": resname,
-                    }
-                )
+    ranked_with_len = ranked.join(targets_len.select("target_id", "target_len"), on="target_id", how="inner")
+    prefix_rows = (
+        ranked_with_len.join(templates_with_norm.select("template_uid", "resid_norm"), on="template_uid", how="inner")
+        .filter(pl.col("resid_norm") <= pl.col("target_len"))
+        .select("target_id", "template_uid", pl.col("resid_norm"), pl.col(rank_col), pl.col("target_len"))
+    )
+    prefix_counts = prefix_rows.group_by(["target_id", "template_uid"]).agg(
+        pl.col("resid_norm").n_unique().alias("n_prefix"),
+        pl.first(rank_col).alias(rank_col),
+        pl.first("target_len").alias("target_len"),
+    )
 
-    if no_template_targets:
+    # Filter templates that can cover the target length (skip incomplete templates).
+    valid_candidates = (
+        prefix_counts.filter(pl.col("n_prefix") == pl.col("target_len"))
+        .sort(sort_by, descending=sort_desc)
+        .with_columns(pl.cum_count("template_uid").over("target_id").alias("model_id"))
+        .filter(pl.col("model_id") <= int(n_models))
+        .select("target_id", "template_uid", "model_id")
+    )
+
+    target_ids = targets_len.select("target_id").unique()
+    valid_counts = valid_candidates.group_by("target_id").agg(pl.len().alias("n_valid"))
+    missing_targets = target_ids.join(valid_counts, on="target_id", how="left").filter(pl.col("n_valid").is_null() | (pl.col("n_valid") <= 0))
+    missing_n = int(missing_targets.select(pl.len()).collect().item())
+    if missing_n > 0:
+        examples = missing_targets.select("target_id").head(8).collect().get_column("target_id").to_list()
         raise_error(
             stage,
             location,
             "alvos sem templates validos para TBM (cobertura insuficiente para export estrito)",
-            impact=str(len(no_template_targets)),
-            examples=no_template_targets[:8],
+            impact=str(missing_n),
+            examples=[str(x) for x in examples],
         )
 
-    if out_rows:
-        out = pl.DataFrame(out_rows).sort(["target_id", "model_id", "resid"])
-    else:
-        out = pl.DataFrame(
-            schema={
-                "target_id": pl.Utf8,
-                "model_id": pl.Int32,
-                "resid": pl.Int32,
-                "resname": pl.Utf8,
-                "x": pl.Float64,
-                "y": pl.Float64,
-                "z": pl.Float64,
-                "template_uid": pl.Utf8,
-                "template_resname": pl.Utf8,
-            }
+    padded = valid_counts.filter(pl.col("n_valid") < int(n_models)).with_columns(
+        (pl.col("target_id") + pl.lit(":validos=") + pl.col("n_valid").cast(pl.Utf8) + pl.lit(" pad=") + (pl.lit(int(n_models)) - pl.col("n_valid")).cast(pl.Utf8)).alias(
+            "msg"
         )
-    write_table(out, out_path)
+    )
+    padded_count = int(padded.select(pl.len()).collect().item())
+    padded_examples = padded.select("msg").head(8).collect().get_column("msg").to_list() if padded_count > 0 else []
+
+    first_uid = valid_candidates.filter(pl.col("model_id") == 1).select(pl.col("target_id"), pl.col("template_uid").alias("first_template_uid"))
+
+    model_ids_lf = pl.LazyFrame({"model_id": list(range(1, int(n_models) + 1, 1))})
+    all_models = target_ids.join(model_ids_lf, how="cross")
+    chosen = (
+        all_models.join(valid_candidates, on=["target_id", "model_id"], how="left")
+        .join(first_uid, on="target_id", how="left")
+        .with_columns(pl.coalesce([pl.col("template_uid"), pl.col("first_template_uid")]).alias("template_uid"))
+        .select("target_id", "model_id", "template_uid")
+    )
+
+    resids = (
+        targets_len.select("target_id", "sequence", "target_len")
+        .with_columns(pl.int_ranges(1, (pl.col("target_len") + 1).cast(pl.Int32)).alias("resid"))
+        .explode("resid")
+        .with_columns(pl.col("sequence").str.slice((pl.col("resid") - 1).cast(pl.Int32), 1).alias("resname"))
+        .select("target_id", "resid", "resname")
+    )
+
+    expanded = resids.join(chosen, on="target_id", how="inner")
+    templates_norm_lf = (
+        templates_with_norm.select(
+            pl.col("template_uid"),
+            pl.col("resid_norm").alias("resid"),
+            pl.col("template_resname"),
+            pl.col("x"),
+            pl.col("y"),
+            pl.col("z"),
+        )
+    )
+    out_lf = (
+        expanded.join(templates_norm_lf, on=["template_uid", "resid"], how="left")
+        .select(
+            pl.col("target_id"),
+            pl.col("model_id").cast(pl.Int32),
+            pl.col("resid").cast(pl.Int32),
+            pl.col("resname").cast(pl.Utf8),
+            pl.col("x"),
+            pl.col("y"),
+            pl.col("z"),
+            pl.col("template_uid").cast(pl.Utf8),
+            pl.col("template_resname").cast(pl.Utf8),
+        )
+        .sort(["target_id", "model_id", "resid"])
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_lf.sink_parquet(str(out_path), engine="streaming")
+
+    missing_coords = pl.scan_parquet(str(out_path)).filter(pl.col("x").is_null() | pl.col("y").is_null() | pl.col("z").is_null())
+    missing_coords_n = int(missing_coords.select(pl.len()).collect().item())
+    if missing_coords_n > 0:
+        examples = (
+            missing_coords.select(
+                (pl.col("target_id") + pl.lit(":") + pl.col("model_id").cast(pl.Utf8) + pl.lit(":") + pl.col("resid").cast(pl.Utf8)).alias("k")
+            )
+            .head(8)
+            .collect()
+            .get_column("k")
+            .to_list()
+        )
+        raise_error(stage, location, "TBM gerou coordenadas faltantes apos join (template_uid+resid ausente)", impact=str(missing_coords_n), examples=[str(x) for x in examples])
+
     manifest_path = out_path.parent / "tbm_manifest.json"
+    n_rows = int(pl.scan_parquet(str(out_path)).select(pl.len()).collect().item())
+    n_targets_with_tbm = int(pl.scan_parquet(str(out_path)).select(pl.col("target_id").n_unique()).collect().item())
     manifest = {
         "created_utc": utc_now_iso(),
         "paths": {
@@ -168,10 +240,10 @@ def predict_tbm(
         },
         "params": {"n_models": int(n_models)},
         "stats": {
-            "n_rows": int(out.height),
-            "n_targets_with_tbm": int(out.get_column("target_id").n_unique()) if "target_id" in out.columns else 0,
-            "n_targets_padded": int(len(padded_targets)),
-            "examples_targets_padded": [str(item) for item in padded_targets[:8]],
+            "n_rows": int(n_rows),
+            "n_targets_with_tbm": int(n_targets_with_tbm),
+            "n_targets_padded": int(padded_count),
+            "examples_targets_padded": [str(x) for x in padded_examples],
         },
         "sha256": {"predictions.parquet": sha256_file(out_path)},
     }

@@ -1046,6 +1046,27 @@ Log append-only de mudancas implementadas.
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
 
+## 2026-02-17 - marcusvinicius/Codex - PLAN-131 (Kaggle: bundle de dataset + TBM streaming + hardening OOM)
+
+- Data UTC: `2026-02-17T21:32:21Z`
+- Plano: `PLAN-131`
+- Resumo:
+  - `predict_tbm` foi reescrito para Polars lazy/streaming (sem dict/list gigantes), com normalizacao de `resid` por template (baseada no `min_resid`) e filtro de cobertura por alvo (prefixo 1..L) para evitar coordenadas faltantes no join.
+  - `export-submission` agora força modo streaming por default (threshold baixo) para reduzir risco de OOM no rerun hidden.
+  - Runner do RNAPro ganhou cleanup explicito de VRAM (GC + `torch.cuda.empty_cache`) e habilitacao best-effort de SDP mem-efficient/flash quando disponivel.
+  - Minimization OpenMM: repulsao curta com cutoff + cleanup garantido de objetos OpenMM.
+- Arquivos principais tocados:
+  - `src/rna3d_local/tbm.py`
+  - `src/rna3d_local/submission.py`
+  - `src/rna3d_local/runners/rnapro.py`
+  - `src/rna3d_local/minimization.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q` -> `120 passed`
+- Riscos conhecidos / follow-ups:
+  - O filtro de cobertura TBM depende de `resid` dos templates; se houver templates com numeracao/segmentacao exotica, eles podem ser descartados para manter export estrito.
+
 ## 2026-02-17 - marcusvinicius/Codex - PLAN-128 (export de submissao RAM-safe)
 
 - Data UTC: `2026-02-17T19:13:18Z`

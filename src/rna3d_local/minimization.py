@@ -74,10 +74,11 @@ def _minimize_openmm(
             angle_force.addAngle(int(i0), int(i1), int(j1), angle_target, float(angle_force_k))
         system.addForce(angle_force)
 
-    repulsion = mm.CustomNonbondedForce("epsilon*step(sigma-r)*(sigma/r)^12")
+    repulsion = mm.CustomNonbondedForce("epsilon*step(sigma-r)*((sigma/r)^12 - 1)")
     repulsion.addGlobalParameter("epsilon", float(vdw_epsilon))
     repulsion.addGlobalParameter("sigma", float(vdw_min_distance_angstrom) * 0.1)
-    repulsion.setNonbondedMethod(mm.CustomNonbondedForce.NoCutoff)
+    repulsion.setNonbondedMethod(mm.CustomNonbondedForce.CutoffNonPeriodic)
+    repulsion.setCutoffDistance(float(vdw_min_distance_angstrom) * 0.1)
     for _ in range(count):
         repulsion.addParticle([])
     for i, j in covalent_pairs:
@@ -111,10 +112,15 @@ def _minimize_openmm(
         mm.LocalEnergyMinimizer.minimize(context, tolerance=10.0, maxIterations=int(max_iterations))
     except Exception as exc:
         raise_error(stage, location, "falha na minimizacao openmm", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
-    state = context.getState(getPositions=True)
-    out_nm = state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
-    del context
-    del integrator
+    try:
+        state = context.getState(getPositions=True)
+        out_nm = state.getPositions(asNumpy=True).value_in_unit(unit.nanometer)
+    finally:
+        del context
+        del integrator
+        del system
+        import gc
+        gc.collect()
     return np.asarray(out_nm, dtype=np.float64) * 10.0
 
 

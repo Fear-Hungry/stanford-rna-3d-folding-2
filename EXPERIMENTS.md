@@ -1562,3 +1562,30 @@ Log append-only de experimentos executados.
 - Submissao Kaggle:
   - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 92 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan130_kernel_output_v92/submission.csv --notebook-output-path runs/20260217_plan130_kernel_output_v92/submission.csv --score-json runs/20260217_plan130_score_v92/score.json --baseline-score 0.132 --message \"PLAN-130: streaming export/check to avoid hidden OOM (kernel v92)\" --execute-submit`
   - Status no momento do registro: `PENDING` (submetido em `2026-02-17 20:12:06` no CLI).
+
+## 2026-02-17 - marcusvinicius/Codex - PLAN-131 (TBM streaming + resid_norm; score local)
+
+- Data UTC: `2026-02-17T21:32:21Z`
+- Plano: `PLAN-131`
+- Objetivo:
+  - Remover OOM no rerun hidden (TBM sem estruturas Python gigantes) e manter/elevar o proxy local (USalign best-of-5) com templates com `resid` nao iniciando em 1.
+- Setup (inputs fixos):
+  - Targets: `input/stanford-rna-3d-folding-2/test_sequences.csv`
+  - Sample: `input/stanford-rna-3d-folding-2/sample_submission.csv`
+  - Templates: `runs/20260217_plan131_src_bundle_v10/template_db/{template_index.parquet,templates.parquet}`
+  - USalign: `src/rna3d_local/evaluation/USalign`
+  - Ground truth (proxy): `input/stanford-rna-3d-folding-2/validation_labels.csv`
+- Comandos executados (local, TBM-only):
+  - `python -m rna3d_local build-embedding-index --template-index runs/20260217_plan131_src_bundle_v10/template_db/template_index.parquet --out-dir runs/20260217_plan131_local_test_tbm_v4/embedding --embedding-dim 256 --encoder mock --ann-engine none`
+  - `python -m rna3d_local infer-description-family --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out-dir runs/20260217_plan131_local_test_tbm_v4/description_family --backend rules --template-family-map runs/20260217_plan131_local_test_tbm_v4/template_family_map.parquet`
+  - `python -m rna3d_local retrieve-templates-latent --template-index runs/20260217_plan131_src_bundle_v10/template_db/template_index.parquet --template-embeddings runs/20260217_plan131_local_test_tbm_v4/embedding/template_embeddings.parquet --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/20260217_plan131_local_test_tbm_v4/retrieval_candidates.parquet --top-k 128 --encoder mock --embedding-dim 256 --ann-engine numpy_bruteforce --family-prior runs/20260217_plan131_local_test_tbm_v4/description_family/family_prior.parquet --weight-embed 0.70 --weight-llm 0.20 --weight-seq 0.10`
+  - `python -m rna3d_local predict-tbm --retrieval runs/20260217_plan131_local_test_tbm_v4/retrieval_candidates.parquet --templates runs/20260217_plan131_src_bundle_v10/template_db/templates.parquet --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/20260217_plan131_local_test_tbm_v4/tbm_predictions.parquet --n-models 5`
+  - `python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/20260217_plan131_local_test_tbm_v4/tbm_predictions.parquet --out runs/20260217_plan131_local_test_tbm_v4/submission.csv`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260217_plan131_local_test_tbm_v4/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260217_plan131_local_test_tbm_v4/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260217_plan131_local_test_tbm_v4/score.json --report runs/20260217_plan131_local_test_tbm_v4/report.json`
+- Artefatos:
+  - `runs/20260217_plan131_local_test_tbm_v4/{retrieval_candidates.parquet,tbm_predictions.parquet,submission.csv,score.json,report.json}`
+- Metricas/score (proxy full28, `single`):
+  - `score=0.2660571428571429` (melhor que o candidato anterior `0.262925` do PLAN-126)
+- Conclusao:
+  - A nova regra de cobertura por alvo (resid normalizado) melhora o proxy local e deve reduzir o risco de `TBM gerou coordenadas faltantes` no Kaggle hidden rerun.
