@@ -28,6 +28,44 @@ def _tokenize_sequence(seq: str, *, stage: str, location: str) -> list[int]:
     return tokens
 
 
+def _splitmix64(x: int) -> int:
+    mask = (1 << 64) - 1
+    z = (int(x) + 0x9E3779B97F4A7C15) & mask
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9 & mask
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EB & mask
+    return (z ^ (z >> 31)) & mask
+
+
+def _encode_mock_kmer(
+    sequences: list[str],
+    *,
+    embedding_dim: int,
+    stage: str,
+    location: str,
+) -> np.ndarray:
+    if embedding_dim <= 0:
+        raise_error(stage, location, "embedding_dim deve ser > 0", impact="1", examples=[str(embedding_dim)])
+    dim = int(embedding_dim)
+    rows: list[np.ndarray] = []
+    for seq in sequences:
+        tokens = _tokenize_sequence(str(seq), stage=stage, location=location)
+        vec = np.zeros((dim,), dtype=np.float32)
+        if len(tokens) >= 3:
+            for i in range(len(tokens) - 2):
+                code = int(tokens[i]) + (6 * int(tokens[i + 1])) + (36 * int(tokens[i + 2]))
+                idx = int(_splitmix64(code)) % dim
+                vec[idx] += 1.0
+        else:
+            for tok in tokens:
+                idx = int(_splitmix64(int(tok))) % dim
+                vec[idx] += 1.0
+        norm = float(np.linalg.norm(vec))
+        if not np.isfinite(norm) or norm <= 0:
+            raise_error(stage, location, "embedding invalido no encoder mock (norm <= 0)", impact="1", examples=[f"norm={norm}"])
+        rows.append((vec / norm).astype(np.float32, copy=False))
+    return np.asarray(rows, dtype=np.float32)
+
+
 def _maybe_parse_max_len_from_diffusion_config(model_path: Path) -> int | None:
     cfg_path = model_path.parent / "diffusion_config.yaml"
     if not cfg_path.exists():
@@ -367,6 +405,13 @@ def encode_sequences(
     if embedding_dim <= 0:
         raise_error(stage, location, "embedding_dim deve ser > 0", impact="1", examples=[str(embedding_dim)])
     mode = str(encoder).strip().lower()
+    if mode == "mock":
+        return _encode_mock_kmer(
+            [str(seq) for seq in sequences],
+            embedding_dim=int(embedding_dim),
+            stage=stage,
+            location=location,
+        )
     if mode not in {"ribonanzanet2"}:
         raise_error(stage, location, "encoder invalido", impact="1", examples=[encoder])
     if model_path is None:

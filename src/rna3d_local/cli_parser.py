@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     eidx.add_argument("--template-index", required=True)
     eidx.add_argument("--out-dir", required=True)
     eidx.add_argument("--embedding-dim", type=int, default=384)
-    eidx.add_argument("--encoder", choices=["ribonanzanet2"], default="ribonanzanet2")
+    eidx.add_argument("--encoder", choices=["ribonanzanet2", "mock"], default="ribonanzanet2")
     eidx.add_argument("--model-path", default=None)
     eidx.add_argument("--ann-engine", choices=["faiss_ivfpq", "none"], default="faiss_ivfpq")
 
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     ret.add_argument("--targets", required=True)
     ret.add_argument("--out", required=True)
     ret.add_argument("--top-k", type=int, default=64)
-    ret.add_argument("--encoder", choices=["ribonanzanet2"], default="ribonanzanet2")
+    ret.add_argument("--encoder", choices=["ribonanzanet2", "mock"], default="ribonanzanet2")
     ret.add_argument("--embedding-dim", type=int, default=384)
     ret.add_argument("--model-path", default=None)
     ret.add_argument("--ann-engine", choices=["faiss_ivfpq", "numpy_bruteforce"], default="faiss_ivfpq")

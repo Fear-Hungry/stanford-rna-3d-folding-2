@@ -2125,6 +2125,7 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Escopo:
   - Publicar nova versão do dataset de src: `marcux777/stanford-rna3d-reboot-src-v2` (apontando para o `src/` atual).
   - `kaggle kernels push` do notebook `marcux777/stanford-rna3d-submit-prod-v2`.
+  - Garantir compatibilidade com o notebook atual (encoder `mock` para retrieval/embeddings quando `ribonanzanet2` nao estiver empacotado).
   - Baixar output do kernel e validar localmente:
     - `check-submission` estrito
     - `score-local-bestof5` contra `validation_labels.csv` (proxy de qualidade)

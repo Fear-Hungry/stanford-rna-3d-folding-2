@@ -39,3 +39,26 @@ def test_ribonanzanet2_encoder_uses_torchscript_and_matches_dim(tmp_path: Path) 
     assert out.shape == (3, dim)
     norms = np.linalg.norm(out, axis=1)
     assert np.allclose(norms, 1.0, atol=1e-5)
+
+
+def test_mock_encoder_is_deterministic_and_normalized() -> None:
+    out1 = encode_sequences(
+        ["ACGU", "ACGU|ACGU", "AAAA", "GGUU"],
+        encoder="mock",
+        embedding_dim=32,
+        model_path=None,
+        stage="EMBEDDING_INDEX",
+        location="tests/test_encoder_torchscript.py:test_mock_encoder_is_deterministic_and_normalized",
+    )
+    out2 = encode_sequences(
+        ["ACGU", "ACGU|ACGU", "AAAA", "GGUU"],
+        encoder="mock",
+        embedding_dim=32,
+        model_path=None,
+        stage="EMBEDDING_INDEX",
+        location="tests/test_encoder_torchscript.py:test_mock_encoder_is_deterministic_and_normalized",
+    )
+    assert out1.shape == (4, 32)
+    assert np.allclose(out1, out2, atol=0.0)
+    norms = np.linalg.norm(out1, axis=1)
+    assert np.allclose(norms, 1.0, atol=1e-5)
