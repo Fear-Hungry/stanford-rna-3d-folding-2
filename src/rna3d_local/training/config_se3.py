@@ -24,6 +24,7 @@ class Se3TrainConfig:
     radius_angstrom: float
     max_neighbors: int
     graph_chunk_size: int
+    ipa_edge_chunk_size: int
     graph_pair_edges: str
     graph_pair_min_prob: float
     graph_pair_max_per_node: int
@@ -102,6 +103,7 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
     chain_separator = str(payload.get("chain_separator", "|"))
     if len(chain_separator) != 1:
         raise_error(stage, location, "chain_separator deve ter 1 caractere", impact="1", examples=[chain_separator])
+    training_protocol = str(payload.get("training_protocol", "custom")).strip().lower()
     cfg = Se3TrainConfig(
         hidden_dim=int(payload["hidden_dim"]),
         num_layers=int(payload["num_layers"]),
@@ -118,6 +120,7 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         radius_angstrom=float(payload.get("radius_angstrom", 14.0)),
         max_neighbors=int(payload.get("max_neighbors", 64)),
         graph_chunk_size=int(payload.get("graph_chunk_size", 512)),
+        ipa_edge_chunk_size=int(payload.get("ipa_edge_chunk_size", 128 if training_protocol == "local_16gb" else 4096)),
         graph_pair_edges=graph_pair_edges,
         graph_pair_min_prob=float(graph_pair_min_prob),
         graph_pair_max_per_node=int(graph_pair_max_per_node),
@@ -151,7 +154,7 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         crop_sequence_fraction=float(payload.get("crop_sequence_fraction", 0.60)),
         gradient_accumulation_steps=int(payload.get("gradient_accumulation_steps", 16)),
         autocast_bfloat16=bool(payload.get("autocast_bfloat16", True)),
-        training_protocol=str(payload.get("training_protocol", "custom")).strip().lower(),
+        training_protocol=training_protocol,
     )
     numeric_checks = [
         ("hidden_dim", cfg.hidden_dim),
@@ -163,6 +166,7 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         ("sequence_heads", cfg.sequence_heads),
         ("max_neighbors", cfg.max_neighbors),
         ("graph_chunk_size", cfg.graph_chunk_size),
+        ("ipa_edge_chunk_size", cfg.ipa_edge_chunk_size),
         ("chain_break_offset", cfg.chain_break_offset),
         ("max_msa_sequences", cfg.max_msa_sequences),
         ("max_cov_positions", cfg.max_cov_positions),
@@ -256,6 +260,14 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
     if cfg.training_protocol == "local_16gb":
         if not bool(cfg.dynamic_cropping):
             raise_error(stage, location, "training_protocol=local_16gb exige dynamic_cropping=true", impact="1", examples=[str(cfg.dynamic_cropping)])
+        if str(cfg.graph_backend) != "torch_geometric":
+            raise_error(
+                stage,
+                location,
+                "training_protocol=local_16gb exige graph_backend=torch_geometric",
+                impact="1",
+                examples=[str(cfg.graph_backend)],
+            )
         if int(cfg.crop_min_length) < 256 or int(cfg.crop_min_length) > 384:
             raise_error(stage, location, "training_protocol=local_16gb exige crop_min_length em [256,384]", impact="1", examples=[str(cfg.crop_min_length)])
         if int(cfg.crop_max_length) < 256 or int(cfg.crop_max_length) > 384:
@@ -277,6 +289,14 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
                 "training_protocol=local_16gb exige use_gradient_checkpointing=true",
                 impact="1",
                 examples=[str(cfg.use_gradient_checkpointing)],
+            )
+        if int(cfg.ipa_edge_chunk_size) > 256:
+            raise_error(
+                stage,
+                location,
+                "training_protocol=local_16gb exige ipa_edge_chunk_size <= 256",
+                impact="1",
+                examples=[str(cfg.ipa_edge_chunk_size)],
             )
         if int(cfg.gradient_accumulation_steps) < 16 or int(cfg.gradient_accumulation_steps) > 32:
             raise_error(

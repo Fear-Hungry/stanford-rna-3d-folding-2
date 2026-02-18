@@ -196,7 +196,9 @@ def test_config_local_16gb_fails_for_invalid_accumulation(tmp_path) -> None:
                 "dynamic_cropping": True,
                 "crop_min_length": 256,
                 "crop_max_length": 384,
+                "graph_backend": "torch_geometric",
                 "use_gradient_checkpointing": True,
+                "ipa_edge_chunk_size": 128,
                 "autocast_bfloat16": True,
                 "gradient_accumulation_steps": 8,
             }
@@ -231,7 +233,9 @@ def test_config_local_16gb_accepts_expected_window(tmp_path) -> None:
                 "dynamic_cropping": True,
                 "crop_min_length": 256,
                 "crop_max_length": 384,
+                "graph_backend": "torch_geometric",
                 "use_gradient_checkpointing": True,
+                "ipa_edge_chunk_size": 128,
                 "autocast_bfloat16": True,
                 "gradient_accumulation_steps": 16,
             }
@@ -244,3 +248,77 @@ def test_config_local_16gb_accepts_expected_window(tmp_path) -> None:
         location="tests/test_se3_losses.py:test_config_local_16gb_accepts_expected_window",
     )
     assert cfg.training_protocol == "local_16gb"
+
+
+def test_config_local_16gb_requires_torch_geometric_backend(tmp_path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "hidden_dim": 16,
+                "num_layers": 1,
+                "ipa_heads": 4,
+                "diffusion_steps": 4,
+                "flow_steps": 4,
+                "epochs": 1,
+                "learning_rate": 1e-3,
+                "method": "diffusion",
+                "thermo_backend": "rnafold",
+                "msa_backend": "mmseqs2",
+                "mmseqs_db": "/tmp/fake_db",
+                "training_protocol": "local_16gb",
+                "dynamic_cropping": True,
+                "crop_min_length": 256,
+                "crop_max_length": 384,
+                "graph_backend": "torch_sparse",
+                "use_gradient_checkpointing": True,
+                "ipa_edge_chunk_size": 128,
+                "autocast_bfloat16": True,
+                "gradient_accumulation_steps": 16,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="graph_backend=torch_geometric"):
+        load_se3_train_config(
+            config,
+            stage="TEST",
+            location="tests/test_se3_losses.py:test_config_local_16gb_requires_torch_geometric_backend",
+        )
+
+
+def test_config_local_16gb_requires_ipa_chunk_upto_256(tmp_path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "hidden_dim": 16,
+                "num_layers": 1,
+                "ipa_heads": 4,
+                "diffusion_steps": 4,
+                "flow_steps": 4,
+                "epochs": 1,
+                "learning_rate": 1e-3,
+                "method": "diffusion",
+                "thermo_backend": "rnafold",
+                "msa_backend": "mmseqs2",
+                "mmseqs_db": "/tmp/fake_db",
+                "training_protocol": "local_16gb",
+                "dynamic_cropping": True,
+                "crop_min_length": 256,
+                "crop_max_length": 384,
+                "graph_backend": "torch_geometric",
+                "use_gradient_checkpointing": True,
+                "ipa_edge_chunk_size": 512,
+                "autocast_bfloat16": True,
+                "gradient_accumulation_steps": 16,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="ipa_edge_chunk_size <= 256"):
+        load_se3_train_config(
+            config,
+            stage="TEST",
+            location="tests/test_se3_losses.py:test_config_local_16gb_requires_ipa_chunk_upto_256",
+        )

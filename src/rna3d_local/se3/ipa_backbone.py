@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import math
 
 import torch
@@ -8,6 +9,30 @@ from torch import nn
 from .geometry import build_rna_local_frames
 from .geometry import rotation_matrix_from_6d
 from .sparse_graph import build_sparse_radius_graph, compute_chain_relative_features, lookup_sparse_pair_bias
+
+
+def _scatter_add_per_src(*, values: torch.Tensor, src: torch.Tensor, out: torch.Tensor) -> None:
+    heads = int(values.shape[0])
+    edge_count = int(values.shape[1])
+    src_expand = src.unsqueeze(0).expand(heads, edge_count)
+    if hasattr(out, "scatter_add_"):
+        out.scatter_add_(1, src_expand, values)
+        return
+    for head in range(heads):
+        out[head].index_add_(0, src, values[head])
+
+
+def _scatter_amax_per_src(*, values: torch.Tensor, src: torch.Tensor, out: torch.Tensor) -> None:
+    heads = int(values.shape[0])
+    edge_count = int(values.shape[1])
+    src_expand = src.unsqueeze(0).expand(heads, edge_count)
+    if hasattr(torch.Tensor, "scatter_reduce_"):
+        out.scatter_reduce_(1, src_expand, values, reduce="amax", include_self=True)
+        return
+    for head in range(heads):
+        for edge_idx in range(edge_count):
+            node_idx = int(src[edge_idx].item())
+            out[head, node_idx] = torch.maximum(out[head, node_idx], values[head, edge_idx])
 
 
 def _segment_softmax(logits: torch.Tensor, src: torch.Tensor, node_count: int) -> torch.Tensor:
@@ -34,13 +59,16 @@ def _segment_softmax(logits: torch.Tensor, src: torch.Tensor, node_count: int) -
     return out.to(dtype=logits.dtype)
 
 class IpaBlock(nn.Module):
-    def __init__(self, hidden_dim: int, heads: int) -> None:
+    def __init__(self, hidden_dim: int, heads: int, edge_chunk_size: int) -> None:
         super().__init__()
         self.hidden_dim = int(hidden_dim)
         self.heads = int(heads)
         self.head_dim = int(hidden_dim) // int(heads)
+        self.edge_chunk_size = int(edge_chunk_size)
         if self.head_dim <= 0:
             raise ValueError("hidden_dim/heads invalid")
+        if self.edge_chunk_size <= 0:
+            raise ValueError("edge_chunk_size invalid")
         self.query = nn.Linear(hidden_dim, hidden_dim)
         self.key = nn.Linear(hidden_dim, hidden_dim)
         self.value = nn.Linear(hidden_dim, hidden_dim)
@@ -65,6 +93,53 @@ class IpaBlock(nn.Module):
             nn.Tanh(),
         )
 
+    def _chunk_logits(
+        self,
+        *,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        x: torch.Tensor,
+        src_chunk: torch.Tensor,
+        dst_chunk: torch.Tensor,
+        distances_chunk: torch.Tensor,
+        bpp_edge_bias_chunk: torch.Tensor,
+        msa_edge_bias_chunk: torch.Tensor,
+        chem_edge_bias_chunk: torch.Tensor,
+        relative_offset_chunk: torch.Tensor,
+        chain_break_mask_chunk: torch.Tensor,
+        frames: torch.Tensor,
+        base_frames: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q_src = q.index_select(0, src_chunk).to(dtype=torch.float32)
+        k_dst = k.index_select(0, dst_chunk).to(dtype=torch.float32)
+        logits = torch.einsum("ehd,ehd->he", q_src, k_dst) / math.sqrt(float(self.head_dim))
+        edge_delta = x.index_select(0, dst_chunk) - x.index_select(0, src_chunk)
+        src_frames = frames.index_select(0, src_chunk)
+        edge_local_delta = torch.einsum("eij,ej->ei", src_frames.transpose(1, 2), edge_delta)
+        edge_local_norm = torch.clamp(torch.linalg.norm(edge_local_delta, dim=-1, keepdim=True), min=1e-6)
+        edge_local_unit = edge_local_delta / edge_local_norm
+        src_base_frames = base_frames.index_select(0, src_chunk)
+        base_local_delta = torch.einsum("eij,ej->ei", src_base_frames.transpose(1, 2), edge_delta)
+        base_local_norm = torch.clamp(torch.linalg.norm(base_local_delta, dim=-1, keepdim=True), min=1e-6)
+        base_local_unit = base_local_delta / base_local_norm
+
+        autocast_context = (
+            torch.autocast(device_type=x.device.type, enabled=False)
+            if x.device.type in {"cuda", "cpu"}
+            else nullcontext()
+        )
+        with autocast_context:
+            bias = self.dist_bias((distances_chunk.to(dtype=torch.float32) * distances_chunk.to(dtype=torch.float32)).unsqueeze(-1)).transpose(0, 1).to(dtype=torch.float32)
+            bpp_term = self.bpp_bias(bpp_edge_bias_chunk.to(dtype=torch.float32).unsqueeze(-1)).transpose(0, 1).to(dtype=torch.float32)
+            msa_term = self.msa_bias(msa_edge_bias_chunk.to(dtype=torch.float32).unsqueeze(-1)).transpose(0, 1).to(dtype=torch.float32)
+            chem_term = self.chem_bias(chem_edge_bias_chunk.to(dtype=torch.float32).unsqueeze(-1)).transpose(0, 1).to(dtype=torch.float32)
+            rel_term = self.rel_bias(relative_offset_chunk.to(dtype=torch.float32).unsqueeze(-1)).transpose(0, 1).to(dtype=torch.float32)
+            chain_term = self.chain_break_bias(chain_break_mask_chunk.to(dtype=torch.float32).unsqueeze(-1)).transpose(0, 1).to(dtype=torch.float32)
+            orientation_term = (0.1 * torch.tanh(self.orientation_bias(edge_local_unit.to(dtype=torch.float32)))).transpose(0, 1).to(dtype=torch.float32)
+            base_orientation_term = (0.1 * torch.tanh(self.base_orientation_bias(base_local_unit.to(dtype=torch.float32)))).transpose(0, 1).to(dtype=torch.float32)
+        logits = logits - bias + bpp_term + msa_term + chem_term + rel_term + chain_term + orientation_term + base_orientation_term
+        return logits, edge_delta, edge_local_delta
+
     def forward(
         self,
         h: torch.Tensor,
@@ -84,55 +159,105 @@ class IpaBlock(nn.Module):
         if frames.ndim != 3 or int(frames.shape[0]) != node_count or int(frames.shape[1]) != 3 or int(frames.shape[2]) != 3:
             raise ValueError(f"frames com shape invalido para IpaBlock: {tuple(frames.shape)}")
         # Base frame: rotation relative to ribose frame (SO(3) per residue).
-        delta_rot = rotation_matrix_from_6d(self.base_frame_delta(h).to(dtype=torch.float32)).to(dtype=frames.dtype)
-        base_frames = torch.einsum("nij,njk->nik", frames, delta_rot)
-        q = self.query(h).view(node_count, self.heads, self.head_dim)
-        k = self.key(h).view(node_count, self.heads, self.head_dim)
-        v = self.value(h).view(node_count, self.heads, self.head_dim)
-        q_src = q.index_select(0, src)
-        k_dst = k.index_select(0, dst)
-        v_dst = v.index_select(0, dst)
-        edge_delta = x.index_select(0, dst) - x.index_select(0, src)
-        src_frames = frames.index_select(0, src)
-        edge_local_delta = torch.einsum("eij,ej->ei", src_frames.transpose(1, 2), edge_delta)
-        edge_local_norm = torch.clamp(torch.linalg.norm(edge_local_delta, dim=-1, keepdim=True), min=1e-6)
-        edge_local_unit = edge_local_delta / edge_local_norm
-        src_base_frames = base_frames.index_select(0, src)
-        base_local_delta = torch.einsum("eij,ej->ei", src_base_frames.transpose(1, 2), edge_delta)
-        base_local_norm = torch.clamp(torch.linalg.norm(base_local_delta, dim=-1, keepdim=True), min=1e-6)
-        base_local_unit = base_local_delta / base_local_norm
-        logits = torch.einsum("ehd,ehd->he", q_src, k_dst) / math.sqrt(float(self.head_dim))
-        bias = self.dist_bias((distances * distances).unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        bpp_term = self.bpp_bias(bpp_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        msa_term = self.msa_bias(msa_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        chem_term = self.chem_bias(chem_edge_bias.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        rel_term = self.rel_bias(relative_offset.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        chain_term = self.chain_break_bias(chain_break_mask.unsqueeze(-1).to(dtype=h.dtype)).transpose(0, 1)
-        orientation_term = (0.1 * torch.tanh(self.orientation_bias(edge_local_unit.to(dtype=h.dtype)))).transpose(0, 1)
-        base_orientation_term = (0.1 * torch.tanh(self.base_orientation_bias(base_local_unit.to(dtype=h.dtype)))).transpose(0, 1)
-        weights = _segment_softmax(
-            logits=logits - bias + bpp_term + msa_term + chem_term + rel_term + chain_term + orientation_term + base_orientation_term,
-            src=src,
-            node_count=node_count,
+        autocast_context = (
+            torch.autocast(device_type=h.device.type, enabled=False)
+            if h.device.type in {"cuda", "cpu"}
+            else nullcontext()
         )
-        weighted_v = v_dst * weights.transpose(0, 1).unsqueeze(-1).to(dtype=v_dst.dtype)
+        with autocast_context:
+            delta_rot = rotation_matrix_from_6d(self.base_frame_delta(h.to(dtype=torch.float32)).to(dtype=torch.float32)).to(dtype=frames.dtype)
+            q = self.query(h.to(dtype=torch.float32)).view(node_count, self.heads, self.head_dim)
+            k = self.key(h.to(dtype=torch.float32)).view(node_count, self.heads, self.head_dim)
+            v = self.value(h.to(dtype=torch.float32)).view(node_count, self.heads, self.head_dim)
+        base_frames = torch.einsum("nij,njk->nik", frames, delta_rot)
+        edge_count = int(src.shape[0])
+        chunk_size = min(int(self.edge_chunk_size), edge_count)
+
+        max_per_node = torch.full((self.heads, node_count), float("-inf"), dtype=torch.float32, device=h.device)
+        for start in range(0, edge_count, chunk_size):
+            end = min(edge_count, start + chunk_size)
+            src_chunk = src[start:end]
+            dst_chunk = dst[start:end]
+            logits_chunk, _edge_delta, _edge_local_delta = self._chunk_logits(
+                q=q,
+                k=k,
+                x=x,
+                src_chunk=src_chunk,
+                dst_chunk=dst_chunk,
+                distances_chunk=distances[start:end],
+                bpp_edge_bias_chunk=bpp_edge_bias[start:end],
+                msa_edge_bias_chunk=msa_edge_bias[start:end],
+                chem_edge_bias_chunk=chem_edge_bias[start:end],
+                relative_offset_chunk=relative_offset[start:end],
+                chain_break_mask_chunk=chain_break_mask[start:end],
+                frames=frames,
+                base_frames=base_frames,
+            )
+            _scatter_amax_per_src(values=logits_chunk, src=src_chunk, out=max_per_node)
+
+        sum_per_node = torch.zeros((self.heads, node_count), dtype=torch.float32, device=h.device)
+        for start in range(0, edge_count, chunk_size):
+            end = min(edge_count, start + chunk_size)
+            src_chunk = src[start:end]
+            dst_chunk = dst[start:end]
+            src_expand = src_chunk.unsqueeze(0).expand(self.heads, int(src_chunk.numel()))
+            logits_chunk, _edge_delta, _edge_local_delta = self._chunk_logits(
+                q=q,
+                k=k,
+                x=x,
+                src_chunk=src_chunk,
+                dst_chunk=dst_chunk,
+                distances_chunk=distances[start:end],
+                bpp_edge_bias_chunk=bpp_edge_bias[start:end],
+                msa_edge_bias_chunk=msa_edge_bias[start:end],
+                chem_edge_bias_chunk=chem_edge_bias[start:end],
+                relative_offset_chunk=relative_offset[start:end],
+                chain_break_mask_chunk=chain_break_mask[start:end],
+                frames=frames,
+                base_frames=base_frames,
+            )
+            centered = logits_chunk - max_per_node.gather(1, src_expand)
+            exp_vals = torch.exp(centered)
+            _scatter_add_per_src(values=exp_vals, src=src_chunk, out=sum_per_node)
+
         h_update = torch.zeros((node_count, self.heads, self.head_dim), dtype=h.dtype, device=h.device)
-        h_update.index_add_(0, src, weighted_v.to(dtype=h.dtype))
+        displacement_local = torch.zeros((node_count, 3), dtype=x.dtype, device=x.device)
+        displacement_global_raw = torch.zeros((node_count, 3), dtype=x.dtype, device=x.device)
+        for start in range(0, edge_count, chunk_size):
+            end = min(edge_count, start + chunk_size)
+            src_chunk = src[start:end]
+            dst_chunk = dst[start:end]
+            src_expand = src_chunk.unsqueeze(0).expand(self.heads, int(src_chunk.numel()))
+            logits_chunk, edge_delta_chunk, edge_local_delta_chunk = self._chunk_logits(
+                q=q,
+                k=k,
+                x=x,
+                src_chunk=src_chunk,
+                dst_chunk=dst_chunk,
+                distances_chunk=distances[start:end],
+                bpp_edge_bias_chunk=bpp_edge_bias[start:end],
+                msa_edge_bias_chunk=msa_edge_bias[start:end],
+                chem_edge_bias_chunk=chem_edge_bias[start:end],
+                relative_offset_chunk=relative_offset[start:end],
+                chain_break_mask_chunk=chain_break_mask[start:end],
+                frames=frames,
+                base_frames=base_frames,
+            )
+            centered = logits_chunk - max_per_node.gather(1, src_expand)
+            exp_vals = torch.exp(centered)
+            denom = torch.clamp(sum_per_node.gather(1, src_expand), min=1e-9)
+            weights_chunk = exp_vals / denom
+
+            v_dst_chunk = v.index_select(0, dst_chunk)
+            weighted_v = v_dst_chunk * weights_chunk.transpose(0, 1).unsqueeze(-1).to(dtype=v_dst_chunk.dtype)
+            h_update.index_add_(0, src_chunk, weighted_v.to(dtype=h.dtype))
+
+            weights_mean = weights_chunk.mean(dim=0).to(dtype=x.dtype)
+            displacement_local.index_add_(0, src_chunk, edge_local_delta_chunk * weights_mean.unsqueeze(-1))
+            displacement_global_raw.index_add_(0, src_chunk, edge_delta_chunk * weights_mean.unsqueeze(-1))
+
         h_update = h_update.reshape(node_count, self.hidden_dim)
         h_out = h + self.out(h_update)
-        weights_mean = weights.mean(dim=0)
-        displacement_local = torch.zeros((node_count, 3), dtype=x.dtype, device=x.device)
-        displacement_local.index_add_(
-            0,
-            src,
-            edge_local_delta * weights_mean.unsqueeze(-1).to(dtype=x.dtype),
-        )
-        displacement_global_raw = torch.zeros((node_count, 3), dtype=x.dtype, device=x.device)
-        displacement_global_raw.index_add_(
-            0,
-            src,
-            edge_delta * weights_mean.unsqueeze(-1).to(dtype=x.dtype),
-        )
         displacement_global = torch.einsum("nij,nj->ni", frames, displacement_local)
         displacement_global = 0.5 * displacement_global + 0.5 * displacement_global_raw
         x_out = x + (self.coord_gate(h_out) * displacement_global)
@@ -151,6 +276,7 @@ class IpaBackbone(nn.Module):
         radius_angstrom: float,
         max_neighbors: int,
         graph_chunk_size: int,
+        ipa_edge_chunk_size: int,
         graph_pair_edges: str,
         graph_pair_min_prob: float,
         graph_pair_max_per_node: int,
@@ -164,11 +290,17 @@ class IpaBackbone(nn.Module):
         self.radius_angstrom = float(radius_angstrom)
         self.max_neighbors = int(max_neighbors)
         self.graph_chunk_size = int(graph_chunk_size)
+        self.ipa_edge_chunk_size = int(ipa_edge_chunk_size)
         self.graph_pair_edges = str(graph_pair_edges).strip().lower()
         self.graph_pair_min_prob = float(graph_pair_min_prob)
         self.graph_pair_max_per_node = int(graph_pair_max_per_node)
         self.input_proj = nn.Linear(input_dim, hidden_dim)
-        self.layers = nn.ModuleList([IpaBlock(hidden_dim=hidden_dim, heads=heads) for _ in range(int(num_layers))])
+        self.layers = nn.ModuleList(
+            [
+                IpaBlock(hidden_dim=hidden_dim, heads=heads, edge_chunk_size=self.ipa_edge_chunk_size)
+                for _ in range(int(num_layers))
+            ]
+        )
         self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(
