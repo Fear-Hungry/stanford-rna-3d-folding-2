@@ -2197,3 +2197,20 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q` passa.
   - Kernel roda com apenas `stanford-rna3d-reboot-src-v2` (+ opcional `stanford-rna3d-drfold2-official-v1` se fallback ainda existir).
   - Rerun hidden nao falha por OOM de RAM (evidencia: submissao com score publicado ou status sem erro).
+
+## PLAN-132 - OOM hardening competitivo: IPA chunking + protocolo 16GB com PyG
+
+- Objetivo:
+  - Reduzir risco de OOM em treino/inferencia competitiva (GPU 16GB) sem degradar corretude geométrica do backbone SE(3).
+- Mudancas:
+  - Implementar chunking explícito de arestas no `IpaBlock` para evitar materialização global de tensores por edge.
+  - Introduzir `ipa_edge_chunk_size` na config de treino e no runtime (manifest/config_effective).
+  - Endurecer `training_protocol=local_16gb` para exigir `graph_backend=torch_geometric` e `ipa_edge_chunk_size <= 256`.
+  - Atualizar configs de experimento `se3_local16gb_{mamba,flash}.json` para o novo contrato.
+  - Cobrir em testes:
+    - paridade numérica IPA (chunk pequeno vs chunk grande),
+    - fail-fast do contrato `local_16gb` com backend inválido/chunk inválido.
+- Critérios de aceite:
+  - `pytest -q` passa.
+  - `IpaBackbone` produz saídas finitas e estáveis com chunking de arestas.
+  - `load_se3_train_config` bloqueia `local_16gb` fora do contrato novo com erro acionável.

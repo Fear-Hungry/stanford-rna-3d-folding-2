@@ -1641,3 +1641,33 @@ Log append-only de mudancas implementadas.
   - `CHANGES.md`
 - Validacao local executada:
   - `pytest -q` -> `86 passed`
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-132 (OOM hardening competitivo: IPA chunking + contrato local_16gb)
+
+- Data UTC: `2026-02-18T00:14:08Z`
+- Plano: `PLAN-132`
+- Resumo:
+  - `IpaBackbone/IpaBlock` recebeu chunking explícito por aresta (`ipa_edge_chunk_size`) com softmax segmentado estável em 3 passagens (amax/sumexp/acumulação), reduzindo pico de VRAM sem alterar contrato funcional.
+  - `Se3TrainConfig` ganhou `ipa_edge_chunk_size` e o protocolo `training_protocol=local_16gb` foi endurecido para exigir `graph_backend=torch_geometric` e `ipa_edge_chunk_size <= 256`.
+  - Runtime/artefatos (`trainer_se3`) agora persistem e recarregam `ipa_edge_chunk_size` em `config_effective`/manifest.
+  - Configs competitivas `experiments/configs/se3_local16gb_{mamba,flash}.json` migradas para `graph_backend=torch_geometric` + `ipa_edge_chunk_size=128`.
+  - Testes adicionados/ajustados para paridade de chunking no IPA e fail-fast do novo contrato `local_16gb`.
+  - Documentação atualizada (`README.md`, `docs/SUBMARINO_RUNBOOK.md`) para refletir o novo contrato competitivo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `tests/test_ipa_geometry.py`
+  - `tests/test_se3_losses.py`
+  - `experiments/configs/se3_local16gb_mamba.json`
+  - `experiments/configs/se3_local16gb_flash.json`
+  - `README.md`
+  - `docs/SUBMARINO_RUNBOOK.md`
+  - `PLANS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_ipa_geometry.py tests/test_se3_losses.py` -> `14 passed`
+  - `pytest -q tests/test_se3_memory.py::test_train_and_sample_se3_with_linear_memory_config` -> `1 passed`
+  - `pytest -q` -> `123 passed`
+  - `python -m compileall -q src` -> `ok`
+- Riscos conhecidos / follow-ups:
+  - O protocolo `local_16gb` agora depende explicitamente de `torch_geometric`/`torch_cluster`; ambientes Kaggle sem esses wheels falharão cedo por contrato.

@@ -1617,3 +1617,56 @@ Log append-only de experimentos executados.
     - Body: `{"error":{"code":400,"message":"Submission not allowed:  Your team has used its daily Submission allowance (5) today, please try again tomorrow UTC (2.0 hours from now).","status":"FAILED_PRECONDITION"}}`
   - Acao:
     - Bloquear novas tentativas cegas; re-tentar apenas apos reset de quota (UTC).
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-132 (validacao OOM: treino longo tentou, inferencia completa validada)
+
+- Data UTC: `2026-02-18T00:56:50Z`
+- Plano: `PLAN-132`
+- Objetivo:
+  - Validar execucao local em GPU 16GB sem OOM apos chunking/checkpointing, rodando fluxo SE(3) completo e com monitoramento de VRAM.
+
+### Experimento A (treino longo real, store filtrado) - FALHOU por contrato de grafo, nao por OOM
+
+- Run dir: `runs/20260218_plan132_oom_fullrun_subset_run2`
+- Comando principal:
+  - `python -m rna3d_local train-se3-generator --targets runs/20260218_plan132_oom_fullrun_subset/train_targets_subset.csv --pairings runs/20260218_plan132_oom_fullrun_subset/pairings_train_subset.parquet --chemical-features runs/20260218_plan132_oom_fullrun_subset/chemical_train_subset.parquet --labels runs/20260218_plan132_oom_fullrun_subset/train_labels_subset.parquet --config runs/20260218_plan132_oom_fullrun_subset_run2/config_train.json --out-dir runs/20260218_plan132_oom_fullrun_subset_run2/se3_model --seed 123 --training-store runs/20260218_plan132_oom_fullrun_subset/training_store_len64.zarr`
+- Config efetiva (resumo):
+  - `method=both`, `epochs=4`, `graph_backend=torch_sparse`, `radius_angstrom=1000.0`, `autocast_bfloat16=true`, `use_gradient_checkpointing=true`, `ipa_edge_chunk_size=128`, `training_protocol=custom`
+- Seed: `123`
+- Versao de codigo: `git c2fb2a0`
+- Resultado:
+  - Falha fail-fast: `[TRAIN_SE3] ... grafo 3d esparso sem arestas ... | impacto=98 | exemplos=radius=1000.0,max_neighbors=32`
+  - Tempo: `TRAIN_ELAPSED=0:17:17.03`
+  - RAM max processo: `TRAIN_RAM_KB=2481840`
+  - Pico VRAM durante execucao: `1075 MiB` (`runs/20260218_plan132_oom_fullrun_subset_run2/gpu_mem.log`)
+- Conclusao:
+  - Nao houve OOM; a interrupcao foi por erro de contrato/estabilidade de grafo.
+
+### Experimento B (pipeline completo de inferencia) - SUCESSO, sem OOM
+
+- Runs:
+  - Treino compativel minimo: `runs/20260218_plan132_tiny_model_run`
+  - Inferencia completa + validacao: `runs/20260218_plan132_tiny_infer_cached`
+- Comandos executados:
+  - Treino curto para gerar runtime compativel:
+    - `python -m rna3d_local train-se3-generator --targets runs/20260218_plan132_tiny_model/train_targets_tiny.csv --pairings runs/20260218_plan132_tiny_model/pairings_train_tiny.parquet --chemical-features runs/20260218_plan132_tiny_model/chemical_train_tiny.parquet --labels runs/20260218_plan132_tiny_model/train_labels_tiny.parquet --config runs/20260218_plan132_tiny_model_run/config_train.json --out-dir runs/20260218_plan132_tiny_model_run/se3_model --seed 123 --training-store runs/20260218_plan132_tiny_model/training_store_tiny.zarr`
+  - Inferencia completa:
+    - `python -m rna3d_local sample-se3-ensemble --model-dir runs/20260218_plan132_tiny_model_run/se3_model --targets runs/20260216_full_local_run/test_targets.csv --pairings runs/20260216_full_local_run/pairings_test.parquet --chemical-features runs/20260216_full_local_run/chemical_test.parquet --out runs/20260218_plan132_tiny_infer_cached/se3_candidates.parquet --method diffusion --n-samples 24 --seed 123`
+    - `python -m rna3d_local rank-se3-ensemble --candidates runs/20260218_plan132_tiny_infer_cached/se3_candidates.parquet --out runs/20260218_plan132_tiny_infer_cached/se3_ranked.parquet --diversity-lambda 0.35`
+    - `python -m rna3d_local select-top5-se3 --ranked runs/20260218_plan132_tiny_infer_cached/se3_ranked.parquet --out runs/20260218_plan132_tiny_infer_cached/se3_top5.parquet --n-models 5 --diversity-lambda 0.35`
+    - `python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/20260218_plan132_tiny_infer_cached/se3_top5.parquet --out runs/20260218_plan132_tiny_infer_cached/submission.csv`
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan132_tiny_infer_cached/submission.csv`
+- Config/hiperparametros efetivos (treino minimo):
+  - `method=diffusion`, `epochs=1`, `learning_rate=1e-5`, `graph_backend=torch_sparse`, `radius_angstrom=1000000.0`, `autocast_bfloat16=false`, `ipa_edge_chunk_size=128`, `seed=123`
+- Artefatos principais:
+  - `runs/20260218_plan132_tiny_model_run/se3_model/{metrics.json,train_manifest.json,config_effective.json}`
+  - `runs/20260218_plan132_tiny_infer_cached/{se3_candidates.parquet,se3_ranked.parquet,se3_top5.parquet,submission.csv,oom_summary.txt,check.log}`
+- Metricas/custos:
+  - Treino minimo: `TRAIN_ELAPSED=0:04.87`, `TRAIN_RAM_KB=2220440`
+  - Inferencia (sample): `SAMPLE_ELAPSED=0:18.36`, `SAMPLE_RAM_KB=1013908`
+  - Janela completa de inferencia (`run_meta`): `2026-02-18T00:52:26Z` -> `2026-02-18T00:56:50Z`
+  - Pico VRAM: `GPU_PEAK_USED_MIB=675` (`runs/20260218_plan132_tiny_infer_cached/oom_summary.txt`)
+  - Validacao submission: `ok=true` (`runs/20260218_plan132_tiny_infer_cached/check.log`)
+- Conclusao:
+  - Pipeline completo de inferencia executado sem OOM na GPU de 16GB.
+  - Pendencia aberta: estabilizar treino longo (erro de grafo vazio) para concluir ciclo full-train sem interrupcao.
