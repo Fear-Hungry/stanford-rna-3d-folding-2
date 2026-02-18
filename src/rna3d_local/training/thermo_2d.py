@@ -31,6 +31,99 @@ class ThermoBppTarget:
     pair_prob: torch.Tensor
 
 
+def _assert_unique_chemical_keys(df: pl.DataFrame, *, stage: str, location: str) -> None:
+    dup = df.group_by(["target_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
+    if dup.height > 0:
+        examples = (
+            dup.with_columns((pl.col("target_id") + pl.lit(":") + pl.col("resid").cast(pl.Utf8)).alias("k"))
+            .get_column("k")
+            .head(8)
+            .to_list()
+        )
+        raise_error(stage, location, "chemical_features com chave duplicada para soft constraints", impact=str(int(dup.height)), examples=[str(item) for item in examples])
+
+
+def _build_chemical_paired_prior(
+    *,
+    targets: pl.DataFrame,
+    chemical_features: pl.DataFrame,
+    chain_separator: str,
+    stage: str,
+    location: str,
+) -> dict[str, torch.Tensor]:
+    require_columns(
+        chemical_features,
+        ["target_id", "resid", "p_open", "p_paired"],
+        stage=stage,
+        location=location,
+        label="chemical_features",
+    )
+    chem_cast = chemical_features.select(
+        pl.col("target_id").cast(pl.Utf8),
+        pl.col("resid").cast(pl.Int32),
+        pl.col("p_open").cast(pl.Float64),
+        pl.col("p_paired").cast(pl.Float64),
+    )
+    _assert_unique_chemical_keys(chem_cast, stage=stage, location=location)
+    bad = chem_cast.filter(
+        pl.col("p_open").is_null()
+        | pl.col("p_paired").is_null()
+        | (pl.col("p_open") < 0.0)
+        | (pl.col("p_open") > 1.0)
+        | (pl.col("p_paired") < 0.0)
+        | (pl.col("p_paired") > 1.0)
+    )
+    if bad.height > 0:
+        examples = (
+            bad.with_columns((pl.col("target_id") + pl.lit(":") + pl.col("resid").cast(pl.Utf8)).alias("k"))
+            .get_column("k")
+            .head(8)
+            .to_list()
+        )
+        raise_error(
+            stage,
+            location,
+            "chemical_features com p_open/p_paired fora de [0,1] para soft constraints",
+            impact=str(int(bad.height)),
+            examples=[str(item) for item in examples],
+        )
+    out: dict[str, torch.Tensor] = {}
+    for target_id, sequence in targets.select("target_id", "sequence").iter_rows():
+        tid = str(target_id)
+        parsed = parse_sequence_with_chains(
+            sequence=str(sequence),
+            chain_separator=chain_separator,
+            stage=stage,
+            location=location,
+            target_id=tid,
+        )
+        length = int(len(parsed.residues))
+        rows = chem_cast.filter(pl.col("target_id") == tid).sort("resid")
+        if int(rows.height) != int(length):
+            raise_error(
+                stage,
+                location,
+                "chemical_features sem cobertura completa para soft constraints",
+                impact=str(abs(int(length - rows.height))),
+                examples=[f"{tid}:expected={length}:got={int(rows.height)}"],
+            )
+        resid = rows.get_column("resid").cast(pl.Int32).to_numpy()
+        expected = torch.arange(1, length + 1, dtype=torch.int32).numpy()
+        if not bool((resid == expected).all()):
+            raise_error(
+                stage,
+                location,
+                "resid em chemical_features fora de ordem/continuidade para soft constraints",
+                impact="1",
+                examples=[tid],
+            )
+        p_open = torch.tensor(rows.get_column("p_open").to_numpy(), dtype=torch.float32)
+        p_paired = torch.tensor(rows.get_column("p_paired").to_numpy(), dtype=torch.float32)
+        paired_prior = torch.clamp((p_paired + (1.0 - p_open)) / 2.0, min=0.0, max=1.0)
+        out[tid] = paired_prior
+    return out
+
+
 def _prune_chain_pairs(
     *,
     pairs_1based: list[tuple[int, int, float]],
@@ -274,9 +367,46 @@ def _run_linearfold_pairs(
     return pairs
 
 
+def _apply_chain_soft_pair_prior(
+    *,
+    pairs_1based: list[tuple[int, int, float]],
+    chain_paired_prior: torch.Tensor | None,
+    soft_constraint_strength: float,
+    stage: str,
+    location: str,
+    target_id: str,
+) -> list[tuple[int, int, float]]:
+    if float(soft_constraint_strength) <= 0.0 or chain_paired_prior is None or not pairs_1based:
+        return pairs_1based
+    out: list[tuple[int, int, float]] = []
+    length = int(chain_paired_prior.numel())
+    for i_1, j_1, prob in pairs_1based:
+        i = int(i_1)
+        j = int(j_1)
+        if i < 1 or j < 1 or i > length or j > length:
+            raise_error(stage, location, "par fora do comprimento da cadeia para soft constraints", impact="1", examples=[f"{target_id}:{i}-{j}:len={length}"])
+        p_i = float(chain_paired_prior[i - 1].item())
+        p_j = float(chain_paired_prior[j - 1].item())
+        if p_i < 0.0 or p_i > 1.0 or p_j < 0.0 or p_j > 1.0:
+            raise_error(
+                stage,
+                location,
+                "prior quimico fora de [0,1] ao aplicar soft constraints",
+                impact="1",
+                examples=[f"{target_id}:{i}:{p_i:.4f}", f"{target_id}:{j}:{p_j:.4f}"],
+            )
+        scaled = float(prob) * float((p_i * p_j) ** float(soft_constraint_strength))
+        if scaled <= 0.0:
+            continue
+        out.append((i, j, scaled))
+    return out
+
+
 def _run_viennarna_pairs(
     *,
     sequence: str,
+    chain_paired_prior: torch.Tensor | None = None,
+    soft_constraint_strength: float = 0.0,
     stage: str,
     location: str,
 ) -> list[tuple[int, int, float]]:
@@ -292,6 +422,22 @@ def _run_viennarna_pairs(
         )
     try:
         fc = RNA.fold_compound(sequence)
+        if float(soft_constraint_strength) > 0.0 and chain_paired_prior is not None:
+            if int(chain_paired_prior.numel()) != int(len(sequence)):
+                raise_error(
+                    stage,
+                    location,
+                    "chain_paired_prior com comprimento diferente da sequencia no backend viennarna",
+                    impact="1",
+                    examples=[f"prior={int(chain_paired_prior.numel())}", f"seq={int(len(sequence))}"],
+                )
+            for idx in range(1, int(len(sequence)) + 1):
+                p_pair = float(chain_paired_prior[idx - 1].item())
+                if p_pair < 0.0 or p_pair > 1.0:
+                    raise_error(stage, location, "chain_paired_prior fora de [0,1] no backend viennarna", impact="1", examples=[f"idx={idx}:p={p_pair}"])
+                p_open = 1.0 - p_pair
+                pseudo_energy = float(-float(soft_constraint_strength) * ((p_open - 0.5) * 2.0))
+                fc.sc_add_up(int(idx), float(pseudo_energy))
         fc.pf()
         bpp = fc.bpp()
     except Exception as exc:
@@ -345,6 +491,8 @@ def _compute_single_target(
     chain_separator: str,
     min_pair_prob: float,
     max_pairs_per_node: int,
+    paired_prior: torch.Tensor | None,
+    soft_constraint_strength: float,
     stage: str,
     location: str,
 ) -> tuple[str, ThermoBppTarget]:
@@ -361,7 +509,12 @@ def _compute_single_target(
     offset = 0
     for chain_idx, chain_length in enumerate(parsed.chain_lengths):
         chain_seq = seq[offset : offset + chain_length]
-        cache_tag = f"{backend_name}_chain_pmin{float(min_pair_prob):.4f}_k{int(max_pairs_per_node)}"
+        chain_prior = None if paired_prior is None else paired_prior[offset : offset + chain_length]
+        soft_tag = "sc0"
+        if float(soft_constraint_strength) > 0.0 and chain_prior is not None:
+            prior_hash = hashlib.sha256(chain_prior.detach().cpu().numpy().tobytes()).hexdigest()[:16]
+            soft_tag = f"sc{float(soft_constraint_strength):.4f}_{prior_hash}"
+        cache_tag = f"{backend_name}_chain_pmin{float(min_pair_prob):.4f}_k{int(max_pairs_per_node)}_{soft_tag}"
         cpath = None if cache_root is None else _cache_path(cache_dir=cache_root, backend=cache_tag, sequence=chain_seq)
         chain_pairs: list[tuple[int, int, float]]
         if cpath is not None and cpath.exists():
@@ -385,11 +538,22 @@ def _compute_single_target(
             elif backend_name == "viennarna":
                 chain_pairs = _run_viennarna_pairs(
                     sequence=chain_seq,
+                    chain_paired_prior=chain_prior,
+                    soft_constraint_strength=float(soft_constraint_strength),
                     stage=stage,
                     location=location,
                 )
             else:
                 raise_error(stage, location, "backend termoquimico BPP invalido", impact="1", examples=[backend_name])
+            if backend_name != "viennarna":
+                chain_pairs = _apply_chain_soft_pair_prior(
+                    pairs_1based=chain_pairs,
+                    chain_paired_prior=chain_prior,
+                    soft_constraint_strength=float(soft_constraint_strength),
+                    stage=stage,
+                    location=location,
+                    target_id=tid,
+                )
             if float(min_pair_prob) > 0.0 or int(max_pairs_per_node) > 0:
                 chain_pairs = _prune_chain_pairs(
                     pairs_1based=chain_pairs,
@@ -428,6 +592,8 @@ def compute_thermo_bpp(
     num_workers: int = 1,
     min_pair_prob: float = 0.0,
     max_pairs_per_node: int = 0,
+    chemical_features: pl.DataFrame | None = None,
+    soft_constraint_strength: float = 0.0,
 ) -> dict[str, ThermoBppTarget]:
     require_columns(targets, ["target_id", "sequence"], stage=stage, location=location, label="targets")
     backend_name = str(backend).strip().lower()
@@ -439,8 +605,21 @@ def compute_thermo_bpp(
         raise_error(stage, location, "min_pair_prob fora de [0,1] para pruning BPP", impact="1", examples=[str(min_pair_prob)])
     if int(max_pairs_per_node) < 0:
         raise_error(stage, location, "max_pairs_per_node invalido (<0) para pruning BPP", impact="1", examples=[str(max_pairs_per_node)])
+    if float(soft_constraint_strength) < 0.0:
+        raise_error(stage, location, "soft_constraint_strength invalido (<0)", impact="1", examples=[str(soft_constraint_strength)])
+    if float(soft_constraint_strength) > 0.0 and chemical_features is None:
+        raise_error(stage, location, "soft_constraint_strength > 0 exige chemical_features", impact="1", examples=[str(soft_constraint_strength)])
     cache_root = None if cache_dir is None else Path(cache_dir)
     rows = [(str(target_id), str(sequence)) for target_id, sequence in targets.select("target_id", "sequence").iter_rows()]
+    paired_prior_map: dict[str, torch.Tensor] = {}
+    if float(soft_constraint_strength) > 0.0 and chemical_features is not None:
+        paired_prior_map = _build_chemical_paired_prior(
+            targets=targets,
+            chemical_features=chemical_features,
+            chain_separator=chain_separator,
+            stage=stage,
+            location=location,
+        )
     out: dict[str, ThermoBppTarget] = {}
     if int(num_workers) == 1 or len(rows) <= 1:
         for tid, sequence in rows:
@@ -454,6 +633,8 @@ def compute_thermo_bpp(
                 chain_separator=chain_separator,
                 min_pair_prob=float(min_pair_prob),
                 max_pairs_per_node=int(max_pairs_per_node),
+                paired_prior=paired_prior_map.get(tid),
+                soft_constraint_strength=float(soft_constraint_strength),
                 stage=stage,
                 location=location,
             )
@@ -473,6 +654,8 @@ def compute_thermo_bpp(
                     chain_separator=chain_separator,
                     min_pair_prob=float(min_pair_prob),
                     max_pairs_per_node=int(max_pairs_per_node),
+                    paired_prior=paired_prior_map.get(tid),
+                    soft_constraint_strength=float(soft_constraint_strength),
                     stage=stage,
                     location=location,
                 )

@@ -1717,3 +1717,31 @@ Log append-only de experimentos executados.
 - Conclusão:
   - O híbrido `len>60` supera os candidatos A e B no proxy local (`0.298575 > 0.292207 > 0.266057`).
   - Próximo passo recomendado: portar essa regra para notebook Kaggle (versão nova) para validação real em leaderboard.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-135 (validação controlada: QA químico + soft constraints)
+
+- Data UTC: `2026-02-18T13:05:25Z`
+- Plano: `PLAN-135`
+- Objetivo/hipótese:
+  - Validar que o novo termo químico no QA de ranking e o soft-constraint no BPP entram no pipeline sem regressão de contrato.
+  - Confirmar em cenários controlados que:
+    - ranking favorece amostra com exposição compatível com `p_open/p_paired`;
+    - soft-constraint reduz probabilidade total de pares quando `p_paired` é baixo.
+- Comandos executados + configuração efetiva:
+  - `pytest -q tests/test_qa_ranker_se3.py tests/test_thermo_2d.py tests/test_se3_losses.py tests/test_se3_pipeline.py`
+  - `pytest -q tests/test_minimization.py tests/test_model_confidence_extraction.py tests/test_chai1_runner_chain_separator.py tests/test_phase2_hybrid.py`
+  - `python -m compileall -q src`
+- Seeds:
+  - N/A (testes determinísticos unitários/integracão curta).
+- Versão de código/dados:
+  - Código: working tree local no momento da execução (sem snapshot de dados externo).
+  - Dados: fixtures sintéticos dos próprios testes.
+- Artefatos:
+  - N/A (execução de testes sem geração de run em `runs/`).
+- Métricas/resultado:
+  - Bloco 1: `25 passed`
+  - Bloco 2: `21 passed`
+  - `compileall`: `ok`
+- Conclusão + próximos passos:
+  - Mudança validada localmente sem regressão nos módulos críticos alterados.
+  - Próximo passo: rodar inferência comparativa em `runs/` com e sem `thermo_soft_constraint_strength` para calibrar ganho em proxy USalign antes de novo submit.

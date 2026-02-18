@@ -30,6 +30,7 @@ class Se3TrainConfig:
     graph_pair_max_per_node: int
     thermo_pair_min_prob: float
     thermo_pair_max_per_node: int
+    thermo_soft_constraint_strength: float
     thermo_backend: str
     rnafold_bin: str
     linearfold_bin: str
@@ -90,10 +91,13 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
             raise_error(stage, location, "graph_pair_max_per_node invalido (<=0)", impact="1", examples=[str(graph_pair_max_per_node)])
     thermo_pair_min_prob = float(payload.get("thermo_pair_min_prob", graph_pair_min_prob if graph_pair_edges != "none" else 0.0))
     thermo_pair_max_per_node = int(payload.get("thermo_pair_max_per_node", graph_pair_max_per_node if graph_pair_edges != "none" else 0))
+    thermo_soft_constraint_strength = float(payload.get("thermo_soft_constraint_strength", 0.0))
     if not (0.0 <= float(thermo_pair_min_prob) <= 1.0):
         raise_error(stage, location, "thermo_pair_min_prob fora de [0,1]", impact="1", examples=[str(thermo_pair_min_prob)])
     if int(thermo_pair_max_per_node) < 0:
         raise_error(stage, location, "thermo_pair_max_per_node invalido (<0)", impact="1", examples=[str(thermo_pair_max_per_node)])
+    if float(thermo_soft_constraint_strength) < 0.0:
+        raise_error(stage, location, "thermo_soft_constraint_strength invalido (<0)", impact="1", examples=[str(thermo_soft_constraint_strength)])
     thermo_backend = str(payload.get("thermo_backend", "rnafold")).strip().lower()
     if thermo_backend not in {"rnafold", "linearfold", "viennarna"}:
         raise_error(stage, location, "thermo_backend invalido na config", impact="1", examples=[thermo_backend])
@@ -126,6 +130,7 @@ def load_se3_train_config(path: Path, *, stage: str, location: str) -> Se3TrainC
         graph_pair_max_per_node=int(graph_pair_max_per_node),
         thermo_pair_min_prob=float(thermo_pair_min_prob),
         thermo_pair_max_per_node=int(thermo_pair_max_per_node),
+        thermo_soft_constraint_strength=float(thermo_soft_constraint_strength),
         thermo_backend=thermo_backend,
         rnafold_bin=str(payload.get("rnafold_bin", "RNAfold")).strip(),
         linearfold_bin=str(payload.get("linearfold_bin", "linearfold")).strip(),

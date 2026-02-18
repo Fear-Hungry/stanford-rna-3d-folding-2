@@ -2246,3 +2246,27 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q tests/test_model_confidence_extraction.py` passa.
   - `predict-chai1-offline` e `predict-boltz1-offline` geram `confidence` dinâmico no parquet long.
   - Valores inválidos de pLDDT falham cedo com erro acionável.
+
+## PLAN-135 - QA químico no ranking SE(3) + soft constraints termodinâmicas
+
+- Objetivo:
+  - Injetar sinal químico (DMS / `p_open` / `p_paired`) no ranking do ensemble SE(3) e no cálculo de BPP para melhorar consistência biofísica.
+- Hipótese:
+  - Penalizar estruturas que enterram resíduos quimicamente expostos melhora a seleção Top-5.
+  - Aplicar prior químico como soft constraint na etapa termoquímica reduz pares espúrios e limpa o grafo BPP.
+- Mudanças:
+  - `ensemble/qa_ranker_se3.py`:
+    - adicionar score de consistência químico-espacial por resíduo (`predicted_exposure` vs `expected_exposure` a partir de `p_open/p_paired`);
+    - aceitar `chemical_features_path` opcional no ranking (`rank-se3-ensemble`).
+  - `training/thermo_2d.py`:
+    - aceitar `chemical_features` + `soft_constraint_strength` (opt-in) em `compute_thermo_bpp`;
+    - aplicar prior químico nas probabilidades de par (reweighting suave) e também no backend `viennarna` via soft constraints de unpaired quando disponível.
+  - Propagar parâmetros novos em dataset/config/trainer/pipeline sem mudar comportamento default (`soft_constraint_strength=0.0`).
+  - Testes cobrindo:
+    - ranking químico alterando ordenação em cenário controlado;
+    - efeito de soft constraint reduzindo probabilidade total de pares quando `p_paired` é baixo;
+    - fail-fast para mismatch de cobertura química quando constraints estão habilitadas.
+- Critérios de aceite:
+  - `pytest -q tests/test_thermo_2d.py tests/test_se3_pipeline.py` passa.
+  - `pytest -q` dos testes novos passa sem regressões locais.
+  - comportamento default (sem parâmetro novo) preservado.

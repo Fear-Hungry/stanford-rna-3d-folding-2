@@ -322,3 +322,32 @@ def test_config_local_16gb_requires_ipa_chunk_upto_256(tmp_path) -> None:
             stage="TEST",
             location="tests/test_se3_losses.py:test_config_local_16gb_requires_ipa_chunk_upto_256",
         )
+
+
+def test_config_fails_for_negative_thermo_soft_constraint_strength(tmp_path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "hidden_dim": 16,
+                "num_layers": 1,
+                "ipa_heads": 4,
+                "diffusion_steps": 4,
+                "flow_steps": 4,
+                "epochs": 1,
+                "learning_rate": 1e-3,
+                "method": "diffusion",
+                "thermo_backend": "rnafold",
+                "msa_backend": "mmseqs2",
+                "mmseqs_db": "/tmp/fake_db",
+                "thermo_soft_constraint_strength": -0.1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="thermo_soft_constraint_strength invalido"):
+        load_se3_train_config(
+            config,
+            stage="TEST",
+            location="tests/test_se3_losses.py:test_config_fails_for_negative_thermo_soft_constraint_strength",
+        )

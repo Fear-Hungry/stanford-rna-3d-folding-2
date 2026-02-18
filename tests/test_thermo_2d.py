@@ -230,3 +230,62 @@ def test_compute_thermo_bpp_viennarna_backend_shapes() -> None:
     assert set(out.keys()) == {"T1"}
     assert int(out["T1"].paired_marginal.numel()) == 9
     assert int(out["T1"].pair_src.numel()) > 0
+
+
+def test_compute_thermo_bpp_soft_constraints_reweight_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run_rnafold_pairs(*, sequence: str, target_id: str, rnafold_bin: str, stage: str, location: str) -> list[tuple[int, int, float]]:
+        return [(1, 6, 0.80), (2, 5, 0.70), (3, 4, 0.60)]
+
+    monkeypatch.setattr(thermo_2d, "_run_rnafold_pairs", _fake_run_rnafold_pairs)
+    targets = pl.DataFrame([{"target_id": "T1", "sequence": "ACGUAC", "temporal_cutoff": "2024-01-01"}])
+    chemical = pl.DataFrame(
+        [
+            {"target_id": "T1", "resid": 1, "p_open": 0.9, "p_paired": 0.1},
+            {"target_id": "T1", "resid": 2, "p_open": 0.9, "p_paired": 0.1},
+            {"target_id": "T1", "resid": 3, "p_open": 0.9, "p_paired": 0.1},
+            {"target_id": "T1", "resid": 4, "p_open": 0.9, "p_paired": 0.1},
+            {"target_id": "T1", "resid": 5, "p_open": 0.9, "p_paired": 0.1},
+            {"target_id": "T1", "resid": 6, "p_open": 0.9, "p_paired": 0.1},
+        ]
+    )
+    unconstrained = compute_thermo_bpp(
+        targets=targets,
+        backend="rnafold",
+        rnafold_bin="RNAfold",
+        linearfold_bin="linearfold",
+        cache_dir=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_soft_constraints_reweight_pairs:unconstrained",
+    )
+    constrained = compute_thermo_bpp(
+        targets=targets,
+        backend="rnafold",
+        rnafold_bin="RNAfold",
+        linearfold_bin="linearfold",
+        cache_dir=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_thermo_2d.py:test_compute_thermo_bpp_soft_constraints_reweight_pairs:constrained",
+        chemical_features=chemical,
+        soft_constraint_strength=1.0,
+    )
+    unconstrained_total = float(unconstrained["T1"].pair_prob.sum().item())
+    constrained_total = float(constrained["T1"].pair_prob.sum().item())
+    assert constrained_total < unconstrained_total
+
+
+def test_compute_thermo_bpp_soft_constraints_fail_without_chemical_features() -> None:
+    targets = pl.DataFrame([{"target_id": "T1", "sequence": "ACGU", "temporal_cutoff": "2024-01-01"}])
+    with pytest.raises(PipelineError, match="soft_constraint_strength > 0 exige chemical_features"):
+        compute_thermo_bpp(
+            targets=targets,
+            backend="rnafold",
+            rnafold_bin="RNAfold",
+            linearfold_bin="linearfold",
+            cache_dir=None,
+            chain_separator="|",
+            stage="TEST",
+            location="tests/test_thermo_2d.py:test_compute_thermo_bpp_soft_constraints_fail_without_chemical_features",
+            soft_constraint_strength=0.5,
+        )

@@ -1711,3 +1711,34 @@ Log append-only de mudancas implementadas.
   - `python -m rna3d_local minimize-ensemble --predictions <tmp>/pred.parquet --out <tmp>/pred_min.parquet --backend openmm --max-iterations 0` -> `ok` (pass-through com `refinement_steps=0` e coordenadas inalteradas)
 - Riscos conhecidos / follow-ups:
   - O bypass mantém `refinement_backend` com o backend solicitado e `refinement_steps=0`; consumidores devem usar `refinement_steps`/manifest para distinguir execução real de bypass.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-135 (QA químico SE(3) + soft constraints termodinâmicas)
+
+- Data UTC: `2026-02-18T13:05:25Z`
+- Plano: `PLAN-135`
+- Resumo:
+  - `rank-se3-ensemble` agora aceita `--chemical-features` e suporta termo de qualidade físico-químico (`chem_exposure_consistency`) no QA do ensemble, comparando exposição geométrica prevista vs exposição esperada de `p_open/p_paired`.
+  - `compute_thermo_bpp` passou a aceitar soft constraints químicas opt-in (`soft_constraint_strength`) com fail-fast:
+    - valida cobertura/intervalo de `p_open/p_paired`,
+    - aplica prior de pareamento em backends não-ViennaRNA por reweighting suave,
+    - aplica soft constraint de unpaired no backend `viennarna` quando disponível.
+  - Configuração de treino SE(3) ganhou `thermo_soft_constraint_strength` (default `0.0`, sem mudança de comportamento padrão) e o parâmetro foi propagado para treino, inferência e manifests.
+- Arquivos principais tocados:
+  - `src/rna3d_local/ensemble/qa_ranker_se3.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `src/rna3d_local/training/thermo_2d.py`
+  - `src/rna3d_local/training/dataset_se3.py`
+  - `src/rna3d_local/training/config_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `src/rna3d_local/se3_pipeline.py`
+  - `tests/test_qa_ranker_se3.py`
+  - `tests/test_thermo_2d.py`
+  - `tests/test_se3_losses.py`
+  - `PLANS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_qa_ranker_se3.py tests/test_thermo_2d.py tests/test_se3_losses.py tests/test_se3_pipeline.py` -> `25 passed`
+  - `pytest -q tests/test_minimization.py tests/test_model_confidence_extraction.py tests/test_chai1_runner_chain_separator.py tests/test_phase2_hybrid.py` -> `21 passed`
+  - `python -m compileall -q src` -> `ok`
+- Riscos conhecidos / follow-ups:
+  - O mapeamento energia<->reatividade no backend `viennarna` usa pseudoenergia linear simples; calibração fina por família RNA pode melhorar estabilidade/score.

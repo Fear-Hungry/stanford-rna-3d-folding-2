@@ -457,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
                 candidates_path=(repo / args.candidates).resolve(),
                 out_path=(repo / args.out).resolve(),
                 qa_config_path=None if args.qa_config is None else (repo / args.qa_config).resolve(),
+                chemical_features_path=(None if args.chemical_features is None else (repo / args.chemical_features).resolve()),
                 diversity_lambda=float(args.diversity_lambda),
             )
             _print_json({"ranked": str(out.ranked_path), "manifest": str(out.manifest_path)})

@@ -40,6 +40,7 @@ def load_training_graphs(
     location: str,
     thermo_num_workers: int = 1,
     msa_num_workers: int = 1,
+    thermo_soft_constraint_strength: float = 0.0,
 ) -> list[TargetGraph]:
     targets = _read_targets(targets_path, stage=stage, location=location)
     pairings = read_table(pairings_path, stage=stage, location=location)
@@ -57,6 +58,8 @@ def load_training_graphs(
         num_workers=int(thermo_num_workers),
         min_pair_prob=float(thermo_pair_min_prob),
         max_pairs_per_node=int(thermo_pair_max_per_node),
+        chemical_features=chemical,
+        soft_constraint_strength=float(thermo_soft_constraint_strength),
     )
     chem_mapping = compute_chemical_exposure_mapping(
         targets=targets,
@@ -117,6 +120,7 @@ def load_inference_graphs(
     location: str,
     thermo_num_workers: int = 1,
     msa_num_workers: int = 1,
+    thermo_soft_constraint_strength: float = 0.0,
 ) -> list[TargetGraph]:
     targets = _read_targets(targets_path, stage=stage, location=location)
     pairings = read_table(pairings_path, stage=stage, location=location)
@@ -133,6 +137,8 @@ def load_inference_graphs(
         num_workers=int(thermo_num_workers),
         min_pair_prob=float(thermo_pair_min_prob),
         max_pairs_per_node=int(thermo_pair_max_per_node),
+        chemical_features=chemical,
+        soft_constraint_strength=float(thermo_soft_constraint_strength),
     )
     chem_mapping = compute_chemical_exposure_mapping(
         targets=targets,

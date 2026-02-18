@@ -243,6 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     rank_se3.add_argument("--candidates", required=True)
     rank_se3.add_argument("--out", required=True)
     rank_se3.add_argument("--qa-config", default=None)
+    rank_se3.add_argument("--chemical-features", default=None)
     rank_se3.add_argument("--diversity-lambda", type=float, default=0.35)
 
     top5_se3 = subparsers.add_parser("select-top5-se3", help="Select diverse Top-5 from ranked SE(3) ensemble")
