@@ -2285,3 +2285,24 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q` passa.
   - `python -m rna3d_local check-submission ...` falha cedo com erro acionável quando `abs(coord) > 1000` por padrão.
   - Submissão exportada após centralização passa `check-submission` e não altera o score local materialmente (diferenças numéricas pequenas aceitáveis).
+
+## PLAN-140 - Kernel Kaggle: submissão dinâmica + fallback DRfold2 para alvos sem template TBM
+
+- Objetivo:
+  - Eliminar falhas de submissão por formato incorreto no rerun (hidden) garantindo que o notebook gere `submission.csv` a partir do `sample_submission.csv` do próprio rerun.
+  - Evitar crash do kernel quando existirem alvos sem cobertura TBM (templates contíguos com `tpl_len >= target_len`) usando um fallback explícito (DRfold2) apenas para esses alvos.
+- Hipótese:
+  - O modo prebuilt (submission pré-construída) é incompatível com o hidden rerun por divergência de chaves/IDs, gerando “incorrect format”.
+  - TBM estrito falha em targets do hidden sem template full-cover; um fallback controlado destrava a geração completa da submissão mantendo contratos estritos.
+- Mudanças:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`:
+    - remover dependência de submissão prebuilt como caminho padrão;
+    - particionar targets em `tbm_supported` vs `fallback` (por contiguidade e comprimento do template);
+    - executar `predict-tbm` apenas nos targets suportados;
+    - executar DRfold2 por alvo (runner externo) para targets fallback, parseando `C1'` e replicando em `model_id=1..5`;
+    - combinar predictions (TBM + DRfold2) e exportar via `rna3d_local export-submission`;
+    - bloquear submissão se `rna3d_local check-submission` falhar (fail-fast).
+- Critérios de aceite:
+  - Kernel Kaggle completa no rerun e escreve `/kaggle/working/submission.csv`.
+  - `python -m rna3d_local check-submission --sample <sample_submission.csv> --submission submission.csv` passa no ambiente Kaggle e local (após download do artefato).
+  - Em targets sem template válido para TBM, o notebook não crasha no `predict-tbm` e cobre 100% das chaves do sample via fallback DRfold2.

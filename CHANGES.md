@@ -1777,3 +1777,20 @@ Log append-only de mudancas implementadas.
   - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_hybrid_len68_centered/submission.csv` -> `ok=true`
 - Riscos conhecidos / follow-ups:
   - A centralizacao altera arredondamento ao exportar PDB/CSV em 3 casas decimais; pode causar micro-diferenças no proxy local, mas não deve afetar o score Kaggle (alinhamento rígido).
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-140 (kernel Kaggle: submissao dinâmica + fallback DRfold2)
+
+- Data UTC: `2026-02-18T17:01:09Z`
+- Plano: `PLAN-140`
+- Resumo:
+  - Corrigido bug de sintaxe no kernel Kaggle (`ipynb`) causado por escapes de JSON gerando caracteres de controle (ex.: newline literal) dentro de string literals no Python.
+  - Kernel passou a particionar targets por cobertura TBM e executar `predict-tbm` apenas para targets com template contíguo e `tpl_len >= target_len`.
+  - Adicionado fallback explícito via DRfold2 para targets sem cobertura TBM (gera coordenadas de `C1'` e replica em `model_id=1..5`), combinando as predictions antes do `export-submission`.
+  - DRfold2 agora é descoberto por filename (`DRfold_infer.py`) em `/kaggle/input`, reduzindo fragilidade de nomes de mount.
+- Arquivos principais tocados:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+  - `PLANS.md`
+- Validacao local executada:
+  - `python -Werror -c "import json; from pathlib import Path; nb=json.loads(Path('kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb').read_text('utf-8')); compile(nb['cells'][1]['source'],'nb_cell','exec'); print('syntax_ok')"` -> `syntax_ok`
+- Riscos conhecidos / follow-ups:
+  - Necessario validar no Kaggle rerun (hidden) que o fallback DRfold2 cobre todos os targets sem template TBM dentro do budget de tempo do notebook.
