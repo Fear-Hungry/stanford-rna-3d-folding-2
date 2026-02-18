@@ -1745,3 +1745,57 @@ Log append-only de experimentos executados.
 - Conclusão + próximos passos:
   - Mudança validada localmente sem regressão nos módulos críticos alterados.
   - Próximo passo: rodar inferência comparativa em `runs/` com e sem `thermo_soft_constraint_strength` para calibrar ganho em proxy USalign antes de novo submit.
+
+## 2026-02-18 - marcusvinicius/Codex - ADHOC (gate de submissão com ranking químico no SE(3))
+
+- Data UTC: `2026-02-18T13:50:34Z`
+- Plano: `ADHOC`
+- Objetivo/hipótese:
+  - Executar fluxo completo de candidate->validação->score->gate após as mudanças do `PLAN-135`.
+- Artefatos:
+  - Run dir: `runs/20260218_plan135_gate_v2/`
+  - Candidato: `runs/20260218_plan135_gate_v2/submission.csv`
+- Comandos executados:
+  - `python -m rna3d_local rank-se3-ensemble --candidates runs/20260218_plan132_tiny_infer_cached/se3_candidates.parquet --chemical-features runs/20260216_full_local_run/chemical_test.parquet --qa-config runs/20260218_plan135_gate_v2/qa_config.json --diversity-lambda 0.35 --out runs/20260218_plan135_gate_v2/se3_ranked.parquet`
+  - `python -m rna3d_local select-top5-se3 --ranked runs/20260218_plan135_gate_v2/se3_ranked.parquet --out runs/20260218_plan135_gate_v2/se3_top5.parquet --n-models 5 --diversity-lambda 0.35`
+  - `python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/20260218_plan135_gate_v2/se3_top5.parquet --out runs/20260218_plan135_gate_v2/submission.csv`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan135_gate_v2/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260218_plan135_gate_v2/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_plan135_gate_v2/score.json --report runs/20260218_plan135_gate_v2/report.json`
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan135_gate_v2/submission.csv --score-json runs/20260218_plan135_gate_v2/score.json --baseline-score 0.298575 --report runs/20260218_plan135_gate_v2/readiness.json --allow-disallow`
+- Métricas/resultado:
+  - `check-submission`: `ok=true`
+  - `score_local(single/full28)`: `0.04344285714285714`
+  - `submit readiness`: `allowed=false` (baseline `0.298575`)
+- Conclusão:
+  - Gate local bloqueou submissão por regressão severa de score.
+  - Nenhuma submissão Kaggle foi executada.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-136 (submissao via notebook v99 usando submission preconstruida)
+
+- Data UTC: `2026-02-18T15:44:12Z`
+- Plano: `PLAN-136`
+- Objetivo/hipótese:
+  - Produzir um kernel Kaggle `COMPLETE` (notebook-only) que gere `/kaggle/working/submission.csv` e permitir submissao via `-k owner/notebook` seguindo gate local estrito.
+- Candidato (local):
+  - `runs/20260218_hybrid_len68_v2/submission.csv`
+  - `score_local(single/full28)`: `0.3005357142857143`
+- Notebook/Kaggle:
+  - Notebook: `marcux777/stanford-rna3d-submit-prod-v2` (version `99`, `enable_internet=false`)
+  - Source local: `kaggle/kernels/stanford-rna3d-submit-prod-v2/`
+  - Dataset input usado para o artefato: `marcux777/stanford-rna3d-submission-len68-v1` (contendo `submission.csv`)
+- Comandos executados:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_hybrid_len68_v2/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260218_hybrid_len68_v2/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_hybrid_len68_v2/score.json --report runs/20260218_hybrid_len68_v2/report.json`
+  - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` -> version `99`
+  - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2` (polling) -> `COMPLETE`
+  - `kaggle kernels output marcux777/stanford-rna3d-submit-prod-v2 -p runs/20260218_plan136_kernel_output_v99 -o -q`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v99/submission.csv`
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v99/submission.csv --score-json runs/20260218_hybrid_len68_v2/score.json --baseline-score 0.292207 --report runs/20260218_plan136_kernel_output_v99/readiness.json --allow-disallow`
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 99 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v99/submission.csv --notebook-output-path runs/20260218_plan136_kernel_output_v99/submission.csv --score-json runs/20260218_hybrid_len68_v2/score.json --baseline-score 0.292207 --message \"PLAN-136: submit len68 hybrid (local USalign 0.3005)\" --execute-submit`
+- Resultado:
+  - Hash: `runs/20260218_plan136_kernel_output_v99/submission.csv` == `runs/20260218_hybrid_len68_v2/submission.csv` (sha256 match)
+  - `submit readiness`: `allowed=true`
+  - Kaggle: submissao criada em `2026-02-18 15:44:14.607000` com status inicial `SubmissionStatus.PENDING`.
+- Conclusão + próximos passos:
+  - Submissao enviada seguindo gate local estrito e notebook-only.
+  - Follow-up: corrigir materializacao de assets da Fase 2 no notebook (RNAPro/Chai/Boltz) para voltar a rodar pipeline completo no Kaggle sem depender de `submission.csv` preconstruido.

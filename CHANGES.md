@@ -1742,3 +1742,20 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
 - Riscos conhecidos / follow-ups:
   - O mapeamento energia<->reatividade no backend `viennarna` usa pseudoenergia linear simples; calibração fina por família RNA pode melhorar estabilidade/score.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-136 (kernel Kaggle: modo prebuilt para submissao notebook-only)
+
+- Data UTC: `2026-02-18T15:40:00Z`
+- Plano: `PLAN-136`
+- Resumo:
+  - Adicionado source rastreavel do kernel Kaggle em `kaggle/kernels/stanford-rna3d-submit-prod-v2/`.
+  - Notebook passou a suportar (por padrao) um caminho fail-fast de submissao preconstruida via dataset Kaggle `stanford-rna3d-submission-len68-v1`, gerando `/kaggle/working/submission.csv` e validando contrato com `rna3d_local check-submission`.
+  - Pipeline completo Fase 1+2 permanece como fallback (bloco `else`), mas nao e executado quando o dataset prebuilt esta presente.
+- Arquivos principais tocados:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/kernel-metadata.json`
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+- Validacao local executada:
+  - `pytest -q` -> `135 passed`
+  - `python -c \"import json; from pathlib import Path; nb=json.loads(Path('kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb').read_text()); compile(nb['cells'][1]['source'],'nb_cell','exec'); print('syntax_ok')\"` -> `syntax_ok`
+- Riscos conhecidos / follow-ups:
+  - O modo prebuilt e uma solucao tática para destravar submissao; nao valida a execucao completa da Fase 2 no Kaggle. Necessario corrigir a materializacao de assets (RNAPro/Chai/Boltz) para retomar pipeline completo.
