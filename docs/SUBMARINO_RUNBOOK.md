@@ -21,6 +21,8 @@ E **use exatamente essa versão de Python** no wheelhouse (o projeto exige `>=3.
 
 Gera wheels para instalar no Kaggle sem internet (o profile `phase2` inclui `boltz`, `chai_lab`, `rdkit`, etc.). Por design, o wheelhouse **não** puxa `torch/numpy/pandas` por padrão (assume que o Kaggle já fornece).
 
+Para pipeline SE(3) competitivo (`training_protocol=local_16gb`), inclua tambem `torch_geometric` + `torch_cluster` no wheelhouse/dataset offline. O backend de grafo nesse protocolo e fail-fast e exige `graph_backend=torch_geometric`.
+
 ```bash
 python -m rna3d_local build-wheelhouse \
   --wheels-dir export/kaggle_wheels \
@@ -186,6 +188,7 @@ Observações importantes:
 Checklist fail-fast sugerido (antes de rodar o pipeline pesado):
 - `python --version` (deve ser compatível com o wheelhouse e com `requires-python>=3.11`)
 - `python -c "import torch; print(torch.__version__)"` (torch deve existir no ambiente)
+- `python -c "import torch_geometric, torch_cluster; print('pyg-ok')"` (obrigatorio para SE(3) competitivo)
 - `python -m rna3d_local --help` (garante que o pacote foi carregado corretamente)
 
 ## Submissão (notebook-only)

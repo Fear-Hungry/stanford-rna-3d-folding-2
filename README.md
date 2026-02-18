@@ -47,9 +47,12 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
   - `flash`: usa `scaled_dot_product_attention` (FlashAttention-2 quando backend CUDA suportar) e aceita `use_gradient_checkpointing=true`;
   - `mamba_like`: bloco SSM causal simplificado com memoria linear.
 - `graph_backend`:
-  - `torch_sparse`: radius graph com `torch.sparse` e processamento em chunks (`graph_chunk_size`);
-  - `torch_geometric`: usa `torch_geometric.nn.radius_graph` (falha cedo se dependencias extras nao estiverem instaladas).
-  - `torch_sparse` evita matriz de distancias densa NxN e usa busca de vizinhos espacial (ou `torch_cluster.radius_graph` quando disponivel).
+  - `torch_geometric`: usa `torch_geometric.nn.radius_graph` (falha cedo se dependencias extras nao estiverem instaladas);
+  - `torch_sparse`: backend alternativo para experimentos nao-competitivos.
+  - no protocolo `local_16gb`, `torch_geometric` e obrigatorio por contrato.
+- `ipa_edge_chunk_size`:
+  - controla chunking de arestas no IPA para reduzir pico de VRAM;
+  - no protocolo `local_16gb`, deve ser `<= 256`.
 - `thermo_backend`:
   - `rnafold`: usa ViennaRNA (`RNAfold -p`) para extrair BPP do ensemble de Boltzmann;
   - `linearfold`: executa `linearfold --bpp` para obter pares/probabilidades;
@@ -82,10 +85,11 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
   "sequence_tower": "mamba_like",
   "sequence_heads": 8,
   "use_gradient_checkpointing": true,
-  "graph_backend": "torch_sparse",
+  "graph_backend": "torch_geometric",
   "radius_angstrom": 14.0,
   "max_neighbors": 64,
   "graph_chunk_size": 512,
+  "ipa_edge_chunk_size": 128,
   "thermo_backend": "rnafold",
   "rnafold_bin": "RNAfold",
   "linearfold_bin": "linearfold",
@@ -123,7 +127,9 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - Sem fallback silencioso: falhas de contrato interrompem execucao.
 - `training_protocol=local_16gb` aplica contrato estrito para treino local:
   - `dynamic_cropping=true`;
+  - `graph_backend=torch_geometric`;
   - `crop_min_length/crop_max_length` em `[256,384]`;
+  - `ipa_edge_chunk_size <= 256`;
   - `use_gradient_checkpointing=true`;
   - `autocast_bfloat16=true`;
   - `gradient_accumulation_steps` em `[16,32]`.
