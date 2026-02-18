@@ -64,6 +64,22 @@ def _base_from_resname(resname: str) -> str:
     return mapping.get(name, name[:1] if name else "")
 
 
+def _normalize_plddt(raw: float, *, stage: str, location: str, target_id: str) -> float:
+    value = float(raw)
+    if not value == value:  # NaN
+        raise_error(stage, location, "pLDDT do boltz1 e NaN", impact="1", examples=[target_id])
+    if value < 0.0:
+        raise_error(stage, location, "pLDDT do boltz1 negativo", impact="1", examples=[target_id, str(raw)])
+    if value > 1.0:
+        if value <= 100.0:
+            value = value / 100.0
+        else:
+            raise_error(stage, location, "pLDDT do boltz1 fora do intervalo esperado", impact="1", examples=[target_id, str(raw)])
+    if value < 0.0 or value > 1.0:
+        raise_error(stage, location, "pLDDT do boltz1 apos normalizacao fora de [0,1]", impact="1", examples=[target_id, str(value)])
+    return float(value)
+
+
 def _extract_c1_from_pdb(
     *,
     pdb_path: Path,
@@ -72,7 +88,7 @@ def _extract_c1_from_pdb(
     stage: str,
     location: str,
     target_id: str,
-) -> list[tuple[str, float, float, float]]:
+) -> tuple[list[tuple[str, float, float, float]], float]:
     text = pdb_path.read_text(encoding="utf-8", errors="replace").splitlines()
     residue_order: list[tuple[str, str, str]] = []
     residue_info: dict[tuple[str, str, str], dict[str, object]] = {}
@@ -96,12 +112,15 @@ def _extract_c1_from_pdb(
             x = float(line[30:38])
             y = float(line[38:46])
             z = float(line[46:54])
+            plddt = float(line[60:66].strip())
         except Exception:
             continue
         residue_info[key]["c1"] = (x, y, z)
+        residue_info[key]["plddt"] = float(plddt)
         residue_info[key]["resname"] = resname
 
     out: list[tuple[str, float, float, float]] = []
+    plddt_values: list[float] = []
     for chain_id, expected_seq in zip(chain_order, expected_seq_by_chain, strict=True):
         keys = [k for k in residue_order if k[0] == chain_id]
         if len(keys) != len(expected_seq):
@@ -116,6 +135,8 @@ def _extract_c1_from_pdb(
             info = residue_info.get(k)
             if info is None or info.get("c1") is None:
                 raise_error(stage, location, "atomo C1' ausente no boltz", impact="1", examples=[f"{target_id}:{chain_id}:{idx}", str(pdb_path)])
+            if "plddt" not in info:
+                raise_error(stage, location, "pLDDT ausente no C1' do boltz", impact="1", examples=[f"{target_id}:{chain_id}:{idx}", str(pdb_path)])
             base = _base_from_resname(str(info.get("resname", "")))
             if base != expected_base:
                 raise_error(
@@ -126,8 +147,17 @@ def _extract_c1_from_pdb(
                     examples=[f"{target_id}:{chain_id}:{idx}", f"expected={expected_base}", f"actual={info.get('resname')}"],
                 )
             x, y, z = info["c1"]  # type: ignore[assignment]
+            plddt_values.append(float(info["plddt"]))
             out.append((base, float(x), float(y), float(z)))
-    return out
+    if not plddt_values:
+        raise_error(stage, location, "boltz1 sem pLDDT para calcular confidence", impact="1", examples=[target_id, str(pdb_path)])
+    confidence = _normalize_plddt(
+        sum(plddt_values) / float(len(plddt_values)),
+        stage=stage,
+        location=location,
+        target_id=target_id,
+    )
+    return out, confidence
 
 
 def _ensure_boltz_cache(
@@ -252,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
 
             pdbs = sorted(pdbs, key=_rank_key)[:n_models]
             for model_id, pdb_path in enumerate(pdbs, start=1):
-                coords = _extract_c1_from_pdb(
+                coords, confidence = _extract_c1_from_pdb(
                     pdb_path=pdb_path,
                     chain_order=chain_order,
                     expected_seq_by_chain=seq_parts,
@@ -271,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
                             "y": float(y),
                             "z": float(z),
                             "source": "boltz1",
-                            "confidence": 0.74,
+                            "confidence": float(confidence),
                         }
                     )
 
@@ -282,4 +312,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

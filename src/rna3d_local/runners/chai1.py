@@ -57,6 +57,22 @@ def _base_from_resname(resname: str) -> str:
     return mapping.get(name, name[:1] if name else "")
 
 
+def _normalize_plddt(raw: float, *, stage: str, location: str, target_id: str) -> float:
+    value = float(raw)
+    if not value == value:  # NaN
+        raise_error(stage, location, "pLDDT do chai1 e NaN", impact="1", examples=[target_id])
+    if value < 0.0:
+        raise_error(stage, location, "pLDDT do chai1 negativo", impact="1", examples=[target_id, str(raw)])
+    if value > 1.0:
+        if value <= 100.0:
+            value = value / 100.0
+        else:
+            raise_error(stage, location, "pLDDT do chai1 fora do intervalo esperado", impact="1", examples=[target_id, str(raw)])
+    if value < 0.0 or value > 1.0:
+        raise_error(stage, location, "pLDDT do chai1 apos normalizacao fora de [0,1]", impact="1", examples=[target_id, str(value)])
+    return float(value)
+
+
 def _extract_c1_from_cif(
     *,
     cif_path: Path,
@@ -65,7 +81,7 @@ def _extract_c1_from_cif(
     stage: str,
     location: str,
     target_id: str,
-) -> list[tuple[str, float, float, float]]:
+) -> tuple[list[tuple[str, float, float, float]], float]:
     try:
         import gemmi  # type: ignore
     except Exception as exc:  # noqa: BLE001
@@ -83,6 +99,7 @@ def _extract_c1_from_cif(
         raise_error(stage, location, "cadeias esperadas ausentes no mmcif do chai1", impact=str(len(missing)), examples=[target_id, *missing[:6]])
 
     out: list[tuple[str, float, float, float]] = []
+    plddt_values: list[float] = []
     for chain_id, expected_seq in zip(expected_chains, expected_seq_by_chain, strict=True):
         chain = chain_map[chain_id]
         residues = [res for res in chain if res is not None]
@@ -113,8 +130,17 @@ def _extract_c1_from_cif(
             if atom is None:
                 raise_error(stage, location, "atomo C1' ausente no chai1", impact="1", examples=[f"{target_id}:{chain_id}:{idx}", res.name])
             pos = atom.pos
+            plddt_values.append(float(atom.b_iso))
             out.append((base, float(pos.x), float(pos.y), float(pos.z)))
-    return out
+    if not plddt_values:
+        raise_error(stage, location, "chai1 sem pLDDT para calcular confidence", impact="1", examples=[target_id, str(cif_path)])
+    confidence = _normalize_plddt(
+        sum(plddt_values) / float(len(plddt_values)),
+        stage=stage,
+        location=location,
+        target_id=target_id,
+    )
+    return out, confidence
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -201,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
 
             # Use the first N candidates (already includes diffusion samples).
             for model_id, cif_path in enumerate(cif_paths[:n_models], start=1):
-                coords = _extract_c1_from_cif(
+                coords, confidence = _extract_c1_from_cif(
                     cif_path=cif_path,
                     expected_chains=expected_chains,
                     expected_seq_by_chain=expected_seq_by_chain,
@@ -220,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                             "y": float(y),
                             "z": float(z),
                             "source": "chai1",
-                            "confidence": 0.78,
+                            "confidence": float(confidence),
                         }
                     )
 
