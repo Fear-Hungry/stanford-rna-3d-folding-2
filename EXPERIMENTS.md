@@ -1799,3 +1799,30 @@ Log append-only de experimentos executados.
 - Conclusão + próximos passos:
   - Submissao enviada seguindo gate local estrito e notebook-only.
   - Follow-up: corrigir materializacao de assets da Fase 2 no notebook (RNAPro/Chai/Boltz) para voltar a rodar pipeline completo no Kaggle sem depender de `submission.csv` preconstruido.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-137 (fix de formato Kaggle: centralizar coordenadas e resubmeter)
+
+- Data UTC: `2026-02-18T16:02:18Z`
+- Plano: `PLAN-137`
+- Objetivo/hipótese:
+  - Corrigir rejeição do Kaggle por valores fora de faixa (grande translação global em um alvo específico), sem mudar topologia relativa.
+- Diagnóstico:
+  - Submission anterior tinha `abs(coord) > 1000` para o alvo `9MME` (ex.: `z_5` ~ `1373.934`), o que pode disparar validação de formato/valores do Kaggle.
+- Candidato corrigido:
+  - Centralização por `target_id` (subtrair média) aplicada em `runs/20260218_hybrid_len68_centered/submission.csv`.
+  - `max_abs` após centralização: `~753.01`.
+- Comandos executados:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_hybrid_len68_centered/submission.csv`
+  - `TMPDIR=$PWD/.tmp python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260218_hybrid_len68_centered/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_hybrid_len68_centered/score.json --report runs/20260218_hybrid_len68_centered/report.json`
+  - `kaggle datasets version -p runs/20260218_plan136_prebuilt_dataset -m "PLAN-136: center coords to satisfy kaggle bounds"`
+  - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` -> version `100`
+  - `kaggle kernels output marcux777/stanford-rna3d-submit-prod-v2 -p runs/20260218_plan136_kernel_output_v100 -o -q`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv`
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 100 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv --notebook-output-path runs/20260218_plan136_kernel_output_v100/submission.csv --score-json runs/20260218_hybrid_len68_centered/score.json --baseline-score 0.292207 --message "PLAN-136: resubmit len68 centered (format fix)" --execute-submit`
+- Métricas/resultado:
+  - `score_local(single/full28)`: `0.30097500000000005`
+  - Gate: `allowed=true` (baseline `0.292207`)
+  - Kaggle: submissao criada em `2026-02-18 16:02:20.213000` com status inicial `SubmissionStatus.PENDING`.
+- Conclusão + próximos passos:
+  - Rejeição por formato/valores deve estar resolvida ao manter `abs(coord)` dentro do bound via centralização.
+  - Próximo passo: quando o Kaggle finalizar, verificar `publicScore` e comparar com `0.261` do baseline anterior.

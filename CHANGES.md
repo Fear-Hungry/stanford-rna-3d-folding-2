@@ -1759,3 +1759,21 @@ Log append-only de mudancas implementadas.
   - `python -c \"import json; from pathlib import Path; nb=json.loads(Path('kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb').read_text()); compile(nb['cells'][1]['source'],'nb_cell','exec'); print('syntax_ok')\"` -> `syntax_ok`
 - Riscos conhecidos / follow-ups:
   - O modo prebuilt e uma solucao tática para destravar submissao; nao valida a execucao completa da Fase 2 no Kaggle. Necessario corrigir a materializacao de assets (RNAPro/Chai/Boltz) para retomar pipeline completo.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-137 (bounds estritos + centralizacao de coordenadas na exportacao)
+
+- Data UTC: `2026-02-18T16:00:00Z`
+- Plano: `PLAN-137`
+- Resumo:
+  - `check-submission` passou a validar bounds estritos por default (`abs(coord) <= 1000`, configuravel via `RNA3D_SUBMISSION_COORD_ABS_MAX`), evitando que o Kaggle rejeite submissions por valores fora de faixa.
+  - `export-submission` passou a centralizar coordenadas por `(target_id, model_id)` (apenas translação), reduzindo risco de coordenadas fora de bounds sem alterar geometria relativa.
+- Arquivos principais tocados:
+  - `src/rna3d_local/contracts.py`
+  - `src/rna3d_local/submission.py`
+  - `tests/test_description_and_submission.py`
+  - `PLANS.md`
+- Validacao local executada:
+  - `pytest -q` -> `135 passed`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_hybrid_len68_centered/submission.csv` -> `ok=true`
+- Riscos conhecidos / follow-ups:
+  - A centralizacao altera arredondamento ao exportar PDB/CSV em 3 casas decimais; pode causar micro-diferenças no proxy local, mas não deve afetar o score Kaggle (alinhamento rígido).
