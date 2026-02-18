@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 from pathlib import Path
 
 import polars as pl
@@ -49,6 +50,14 @@ def parse_date_column(df: pl.DataFrame, column: str, *, stage: str, location: st
 def validate_submission_against_sample(*, sample_path: Path, submission_path: Path) -> pl.DataFrame:
     location = "src/rna3d_local/contracts.py:validate_submission_against_sample"
     stage = "CHECK_SUBMISSION"
+
+    coord_abs_max_raw = os.environ.get("RNA3D_SUBMISSION_COORD_ABS_MAX", "1000").strip()
+    try:
+        coord_abs_max = float(coord_abs_max_raw)
+    except Exception:
+        raise_error(stage, location, "RNA3D_SUBMISSION_COORD_ABS_MAX invalido", impact="1", examples=[coord_abs_max_raw])
+    if not math.isfinite(coord_abs_max) or coord_abs_max <= 0:
+        raise_error(stage, location, "RNA3D_SUBMISSION_COORD_ABS_MAX invalido", impact="1", examples=[coord_abs_max_raw])
 
     try:
         with sample_path.open("r", encoding="utf-8", newline="") as f_sample, submission_path.open("r", encoding="utf-8", newline="") as f_sub:
@@ -116,8 +125,8 @@ def validate_submission_against_sample(*, sample_path: Path, submission_path: Pa
                         continue
                     if not math.isfinite(numeric):
                         bad_values.append(f"{col_name}@{row_index}:non-finite")
-                    elif abs(numeric) > 1e6:
-                        bad_values.append(f"{col_name}@{row_index}:out-of-range")
+                    elif abs(numeric) > coord_abs_max:
+                        bad_values.append(f"{col_name}@{row_index}:abs>{coord_abs_max:g}")
                     if len(bad_values) >= 8:
                         stop_early_for_bad_coords = True
                         break

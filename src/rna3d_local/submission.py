@@ -123,6 +123,28 @@ def _load_target_pred_map(
         if mid in per_resid:
             raise_error(stage, location, "predictions com chave duplicada no target", impact="1", examples=[f"{target_id}:{mid}:{resid}"])
         per_resid[mid] = (x, y, z)
+
+    # Center coordinates per target/model (translation-only). This keeps values within Kaggle
+    # validation bounds without changing relative geometry (TM-score is translation-invariant).
+    sums: dict[int, list[float]] = {int(mid): [0.0, 0.0, 0.0] for mid in model_ids}
+    counts: dict[int, int] = {int(mid): 0 for mid in model_ids}
+    for per_resid in coords.values():
+        for mid, (x, y, z) in per_resid.items():
+            sums[int(mid)][0] += float(x)
+            sums[int(mid)][1] += float(y)
+            sums[int(mid)][2] += float(z)
+            counts[int(mid)] += 1
+    means: dict[int, tuple[float, float, float]] = {}
+    for mid in model_ids:
+        c = int(counts[int(mid)])
+        if c <= 0:
+            raise_error(stage, location, "predictions sem coordenadas para model_id (center)", impact="1", examples=[f"{target_id}:{mid}"])
+        sx, sy, sz = sums[int(mid)]
+        means[int(mid)] = (sx / c, sy / c, sz / c)
+    for per_resid in coords.values():
+        for mid, (x, y, z) in list(per_resid.items()):
+            mx, my, mz = means[int(mid)]
+            per_resid[int(mid)] = (float(x) - mx, float(y) - my, float(z) - mz)
     return coords
 
 
@@ -247,6 +269,22 @@ def export_submission(
         pl.col("x").cast(pl.Float64),
         pl.col("y").cast(pl.Float64),
         pl.col("z").cast(pl.Float64),
+    )
+
+    # Center per (target_id, model_id) to avoid out-of-bounds translations in strict Kaggle validators.
+    means = pred.group_by(["target_id", "model_id"]).agg(
+        pl.mean("x").alias("_mx"),
+        pl.mean("y").alias("_my"),
+        pl.mean("z").alias("_mz"),
+    )
+    pred = (
+        pred.join(means, on=["target_id", "model_id"], how="left")
+        .with_columns(
+            (pl.col("x") - pl.col("_mx")).alias("x"),
+            (pl.col("y") - pl.col("_my")).alias("y"),
+            (pl.col("z") - pl.col("_mz")).alias("z"),
+        )
+        .drop(["_mx", "_my", "_mz"])
     )
     key_dup = pred.group_by(["target_id", "model_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
     if key_dup.height > 0:

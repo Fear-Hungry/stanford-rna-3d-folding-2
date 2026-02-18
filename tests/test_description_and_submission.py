@@ -86,3 +86,10 @@ def test_export_and_check_submission_strict(tmp_path: Path) -> None:
     bad.write_csv(bad_path)
     with pytest.raises(PipelineError, match="coordenadas invalidas"):
         check_submission(sample_path=sample, submission_path=bad_path)
+
+    bad2 = pl.read_csv(submission)
+    bad2 = bad2.with_columns(pl.lit(2000.0).alias("x_1"))
+    bad2_path = tmp_path / "bad_submission_oor.csv"
+    bad2.write_csv(bad2_path)
+    with pytest.raises(PipelineError, match="coordenadas invalidas"):
+        check_submission(sample_path=sample, submission_path=bad2_path)

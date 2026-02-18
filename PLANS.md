@@ -2270,3 +2270,18 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q tests/test_thermo_2d.py tests/test_se3_pipeline.py` passa.
   - `pytest -q` dos testes novos passa sem regressões locais.
   - comportamento default (sem parâmetro novo) preservado.
+
+## PLAN-137 - Sanitização de submissão (centralização) + validação estrita de bounds
+
+- Objetivo:
+  - Evitar rejeição do Kaggle por valores de coordenadas fora de bounds (mesmo quando a topologia relativa está correta), sem degradar a geometria relativa.
+- Hipótese:
+  - Alguns modelos podem emitir estruturas com grande translação global (offset) que não afeta TM-score (invariante a translação), mas pode violar validadores de formato/valores do Kaggle.
+- Mudanças:
+  - `contracts.validate_submission_against_sample` deve validar coordenadas finitas e `abs(coord) <= RNA3D_SUBMISSION_COORD_ABS_MAX` (default `1000`) em modo strict por padrão.
+  - `submission.export_submission` (streaming e não-streaming) deve centralizar (subtrair média) as coordenadas por `(target_id, model_id)` antes de exportar CSV.
+  - Testes cobrindo falha por out-of-range e export centrado.
+- Critérios de aceite:
+  - `pytest -q` passa.
+  - `python -m rna3d_local check-submission ...` falha cedo com erro acionável quando `abs(coord) > 1000` por padrão.
+  - Submissão exportada após centralização passa `check-submission` e não altera o score local materialmente (diferenças numéricas pequenas aceitáveis).
