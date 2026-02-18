@@ -274,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     mini.add_argument("--predictions", required=True)
     mini.add_argument("--out", required=True)
     mini.add_argument("--backend", choices=["openmm", "pyrosetta"], default="openmm")
-    mini.add_argument("--max-iterations", type=int, default=80)
+    mini.add_argument("--max-iterations", type=int, default=80, help="0 desativa minimizacao; faixa valida: 0..100")
     mini.add_argument("--bond-length-angstrom", type=float, default=5.9)
     mini.add_argument("--bond-force-k", type=float, default=60.0)
     mini.add_argument("--angle-force-k", type=float, default=8.0)

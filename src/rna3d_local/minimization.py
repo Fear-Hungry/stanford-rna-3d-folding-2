@@ -163,11 +163,13 @@ def minimize_ensemble(
     stage = "MINIMIZE_ENSEMBLE"
     location = "src/rna3d_local/minimization.py:minimize_ensemble"
     backend_name = str(backend).strip().lower()
+    max_iterations_int = int(max_iterations)
+    minimization_enabled = bool(max_iterations_int > 0)
     if backend_name not in {"openmm", "pyrosetta"}:
         raise_error(stage, location, "backend de minimizacao invalido", impact="1", examples=[str(backend)])
-    if int(max_iterations) <= 0:
-        raise_error(stage, location, "max_iterations deve ser > 0", impact="1", examples=[str(max_iterations)])
-    if int(max_iterations) > 100:
+    if max_iterations_int < 0:
+        raise_error(stage, location, "max_iterations deve ser >= 0", impact="1", examples=[str(max_iterations)])
+    if max_iterations_int > 100:
         raise_error(stage, location, "max_iterations deve ser <= 100 para relaxacao curta", impact="1", examples=[str(max_iterations)])
     if float(bond_length_angstrom) <= 0.0:
         raise_error(stage, location, "bond_length_angstrom invalido", impact="1", examples=[str(bond_length_angstrom)])
@@ -208,11 +210,11 @@ def minimize_ensemble(
         if not np.isfinite(coords).all():
             raise_error(stage, location, "coordenadas invalidas antes da minimizacao", impact="1", examples=[f"{target_id}:{model_id}"])
         residues = part.get_column("resid").cast(pl.Int64).to_numpy()
-        if backend_name == "openmm":
+        if minimization_enabled and backend_name == "openmm":
             minimized = _minimize_openmm(
                 coords_angstrom=np.asarray(coords, dtype=np.float64),
                 residue_index=np.asarray(residues, dtype=np.int64),
-                max_iterations=int(max_iterations),
+                max_iterations=max_iterations_int,
                 bond_length_angstrom=float(bond_length_angstrom),
                 bond_force_k=float(bond_force_k),
                 angle_force_k=float(angle_force_k),
@@ -224,8 +226,10 @@ def minimize_ensemble(
                 stage=stage,
                 location=location,
             )
-        else:
+        elif minimization_enabled:
             minimized = _minimize_pyrosetta(coords_angstrom=np.asarray(coords, dtype=np.float64), stage=stage, location=location)
+        else:
+            minimized = np.asarray(coords, dtype=np.float64)
         if minimized.shape != coords.shape:
             raise_error(stage, location, "backend de minimizacao retornou shape invalido", impact="1", examples=[f"{target_id}:{model_id}:{minimized.shape}!={coords.shape}"])
         if not np.isfinite(minimized).all():
@@ -240,7 +244,7 @@ def minimize_ensemble(
                 pl.Series("y", minimized[:, 1]),
                 pl.Series("z", minimized[:, 2]),
                 pl.lit(str(backend_name)).alias("refinement_backend"),
-                pl.lit(int(max_iterations)).alias("refinement_steps"),
+                pl.lit(max_iterations_int).alias("refinement_steps"),
                 pl.lit(float(position_restraint_k)).alias("refinement_position_restraint_k"),
             ]
         )
@@ -261,7 +265,8 @@ def minimize_ensemble(
                 "predictions_out": rel_or_abs(out_path, repo_root),
             },
             "params": {
-                "max_iterations": int(max_iterations),
+                "max_iterations": max_iterations_int,
+                "minimization_enabled": minimization_enabled,
                 "bond_length_angstrom": float(bond_length_angstrom),
                 "bond_force_k": float(bond_force_k),
                 "angle_force_k": float(angle_force_k),

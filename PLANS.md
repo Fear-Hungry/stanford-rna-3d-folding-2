@@ -2214,3 +2214,35 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q` passa.
   - `IpaBackbone` produz saídas finitas e estáveis com chunking de arestas.
   - `load_se3_train_config` bloqueia `local_16gb` fora do contrato novo com erro acionável.
+
+## PLAN-133 - Minimização opcional explícita (`max_iterations=0`)
+
+- Objetivo:
+  - Permitir desabilitar a etapa `minimize-ensemble` de forma explícita sem fallback silencioso, preservando contrato estrito do pipeline.
+- Hipótese:
+  - Pular minimização coarse-grained em predições C1' evita distorções geométricas indesejadas e reduz risco de regressão de score.
+- Mudanças:
+  - `minimize_ensemble` deve aceitar `max_iterations=0` como bypass explícito (sem chamar backend OpenMM/PyRosetta).
+  - Manter fail-fast para valores inválidos (`max_iterations < 0` e `max_iterations > 100`).
+  - Atualizar testes para cobrir bypass sem backend e validação de erro.
+  - Atualizar ajuda/documentação para deixar claro que `0` desativa a minimização.
+- Critérios de aceite:
+  - `pytest -q tests/test_minimization.py` passa.
+  - `max_iterations=0` retorna saída válida com coordenadas inalteradas e sem invocar backend.
+  - Erros de contrato continuam acionáveis no padrão do repositório.
+
+## PLAN-134 - Confidence dinâmica em Chai-1/Boltz-1 (pLDDT real)
+
+- Objetivo:
+  - Remover `confidence` hardcoded e usar pLDDT real por alvo/modelo para melhorar a seleção híbrida.
+- Hipótese:
+  - `hybrid_select` depende de `confidence`; sem sinal dinâmico por alvo, a poda/mix do ensemble perde qualidade.
+- Mudanças:
+  - `runners/chai1.py`: extrair `atom.b_iso` do C1' no mmCIF e calcular média por estrutura.
+  - `runners/boltz1.py`: extrair B-factor da coluna 61-66 do PDB no átomo C1' e calcular média por estrutura.
+  - Normalizar faixas `[0,1]` e `[0,100]` para `[0,1]`, com fail-fast para NaN/fora de faixa.
+  - Cobrir via testes unitários de extração e normalização.
+- Critérios de aceite:
+  - `pytest -q tests/test_model_confidence_extraction.py` passa.
+  - `predict-chai1-offline` e `predict-boltz1-offline` geram `confidence` dinâmico no parquet long.
+  - Valores inválidos de pLDDT falham cedo com erro acionável.

@@ -144,3 +144,59 @@ def test_minimize_ensemble_fails_when_iterations_exceed_budget(tmp_path: Path) -
             position_restraint_k=800.0,
             openmm_platform=None,
         )
+
+
+def test_minimize_ensemble_allows_zero_iterations_and_skips_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _forbidden_minimize_openmm(**kwargs: object) -> np.ndarray:
+        raise AssertionError("openmm backend nao deve ser chamado quando max_iterations=0")
+
+    monkeypatch.setattr(minimization, "_minimize_openmm", _forbidden_minimize_openmm)
+
+    pred = tmp_path / "pred.parquet"
+    out = tmp_path / "pred_passthrough.parquet"
+    _write_predictions(pred)
+    result = minimize_ensemble(
+        repo_root=tmp_path,
+        predictions_path=pred,
+        out_path=out,
+        backend="openmm",
+        max_iterations=0,
+        bond_length_angstrom=5.9,
+        bond_force_k=60.0,
+        angle_force_k=8.0,
+        angle_target_deg=120.0,
+        vdw_min_distance_angstrom=2.1,
+        vdw_epsilon=0.2,
+        position_restraint_k=800.0,
+        openmm_platform=None,
+    )
+    refined = pl.read_parquet(result.predictions_path).sort(["target_id", "model_id", "resid"])
+    original = pl.read_parquet(pred).sort(["target_id", "model_id", "resid"])
+    assert np.allclose(
+        refined.select(["x", "y", "z"]).to_numpy(),
+        original.select(["x", "y", "z"]).to_numpy(),
+    )
+    assert refined.get_column("refinement_steps").n_unique() == 1
+    assert int(refined.get_column("refinement_steps")[0]) == 0
+    assert refined.filter(pl.col("refinement_backend") != "openmm").height == 0
+
+
+def test_minimize_ensemble_fails_when_iterations_negative(tmp_path: Path) -> None:
+    pred = tmp_path / "pred.parquet"
+    _write_predictions(pred)
+    with pytest.raises(PipelineError, match="max_iterations deve ser >= 0"):
+        minimize_ensemble(
+            repo_root=tmp_path,
+            predictions_path=pred,
+            out_path=tmp_path / "out.parquet",
+            backend="openmm",
+            max_iterations=-1,
+            bond_length_angstrom=5.9,
+            bond_force_k=60.0,
+            angle_force_k=8.0,
+            angle_target_deg=120.0,
+            vdw_min_distance_angstrom=2.1,
+            vdw_epsilon=0.2,
+            position_restraint_k=800.0,
+            openmm_platform=None,
+        )

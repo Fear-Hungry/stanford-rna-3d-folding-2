@@ -138,8 +138,8 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - `backend=rules` e `ann_engine=numpy_bruteforce` continuam opcoes de teste local explicito.
 - `build-homology-folds` aplica estratificacao de dominio por padrao (falha cedo sem fonte de dominio valida).
 - `evaluate-homology-folds` prioriza score de orphans com ponderacao explicita (`orphan_weight`) e exige classificacao orphan valida.
-- `minimize-ensemble` deve ser executado antes de `export-submission`; `backend=openmm` falha cedo se dependencia/plataforma estiver indisponivel.
-- `minimize-ensemble` roda em regime curto (`max_iterations <= 100`) com restraints harmonicas fortes (`position_restraint_k`) para preservar macro-topologia.
+- `minimize-ensemble` e opcional antes de `export-submission`; use `--max-iterations 0` para bypass explicito (sem chamada ao backend).
+- Quando habilitada, a minimizacao roda em regime curto (`0 <= max_iterations <= 100`) e `backend=openmm` falha cedo se dependencia/plataforma estiver indisponivel.
 - `score-local-bestof5` usa o binario C++ do USalign para reproduzir Best-of-5 localmente e gerar `score.json` estrito para gating de submissao.
 - O caminho padrao competitivo usa `encoder=ribonanzanet2`, `backend=llama_cpp` e `ann_engine=faiss_ivfpq`.
 - FASE 2 usa roteamento deterministico:

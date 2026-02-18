@@ -1670,3 +1670,50 @@ Log append-only de experimentos executados.
 - Conclusao:
   - Pipeline completo de inferencia executado sem OOM na GPU de 16GB.
   - Pendencia aberta: estabilizar treino longo (erro de grafo vazio) para concluir ciclo full-train sem interrupcao.
+
+## 2026-02-18 - marcusvinicius/Codex - ADHOC (submit notebook-only v77 com gate estrito)
+
+- Data UTC: `2026-02-18T01:08:26Z`
+- Plano: `ADHOC`
+- Objetivo:
+  - Submeter candidato notebook-only no Kaggle somente apos gate local estrito (contrato + melhoria de score).
+- Artefato candidato:
+  - `runs/20260216_submit_attempt/notebook_output/submission.csv`
+- Validacao local executada:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_submit_attempt/notebook_output/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260216_submit_attempt/notebook_output/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_submit_ready_candidate/score.json --report runs/20260218_submit_ready_candidate/report.json`
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_submit_attempt/notebook_output/submission.csv --score-json runs/20260218_submit_ready_candidate/score.json --baseline-score 0.2660571428571429 --report runs/20260218_submit_ready_candidate/readiness.json`
+- Gate de submissao:
+  - `allowed=true` (`runs/20260218_submit_ready_candidate/readiness.json`)
+  - `score_local=0.2922071428571429` > `baseline=0.2660571428571429`
+- Submissao Kaggle (notebook-only):
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 77 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260216_submit_attempt/notebook_output/submission.csv --notebook-output-path runs/20260216_submit_attempt/notebook_output/submission.csv --score-json runs/20260218_submit_ready_candidate/score.json --baseline-score 0.2660571428571429 --message "PLAN-132 gate pass: local USalign 0.292207 > 0.266057 (nb v77)" --execute-submit`
+- Evidencias:
+  - Report de submit: `runs/20260216_submit_attempt/notebook_output/submit_notebook_report.json` (`status=SUBMITTED`, `returncode=0`)
+  - Listagem Kaggle: nova linha em `kaggle competitions submissions -c stanford-rna-3d-folding-2` com timestamp `2026-02-18 01:08:26.737000`, descricao `PLAN-132 gate pass: local USalign 0.292207 > 0.266057 (nb v77)`, status `SubmissionStatus.PENDING`.
+
+## 2026-02-18 - marcusvinicius/Codex - ADHOC (diagnostico de score e híbrido len>60)
+
+- Data UTC: `2026-02-18T01:20:00Z`
+- Plano: `ADHOC`
+- Objetivo:
+  - Diagnosticar discrepância entre score local e Kaggle público (0.261) e testar um híbrido simples entre dois candidatos já existentes.
+- Candidatos base:
+  - A: `runs/20260216_submit_attempt/notebook_output/submission.csv` (proxy local anterior `0.292207`)
+  - B: `runs/20260217_plan131_kernel_output_v96/submission.csv` (proxy local `0.266057`)
+- Diagnóstico executado:
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260216_submit_attempt/notebook_output/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode best_of_gt_copies --score-json runs/20260218_diagnose_score/score_bestof_gt.json --report runs/20260218_diagnose_score/report_bestof_gt.json`
+  - Resultado proxy (`best_of_gt_copies`): `0.29796428571428574`
+  - Tentativa de métrica oficial local:
+    - `python -m rna3d_local score-local-kaggle-official ...`
+    - Falha fail-fast: `metric.py oficial ausente`
+- Híbrido testado:
+  - Regra: usar A quando `len(target)>60`, senão usar B.
+  - Artefato: `runs/20260218_hybrid_len60/submission_hybrid_len60.csv`
+- Validação local do híbrido:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_hybrid_len60/submission_hybrid_len60.csv` -> `ok=true`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260218_hybrid_len60/submission_hybrid_len60.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_hybrid_len60/score.json --report runs/20260218_hybrid_len60/report.json`
+  - Score híbrido: `0.298575`
+- Conclusão:
+  - O híbrido `len>60` supera os candidatos A e B no proxy local (`0.298575 > 0.292207 > 0.266057`).
+  - Próximo passo recomendado: portar essa regra para notebook Kaggle (versão nova) para validação real em leaderboard.

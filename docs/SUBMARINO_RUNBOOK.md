@@ -183,7 +183,7 @@ python -m rna3d_local check-submission --sample "$INPUT/sample_submission.csv" -
 
 Observações importantes:
 - `prepare-chemical-features` **não** aceita `test_sequences.csv`; ele exige o arquivo QUICK_START (por resíduo) no schema suportado por `src/rna3d_local/chemical_features.py`.
-- Minimização (`minimize-ensemble --backend openmm`) é opcional e exige `openmm` disponível no ambiente offline (não faz parte do wheelhouse `phase2` por padrão).
+- Minimização (`minimize-ensemble --backend openmm`) é opcional; `--max-iterations 0` faz bypass explícito e, quando habilitada, exige `openmm` disponível no ambiente offline (não faz parte do wheelhouse `phase2` por padrão).
 
 Checklist fail-fast sugerido (antes de rodar o pipeline pesado):
 - `python --version` (deve ser compatível com o wheelhouse e com `requires-python>=3.11`)

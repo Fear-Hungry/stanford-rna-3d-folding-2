@@ -1671,3 +1671,43 @@ Log append-only de mudancas implementadas.
   - `python -m compileall -q src` -> `ok`
 - Riscos conhecidos / follow-ups:
   - O protocolo `local_16gb` agora depende explicitamente de `torch_geometric`/`torch_cluster`; ambientes Kaggle sem esses wheels falharão cedo por contrato.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-134 (confidence dinâmica em Chai-1/Boltz-1)
+
+- Data UTC: `2026-02-18T12:47:23Z`
+- Plano: `PLAN-134`
+- Resumo:
+  - `chai1` e `boltz1` deixaram de usar `confidence` fixa e passaram a calcular confiança dinâmica por estrutura via pLDDT real do átomo `C1'`.
+  - `chai1`: usa `atom.b_iso` do mmCIF (`gemmi`).
+  - `boltz1`: usa B-factor do PDB (colunas 61-66).
+  - Normalização estrita para `[0,1]` com suporte a entradas `[0,1]` ou `[0,100]`; valores inválidos falham cedo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/runners/chai1.py`
+  - `src/rna3d_local/runners/boltz1.py`
+  - `tests/test_model_confidence_extraction.py`
+- Validacao local executada:
+  - `pytest -q tests/test_model_confidence_extraction.py tests/test_chai1_runner_chain_separator.py tests/test_phase2_hybrid.py` -> `15 passed`
+- Riscos conhecidos / follow-ups:
+  - Distribuições de pLDDT muito diferentes entre modelos podem exigir calibração posterior no ranking híbrido (sem mudar contrato de extração).
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-133 (minimização opcional explícita com `max_iterations=0`)
+
+- Data UTC: `2026-02-18T12:47:23Z`
+- Plano: `PLAN-133`
+- Resumo:
+  - `minimize_ensemble` agora aceita `max_iterations=0` como bypass explícito (sem chamada ao backend OpenMM/PyRosetta).
+  - Mantido fail-fast para `max_iterations < 0` e `max_iterations > 100`.
+  - Manifest de minimização passou a registrar `minimization_enabled`.
+  - CLI/help e docs atualizadas para explicitar o contrato `0..100`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/minimization.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `tests/test_minimization.py`
+  - `README.md`
+  - `docs/SUBMARINO_RUNBOOK.md`
+  - `PLANS.md`
+- Validacao local executada:
+  - `pytest -q tests/test_minimization.py` -> `6 passed`
+  - `python -m rna3d_local minimize-ensemble --predictions <tmp>/pred.parquet --out <tmp>/pred_min.parquet --backend openmm --max-iterations 0` -> `ok` (pass-through com `refinement_steps=0` e coordenadas inalteradas)
+- Riscos conhecidos / follow-ups:
+  - O bypass mantém `refinement_backend` com o backend solicitado e `refinement_steps=0`; consumidores devem usar `refinement_steps`/manifest para distinguir execução real de bypass.
