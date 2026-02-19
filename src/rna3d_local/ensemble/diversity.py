@@ -8,6 +8,20 @@ import polars as pl
 
 from ..errors import raise_error
 
+_DIVERSITY_STAGE = "DIVERSITY"
+_DIVERSITY_FILE = "src/rna3d_local/ensemble/diversity.py"
+_VECTOR_EPS = 1e-12
+_REQUIRED_DIVERSITY_COLUMNS = ("sample_id", "resid", "x", "y", "z")
+_NEIGHBOR_OFFSETS = tuple((dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1))
+
+
+def _normalize_group_key(group_key: object) -> str:
+    return str(group_key[0]) if isinstance(group_key, tuple) else str(group_key)
+
+
+def _raise_diversity_contract(function: str, cause: str, *, impact: str, examples: list[str]) -> None:
+    raise_error(_DIVERSITY_STAGE, f"{_DIVERSITY_FILE}:{function}", cause, impact=impact, examples=examples)
+
 
 def _kabsch_align_centered(mobile_centered: np.ndarray, target_centered: np.ndarray) -> np.ndarray:
     if mobile_centered.shape != target_centered.shape or mobile_centered.ndim != 2 or mobile_centered.shape[1] != 3:
@@ -25,7 +39,7 @@ def _kabsch_align_centered(mobile_centered: np.ndarray, target_centered: np.ndar
 def _vector_from_centered_coords(coords_centered: np.ndarray) -> np.ndarray:
     vec = coords_centered.reshape(-1)
     norm = float(np.linalg.norm(vec))
-    if norm <= 1e-12:
+    if norm <= _VECTOR_EPS:
         return np.zeros_like(vec)
     return vec / norm
 
@@ -34,32 +48,55 @@ def _coords_for_sample(sample_df: pl.DataFrame) -> np.ndarray:
     return sample_df.select("x", "y", "z").to_numpy().astype(np.float64, copy=False)
 
 
-def build_sample_vectors(target_df: pl.DataFrame, *, stage: str, location: str, anchor_sample_id: str | None = None) -> dict[str, np.ndarray]:
-    vectors: dict[str, np.ndarray] = {}
-    if "sample_id" not in target_df.columns:
-        raise_error(stage, location, "target_df sem coluna sample_id para diversidade", impact="1", examples=target_df.columns[:8])
-    if "resid" not in target_df.columns:
-        raise_error(stage, location, "target_df sem coluna resid para diversidade", impact="1", examples=target_df.columns[:8])
-    for col in ["x", "y", "z"]:
-        if col not in target_df.columns:
-            raise_error(stage, location, "target_df sem coluna de coordenadas para diversidade", impact="1", examples=[col])
-
-    parts: list[tuple[str, pl.DataFrame]] = []
-    for sample_id, part in target_df.group_by("sample_id", maintain_order=True):
-        key = str(sample_id[0]) if isinstance(sample_id, tuple) else str(sample_id)
-        parts.append((key, part.sort("resid")))
+def _extract_sample_parts(target_df: pl.DataFrame, *, stage: str, location: str) -> dict[str, pl.DataFrame]:
+    missing = [col for col in _REQUIRED_DIVERSITY_COLUMNS if col not in target_df.columns]
+    if missing:
+        raise_error(
+            stage,
+            location,
+            "target_df sem colunas obrigatorias para diversidade",
+            impact=str(int(len(missing))),
+            examples=[str(item) for item in missing[:8]],
+        )
+    parts: dict[str, pl.DataFrame] = {}
+    for raw_sample_id, part in target_df.group_by("sample_id", maintain_order=True):
+        sample_id = _normalize_group_key(raw_sample_id)
+        if sample_id in parts:
+            raise_error(stage, location, "sample_id duplicado apos agrupamento para diversidade", impact="1", examples=[sample_id])
+        parts[sample_id] = part.sort("resid")
     if not parts:
         raise_error(stage, location, "nenhum sample_id para diversidade", impact="1", examples=[])
+    return parts
 
-    anchor_id = str(anchor_sample_id) if anchor_sample_id is not None else str(parts[0][0])
-    anchor_part = None
-    for key, part in parts:
-        if key == anchor_id:
-            anchor_part = part
-            break
+
+def _extract_resids(sample_part: pl.DataFrame, *, sample_id: str, stage: str, location: str) -> np.ndarray:
+    resid_col = sample_part.get_column("resid")
+    total = int(sample_part.height)
+    unique = int(resid_col.n_unique())
+    if unique != total:
+        dup_examples = (
+            sample_part.filter(pl.col("resid").is_duplicated()).select("resid").get_column("resid").head(5).to_list()
+        )
+        raise_error(
+            stage,
+            location,
+            "resid duplicado dentro do sample para diversidade",
+            impact=str(int(total - unique)),
+            examples=[f"{sample_id}:{item}" for item in dup_examples],
+        )
+    return resid_col.to_numpy()
+
+
+def build_sample_vectors(target_df: pl.DataFrame, *, stage: str, location: str, anchor_sample_id: str | None = None) -> dict[str, np.ndarray]:
+    vectors: dict[str, np.ndarray] = {}
+    sample_parts = _extract_sample_parts(target_df, stage=stage, location=location)
+
+    anchor_id = str(anchor_sample_id) if anchor_sample_id is not None else next(iter(sample_parts.keys()))
+    anchor_part = sample_parts.get(anchor_id)
     if anchor_part is None:
         raise_error(stage, location, "anchor_sample_id ausente no target_df", impact="1", examples=[anchor_id])
 
+    anchor_resids = _extract_resids(anchor_part, sample_id=anchor_id, stage=stage, location=location)
     anchor_coords = _coords_for_sample(anchor_part)
     if not np.isfinite(anchor_coords).all():
         raise_error(stage, location, "coordenadas nao-finitas no anchor para diversidade", impact="1", examples=[anchor_id])
@@ -70,33 +107,68 @@ def build_sample_vectors(target_df: pl.DataFrame, *, stage: str, location: str, 
         raise_error(stage, location, "anchor com residuos insuficientes para diversidade", impact="1", examples=[anchor_id, f"n={anchor_len}"])
 
     vectors[anchor_id] = _vector_from_centered_coords(anchor_centered)
-    for key, part in parts:
-        if key == anchor_id:
+    for sample_id, sample_part in sample_parts.items():
+        if sample_id == anchor_id:
             continue
-        coords = _coords_for_sample(part)
+        coords = _coords_for_sample(sample_part)
         if int(coords.shape[0]) != anchor_len:
             raise_error(
                 stage,
                 location,
                 "samples com comprimentos divergentes para diversidade (resid mismatch)",
                 impact="1",
-                examples=[f"anchor={anchor_id}:n={anchor_len}", f"{key}:n={int(coords.shape[0])}"],
+                examples=[f"anchor={anchor_id}:n={anchor_len}", f"{sample_id}:n={int(coords.shape[0])}"],
             )
         if not np.isfinite(coords).all():
-            raise_error(stage, location, "coordenadas nao-finitas para diversidade", impact="1", examples=[key])
+            raise_error(stage, location, "coordenadas nao-finitas para diversidade", impact="1", examples=[sample_id])
+
+        sample_resids = _extract_resids(sample_part, sample_id=sample_id, stage=stage, location=location)
+        if sample_resids.shape != anchor_resids.shape:
+            raise_error(
+                stage,
+                location,
+                "samples com comprimentos divergentes para diversidade (resid mismatch)",
+                impact="1",
+                examples=[f"anchor={anchor_id}:n={anchor_len}", f"{sample_id}:n={int(sample_resids.shape[0])}"],
+            )
+        if not np.array_equal(sample_resids, anchor_resids):
+            mismatch_mask = sample_resids != anchor_resids
+            mismatch_idx = int(np.argmax(mismatch_mask))
+            raise_error(
+                stage,
+                location,
+                "samples com resid divergente para diversidade (order/value mismatch)",
+                impact="1",
+                examples=[
+                    f"anchor={anchor_id}:resid={anchor_resids[mismatch_idx]}",
+                    f"{sample_id}:resid={sample_resids[mismatch_idx]}",
+                    f"pos={mismatch_idx}",
+                ],
+            )
+
         coords_centered = coords - coords.mean(axis=0, keepdims=True)
         aligned = _kabsch_align_centered(coords_centered, anchor_centered)
-        vectors[key] = _vector_from_centered_coords(aligned)
+        vectors[sample_id] = _vector_from_centered_coords(aligned)
     return vectors
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    if a.ndim != 1 or b.ndim != 1:
+        _raise_diversity_contract(
+            "cosine_similarity",
+            "vetores devem ser 1D para similaridade",
+            impact="1",
+            examples=[f"a.ndim={a.ndim}", f"b.ndim={b.ndim}"],
+        )
     if a.shape != b.shape:
-        min_len = min(int(a.shape[0]), int(b.shape[0]))
-        a = a[:min_len]
-        b = b[:min_len]
+        _raise_diversity_contract(
+            "cosine_similarity",
+            "vetores com shape divergente para similaridade",
+            impact="1",
+            examples=[f"a={a.shape}", f"b={b.shape}"],
+        )
     denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    if denom <= 1e-12:
+    if denom <= _VECTOR_EPS:
         return 0.0
     return float(np.dot(a, b) / denom)
 
@@ -129,36 +201,47 @@ def _pairwise_distance_matrix(*, sample_ids: list[str], vectors: dict[str, np.nd
     return dist
 
 
-def _neighbor_offsets() -> list[tuple[int, int, int]]:
-    offsets: list[tuple[int, int, int]] = []
-    for dx in [-1, 0, 1]:
-        for dy in [-1, 0, 1]:
-            for dz in [-1, 0, 1]:
-                offsets.append((dx, dy, dz))
-    return offsets
-
-
 def estimate_clash_ratio(sample_df: pl.DataFrame, *, min_distance: float = 2.1, covalent_skip: int = 1) -> float:
+    if float(min_distance) <= 0.0:
+        _raise_diversity_contract(
+            "estimate_clash_ratio",
+            "min_distance invalido para estimativa de clash",
+            impact="1",
+            examples=[str(min_distance)],
+        )
+    if int(covalent_skip) < 0:
+        _raise_diversity_contract(
+            "estimate_clash_ratio",
+            "covalent_skip invalido para estimativa de clash",
+            impact="1",
+            examples=[str(covalent_skip)],
+        )
+
     coords = sample_df.sort("resid").select("x", "y", "z").to_numpy().astype(np.float64)
     count = int(coords.shape[0])
     if count <= 2:
         return 0.0
+    if not np.isfinite(coords).all():
+        _raise_diversity_contract(
+            "estimate_clash_ratio",
+            "coordenadas nao-finitas na estimativa de clash",
+            impact="1",
+            examples=[],
+        )
+
     cell_size = float(min_distance)
-    if cell_size <= 0.0:
-        return 0.0
     cell_index = np.floor(coords / cell_size).astype(np.int64)
     cells: dict[tuple[int, int, int], list[int]] = {}
     for idx in range(count):
         key = (int(cell_index[idx, 0]), int(cell_index[idx, 1]), int(cell_index[idx, 2]))
         cells.setdefault(key, []).append(idx)
 
-    offsets = _neighbor_offsets()
     min_sq = float(min_distance) * float(min_distance)
     clash_count = 0
     pair_count = 0
     for key, members in cells.items():
         for idx in members:
-            for dx, dy, dz in offsets:
+            for dx, dy, dz in _NEIGHBOR_OFFSETS:
                 neighbor_key = (key[0] + dx, key[1] + dy, key[2] + dz)
                 neigh = cells.get(neighbor_key)
                 if neigh is None:
@@ -234,6 +317,7 @@ def select_cluster_medoids(
         raise_error(stage, location, "lambda_diversity invalido para clustering", impact="1", examples=[str(lambda_diversity)])
     if not sample_scores:
         raise_error(stage, location, "sample_scores vazio para clustering", impact="1", examples=[])
+
     sample_ids = [str(sample_id) for sample_id, _score in sample_scores]
     if len(sample_ids) < int(n_select):
         raise_error(
@@ -246,6 +330,7 @@ def select_cluster_medoids(
     for sample_id in sample_ids:
         if sample_id not in vectors:
             raise_error(stage, location, "vetor latente ausente para sample", impact="1", examples=[sample_id])
+
     score_map = {str(sample_id): float(score) for sample_id, score in sample_scores}
     dist = _pairwise_distance_matrix(sample_ids=sample_ids, vectors=vectors)
     n_items = int(len(sample_ids))
@@ -253,11 +338,12 @@ def select_cluster_medoids(
 
     first_seed = max(range(n_items), key=lambda idx: score_map[sample_ids[idx]])
     seeds: list[int] = [int(first_seed)]
+    seed_set = {int(first_seed)}
     while len(seeds) < n_clusters:
         best_idx = None
         best_value = -math.inf
         for idx in range(n_items):
-            if idx in seeds:
+            if idx in seed_set:
                 continue
             min_dist = min(float(dist[idx, seed]) for seed in seeds)
             score = score_map[sample_ids[idx]]
@@ -268,6 +354,7 @@ def select_cluster_medoids(
         if best_idx is None:
             break
         seeds.append(int(best_idx))
+        seed_set.add(int(best_idx))
     if len(seeds) != n_clusters:
         raise_error(stage, location, "falha na semeadura max-min de clusters", impact=str(int(n_clusters) - len(seeds)), examples=sample_ids[:5])
 
@@ -298,8 +385,9 @@ def select_cluster_medoids(
             raise_error(stage, location, "falha ao escolher medoide do cluster", impact="1", examples=[str(cluster_idx)])
         selected_ids.append(str(best_member))
 
+    selected_set = set(selected_ids)
     if len(selected_ids) < int(n_select):
-        remaining = [sid for sid in sample_ids if sid not in set(selected_ids)]
+        remaining = [sid for sid in sample_ids if sid not in selected_set]
         while len(selected_ids) < int(n_select) and remaining:
             best_sid = None
             best_value = -math.inf
@@ -313,6 +401,7 @@ def select_cluster_medoids(
             if best_sid is None:
                 break
             selected_ids.append(str(best_sid))
+            selected_set.add(str(best_sid))
             remaining = [sid for sid in remaining if sid != best_sid]
 
     if len(selected_ids) < int(n_select):
@@ -333,8 +422,28 @@ def greedy_diverse_selection(
     n_select: int,
     lambda_diversity: float,
 ) -> list[str]:
+    if int(n_select) <= 0:
+        _raise_diversity_contract("greedy_diverse_selection", "n_select invalido para selecao greedy", impact="1", examples=[str(n_select)])
+    if float(lambda_diversity) < 0.0:
+        _raise_diversity_contract(
+            "greedy_diverse_selection",
+            "lambda_diversity invalido para selecao greedy",
+            impact="1",
+            examples=[str(lambda_diversity)],
+        )
+    if not sample_scores:
+        _raise_diversity_contract("greedy_diverse_selection", "sample_scores vazio para selecao greedy", impact="1", examples=[])
+
     selected: list[str] = []
-    available = {sample_id: float(score) for sample_id, score in sample_scores}
+    available = {str(sample_id): float(score) for sample_id, score in sample_scores}
+    for sample_id in available:
+        if sample_id not in vectors:
+            _raise_diversity_contract(
+                "greedy_diverse_selection",
+                "vetor latente ausente para sample",
+                impact="1",
+                examples=[sample_id],
+            )
     while len(selected) < int(n_select) and available:
         best_id = None
         best_value = -math.inf

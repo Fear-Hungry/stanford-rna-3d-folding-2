@@ -85,6 +85,20 @@ def test_select_top5_se3_fails_on_missing_qa_or_final_score(tmp_path: Path) -> N
         )
 
 
+def test_select_top5_se3_fails_on_negative_diversity_lambda(tmp_path: Path) -> None:
+    ranked_path = tmp_path / "ranked.parquet"
+    out_path = tmp_path / "top5.parquet"
+    pl.DataFrame(_build_ranked_rows()).write_parquet(ranked_path)
+    with pytest.raises(PipelineError, match="diversity_lambda invalido"):
+        select_top5_se3(
+            repo_root=tmp_path,
+            ranked_path=ranked_path,
+            out_path=out_path,
+            n_models=5,
+            diversity_lambda=-0.01,
+        )
+
+
 def test_sampler_generates_24_fast_candidates_with_finite_coords() -> None:
     torch.manual_seed(7)
     h = torch.randn(6, 8)

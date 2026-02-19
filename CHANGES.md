@@ -1794,3 +1794,76 @@ Log append-only de mudancas implementadas.
   - `python -Werror -c "import json; from pathlib import Path; nb=json.loads(Path('kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb').read_text('utf-8')); compile(nb['cells'][1]['source'],'nb_cell','exec'); print('syntax_ok')"` -> `syntax_ok`
 - Riscos conhecidos / follow-ups:
   - Necessario validar no Kaggle rerun (hidden) que o fallback DRfold2 cobre todos os targets sem template TBM dentro do budget de tempo do notebook.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-141 (hardening de code health em Top-5 SE(3) e diversidade)
+
+- Data UTC: `2026-02-18T20:12:50Z`
+- Plano: `PLAN-141`
+- Resumo:
+  - Refatorado `select_top5_se3` em helpers coesos para reduzir complexidade ciclomática e repetição de filtros por `sample_id`.
+  - `select_top5_se3` agora valida explicitamente `diversity_lambda >= 0` e falha cedo quando `ranked_se3` está vazio.
+  - Removido fallback silencioso de `cosine_similarity` para vetores com shape diferente (agora falha com erro acionável).
+  - `build_sample_vectors` endurecido para validar mismatch de `resid` por ordem/valor (além de comprimento), preservando fail-fast.
+  - Melhorias de robustez adicionais em `estimate_clash_ratio` e `greedy_diverse_selection` com validação explícita de parâmetros.
+  - Adicionados testes cobrindo os novos contratos de erro.
+- Arquivos principais tocados:
+  - `src/rna3d_local/ensemble/select_top5.py`
+  - `src/rna3d_local/ensemble/diversity.py`
+  - `tests/test_best_of5_strategy.py`
+  - `tests/test_diversity_rotation_invariance.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_diversity_rotation_invariance.py` -> `8 passed`
+  - `pytest -q tests/test_qa_ranker_se3.py` -> `2 passed`
+  - `pytest -q tests/test_se3_pipeline.py::test_select_top5_se3_fails_when_insufficient_samples` -> `1 passed`
+  - `python -m compileall -q src/rna3d_local/ensemble/select_top5.py src/rna3d_local/ensemble/diversity.py` -> `ok`
+- Riscos conhecidos / follow-ups:
+  - A suíte completa (`tests/test_se3_pipeline.py`) segue com cenários de treino que exigem CUDA e podem falhar em ambiente CPU-only; validação desta mudança foi mantida em escopo direcionado aos módulos alterados.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-142 (hardening do notebook contra OOM hidden + bounds)
+
+- Data UTC: `2026-02-18T22:36:30Z`
+- Plano: `PLAN-142`
+- Resumo:
+  - Notebook `stanford-rna3d-submit-prod-v2.ipynb` endurecido para reduzir risco de OOM no hidden e evitar rejeição por bounds:
+    - `TOP_K` reduzido para `64`;
+    - removida dependência de `family_prior` em `retrieve-templates-latent` (evita materialização extra em Python);
+    - filtragem de `retrieval_candidates_tbm` e merge `TBM+DRfold2` migrados para `scan_parquet/sink_parquet` (streaming);
+    - adicionada centralização explícita de `combined_predictions` por `(target_id, model_id)` no notebook;
+    - adicionada validação explícita de bounds (`abs(coord) <= 1000`) no notebook antes de finalizar;
+    - export da submissão passou a usar `submission_tmp` dentro de `run_root` para evitar conflito de path fixo no particionamento interno.
+  - Registrado `PLAN-142` no backlog para rastreabilidade.
+- Arquivos principais tocados:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+  - `PLANS.md`
+- Validacao local executada:
+  - `python -Werror - <<'PY' ... compile(cell_source, 'nb_cell', 'exec') ... PY` -> `syntax_ok`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan142_kernel_output_v108/submission.csv` -> `ok=true`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260218_plan142_kernel_output_v108/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_plan142_kernel_output_v108/score.json --report runs/20260218_plan142_kernel_output_v108/report.json` -> `score=0.2529642857142857`
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan142_kernel_output_v108/submission.csv --score-json runs/20260218_plan142_kernel_output_v108/score.json --baseline-score 0.261 --report runs/20260218_plan142_kernel_output_v108/readiness.json` -> `blocked (strict_improvement_failed)`
+- Riscos conhecidos / follow-ups:
+  - O artefato `v108` ficou válido em contrato/bounds, mas com regressão de score local (`0.25296 < 0.261`), então o gate estrito bloqueia submissão.
+  - Necessária próxima iteração para recuperar score >= baseline mantendo budget de RAM do hidden.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-142 (iterações anti-OOM + fallback hardening no notebook de submissão)
+
+- Data UTC: `2026-02-19T01:04:22Z`
+- Plano: `PLAN-142`
+- Resumo:
+  - Evoluído o notebook `stanford-rna3d-submit-prod-v2.ipynb` com foco em reduzir pico de RAM e melhorar robustez de fallback:
+    - `TOP_K` reduzido para `16`.
+    - TBM passou a executar em chunks (`TBM_CHUNK_SIZE=12`) com `predict-tbm` por lote e merge streaming.
+    - `POLARS_MAX_THREADS=1` para reduzir fan-out de memória.
+  - Harden aplicado no fallback DRfold2:
+    - resolução de PDB tornou-se robusta a múltiplos layouts de saída (`relax`, `folds/opt_*`, `rets_dir/*.pdb`).
+  - Testada alternativa de fallback para `predict-rnapro-offline` (Phase2) para targets sem cobertura TBM estrita; execução no Kaggle confirmou ausência dos assets Phase2 no runtime atual, mantendo fail-fast explícito.
+  - Mantido contrato estrito de erro e observabilidade com mensagens detalhadas por etapa.
+- Arquivos principais tocados:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+- Validação local executada:
+  - `python - <<'PY' ... compile(code, ipynb, 'exec') ... PY` -> `compile_ok` (em cada iteração antes de push).
+  - `python -m rna3d_local predict-tbm --retrieval runs/20260219_plan142_tbm_probe_9MME/retrieval_9MME.parquet --templates runs/20260217_plan131_src_bundle_v11/template_db/templates.parquet --targets runs/20260219_plan142_tbm_probe_9MME/target_9MME.csv --out runs/20260219_plan142_tbm_probe_9MME/tbm_9MME.parquet --n-models 5` -> erro esperado de cobertura insuficiente (`alvos sem templates validos para TBM`).
+- Riscos conhecidos / follow-ups:
+  - O target fallback ultra-longo (`9MME`) segue sendo o principal gargalo de runtime/estabilidade no hidden rerun quando dependente de DRfold2.
+  - Runtime Kaggle atual não expõe assets Phase2 esperados pelo fallback RNApro; fallback permanece bloqueado por contrato nesse caminho.

@@ -2306,3 +2306,45 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Kernel Kaggle completa no rerun e escreve `/kaggle/working/submission.csv`.
   - `python -m rna3d_local check-submission --sample <sample_submission.csv> --submission submission.csv` passa no ambiente Kaggle e local (após download do artefato).
   - Em targets sem template válido para TBM, o notebook não crasha no `predict-tbm` e cobre 100% das chaves do sample via fallback DRfold2.
+
+## PLAN-141 - Hardening de code health em seleção Top-5 SE(3) e diversidade
+
+- Objetivo:
+  - Elevar a saúde de código em `ensemble/select_top5.py` e `ensemble/diversity.py` sem alterar o contrato funcional da seleção Top-5.
+- Hipótese:
+  - Refatorar funções longas em helpers coesos, remover fallback silencioso e reforçar validações explícitas reduz risco de regressão e facilita manutenção.
+- Mudanças:
+  - `src/rna3d_local/ensemble/select_top5.py`:
+    - decompor `select_top5_se3` em helpers menores;
+    - validar parâmetros de entrada em modo estrito (`n_models` e `diversity_lambda`);
+    - reduzir repetição de filtros por `sample_id` com cache por alvo.
+  - `src/rna3d_local/ensemble/diversity.py`:
+    - remover fallback silencioso de `cosine_similarity` para vetores com shape divergente;
+    - reforçar contrato de `build_sample_vectors` para detectar mismatch de `resid` (não apenas comprimento);
+    - adicionar validações de entrada acionáveis em funções utilitárias de diversidade.
+  - Testes:
+    - adicionar cobertura para novos cenários fail-fast em diversidade e seleção top-5.
+- Critérios de aceite:
+  - `pytest -q tests/test_best_of5_strategy.py tests/test_diversity_rotation_invariance.py` passa.
+  - Testes novos validam erro explícito para shape mismatch e `resid` mismatch.
+  - Sem fallback silencioso nos caminhos alterados.
+
+## PLAN-142 - Kaggle hidden OOM: notebook submit com budget de RAM reduzido
+
+- Objetivo:
+  - Eliminar falha de rerun hidden por OOM de RAM no notebook de submissão (`code competition`) mantendo contrato estrito de `submission.csv`.
+- Hipótese:
+  - O pico de RAM ocorre na combinação de operações eager e estruturas Python volumosas (family prior/materializações) durante retrieval + merge de predições.
+- Mudanças:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`:
+    - reduzir `TOP_K` para diminuir volume de candidates no hidden;
+    - remover dependência de `family_prior` na etapa `retrieve-templates-latent` para evitar materialização em memória de pares alvo-template;
+    - substituir caminhos eager por pipeline lazy+streaming em:
+      - filtragem de `retrieval_candidates_tbm.parquet`;
+      - merge final `TBM + DRfold2` (sem `pl.concat(read_parquet(...))` em memória).
+    - manter `check-submission` obrigatório e fail-fast.
+- Critérios de aceite:
+  - Notebook compila localmente (sintaxe da célula principal).
+  - Kernel Kaggle completa em `COMPLETE` e gera `/kaggle/working/submission.csv`.
+  - `check-submission` local do output do kernel passa.
+  - Submit notebook-only executa sem `error_description` de OOM.

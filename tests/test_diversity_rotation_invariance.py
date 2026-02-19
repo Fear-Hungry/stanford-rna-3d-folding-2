@@ -53,3 +53,20 @@ def test_build_sample_vectors_fails_on_length_mismatch() -> None:
     with pytest.raises(PipelineError, match="comprimentos divergentes"):
         build_sample_vectors(df, stage="TEST", location="tests/test_diversity_rotation_invariance.py:test_build_sample_vectors_fails_on_length_mismatch")
 
+
+def test_build_sample_vectors_fails_on_resid_mismatch_same_length() -> None:
+    df = pl.DataFrame(
+        [
+            {"sample_id": "a", "resid": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+            {"sample_id": "a", "resid": 2, "x": 1.0, "y": 0.0, "z": 0.0},
+            {"sample_id": "b", "resid": 1, "x": 0.0, "y": 1.0, "z": 0.0},
+            {"sample_id": "b", "resid": 3, "x": 1.0, "y": 1.0, "z": 0.0},
+        ]
+    )
+    with pytest.raises(PipelineError, match="resid divergente"):
+        build_sample_vectors(df, stage="TEST", location="tests/test_diversity_rotation_invariance.py:test_build_sample_vectors_fails_on_resid_mismatch_same_length")
+
+
+def test_cosine_similarity_fails_on_shape_mismatch() -> None:
+    with pytest.raises(PipelineError, match="shape divergente"):
+        cosine_similarity(np.zeros((8,), dtype=np.float64), np.zeros((9,), dtype=np.float64))

@@ -1826,3 +1826,198 @@ Log append-only de experimentos executados.
 - Conclusão + próximos passos:
   - Rejeição por formato/valores deve estar resolvida ao manter `abs(coord)` dentro do bound via centralização.
   - Próximo passo: quando o Kaggle finalizar, verificar `publicScore` e comparar com `0.261` do baseline anterior.
+
+## 2026-02-18 - marcusvinicius/Codex - ADHOC (diagnostico da falha v101 + submissao notebook v103)
+
+- Data UTC: `2026-02-18T22:05:10Z`
+- Plano: `ADHOC`
+- Objetivo/hipótese:
+  - Identificar o que falhou no kernel recente (`v101`) e tentar nova submissao notebook-only com artefato valido (`v103`), mantendo gate estrito local.
+- Diagnóstico executado:
+  - Status/submissoes Kaggle consultados via CLI (`kaggle competitions submissions`, `kaggle kernels status`).
+  - Logs inspecionados:
+    - `runs/20260218_plan138_kernel_output_v101/stanford-rna3d-submit-prod-v2.log`
+    - `runs/20260218_plan139_kernel_output_v102/stanford-rna3d-submit-prod-v2.log`
+    - `runs/20260218_plan140_kernel_output_v103/stanford-rna3d-submit-prod-v2.log`
+  - Causa raiz observada no `v101`:
+    - `RuntimeError: [LOAD] [submission_notebook_phase1_phase2_full_v2:materialize_phase2_assets] assets phase2 nao encontrados (markers ausentes) | impacto=1 | exemplos=models/rnapro/rnapro-public-best-500m.ckpt,models/chai1/models_v2/trunk.pt,models/boltz1/boltz1_conf.ckpt`
+  - `v102` e `v103` completaram com `export-submission` + `check-submission` no log.
+- Comandos executados (validacao + gate + submit):
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan140_kernel_output_v103/submission.csv`
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260218_plan140_kernel_output_v103/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_plan140_kernel_output_v103/score.json --report runs/20260218_plan140_kernel_output_v103/report.json`
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan140_kernel_output_v103/submission.csv --score-json runs/20260218_plan140_kernel_output_v103/score.json --baseline-score 0.261 --report runs/20260218_plan140_kernel_output_v103/readiness.json`
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 103 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan140_kernel_output_v103/submission.csv --notebook-output-path runs/20260218_plan140_kernel_output_v103/submission.csv --score-json runs/20260218_plan140_kernel_output_v103/score.json --baseline-score 0.261 --message "PLAN-140: dynamic TBM+DRfold2 fallback (local=0.2661)" --execute-submit`
+- Seeds:
+  - N/A (inferencia/submissao; sem treino).
+- Versão de código/dados:
+  - Código: `git 9bf0253`
+  - Dados:
+    - `input/stanford-rna-3d-folding-2/sample_submission.csv`
+    - `input/stanford-rna-3d-folding-2/validation_labels.csv`
+  - Notebook: `marcux777/stanford-rna3d-submit-prod-v2` (`v103`).
+- Artefatos:
+  - `runs/20260218_plan140_kernel_output_v103/submission.csv`
+  - `runs/20260218_plan140_kernel_output_v103/score.json`
+  - `runs/20260218_plan140_kernel_output_v103/report.json`
+  - `runs/20260218_plan140_kernel_output_v103/readiness.json`
+  - `runs/20260218_plan140_kernel_output_v103/submit_notebook_report.json`
+- Métricas/resultado:
+  - `check-submission`: `ok=true`
+  - `score_local(single/full28)`: `0.2660571428571429`
+  - `submit readiness`: `allowed=true` (baseline `0.261`)
+  - Kaggle submit:
+    - Criada submissao em `2026-02-18 22:04:51.010000` com descricao `PLAN-140: dynamic TBM+DRfold2 fallback (local=0.2661)`.
+    - Status inicial observado: `SubmissionStatus.PENDING`.
+- Conclusão:
+  - O problema imediato era restrito ao kernel `v101` (assets Phase2 ausentes).
+  - Nova tentativa de submissao via notebook (`v103`) foi executada com sucesso no fluxo estrito local + Kaggle.
+
+## 2026-02-18 - marcusvinicius/Codex - PLAN-142 (OOM hidden no submit + reruns v104..v108)
+
+- Data UTC: `2026-02-18T22:46:00Z`
+- Plano: `PLAN-142`
+- Objetivo/hipótese:
+  - Corrigir falha de memória no rerun hidden da submissão `v103` e manter gate estrito de score/contrato.
+- Diagnóstico inicial (Kaggle API):
+  - Submissão `ref=50436150` (`PLAN-140: dynamic TBM+DRfold2 fallback (local=0.2661)`):
+    - `status=COMPLETE`
+    - `error_description="Your notebook requested more memory (RAM) than is available."`
+- Ajustes executados:
+  - Notebook hardening (RAM):
+    - `TOP_K=64`;
+    - sem `family_prior` no retrieval;
+    - operações de filtro/merge em modo `scan/sink` (streaming).
+  - Atualização de dataset runtime:
+    - sincronizado `runs/20260217_plan131_src_bundle_v11/src` com `src/` atual;
+    - `kaggle datasets version -p runs/20260217_plan131_src_bundle_v11 -m "PLAN-142: sync latest src (submission bounds+streaming hardening)" -r zip` (via `TMPDIR=$PWD/.tmp` por quota em `/tmp`).
+  - Harden de bounds no notebook:
+    - centralização explícita por `(target_id, model_id)` em `combined_predictions_centered.parquet`;
+    - validação explícita `abs(coord)<=1000` antes de finalizar;
+    - export para `submission_tmp` em `run_root` para evitar conflito de path de particionamento.
+- Comandos principais executados:
+  - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` (versões `104`, `105`, `106`, `107`, `108`).
+  - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2` (polling até `COMPLETE/ERROR`).
+  - `kaggle kernels output marcux777/stanford-rna3d-submit-prod-v2 -p runs/20260218_plan142_kernel_output_v10x -o`.
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan142_kernel_output_v108/submission.csv`.
+  - `python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-folding-2/validation_labels.csv --submission runs/20260218_plan142_kernel_output_v108/submission.csv --usalign-bin src/rna3d_local/evaluation/USalign --timeout-seconds 900 --ground-truth-mode single --score-json runs/20260218_plan142_kernel_output_v108/score.json --report runs/20260218_plan142_kernel_output_v108/report.json`.
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan142_kernel_output_v108/submission.csv --score-json runs/20260218_plan142_kernel_output_v108/score.json --baseline-score 0.261 --report runs/20260218_plan142_kernel_output_v108/readiness.json`.
+- Artefatos:
+  - `runs/20260218_plan142_kernel_output_v104/` (COMPLETE; `submission.csv` sem bounds estritos).
+  - `runs/20260218_plan142_kernel_output_v105/` (COMPLETE; idem).
+  - `runs/20260218_plan142_kernel_output_v106/` (ERROR em `export-submission` particionamento).
+  - `runs/20260218_plan142_kernel_output_v107/` (ERROR em `export-submission` particionamento).
+  - `runs/20260218_plan142_kernel_output_v108/` (COMPLETE com `submission.csv` válido em contrato/bounds).
+- Métricas/resultado final:
+  - `v108 check-submission`: `ok=true`
+  - `v108 max_abs(coord)`: `216.8725` (dentro do bound)
+  - `v108 score_local(single/full28)`: `0.2529642857142857`
+  - Gate estrito: `blocked` (`0.252964 < 0.261`)
+- Conclusão:
+  - O problema de OOM do rerun hidden foi diagnosticado e o notebook foi estabilizado até gerar submissão válida em formato/bounds (`v108`).
+  - Nenhuma nova submissão Kaggle foi executada após `v103`, pois o gate estrito bloqueou por regressão de score local.
+
+## 2026-02-18 - marcusvinicius/Codex - ADHOC (submissão forçada por solicitação do usuário; bloqueada por quota)
+
+- Data UTC: `2026-02-18T23:10:22Z`
+- Plano: `ADHOC`
+- Objetivo/hipótese:
+  - Executar submissão forçada (fora do gate estrito) do mesmo artefato notebook `v108`, conforme solicitação explícita do usuário.
+- Comandos executados:
+  - `kaggle competitions submit stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 108 -m "FORCED by user: PLAN-142 memory-safe submission (local=0.252964)"`
+  - Tentativa via API Python para capturar payload completo:
+    - `api.competition_submit_code(file_name='submission.csv', message='FORCED by user: PLAN-142 memory-safe submission (local=0.252964)', competition='stanford-rna-3d-folding-2', kernel='marcux777/stanford-rna3d-submit-prod-v2', kernel_version=108, quiet=True)`
+- Resultado:
+  - HTTP `400` (`FAILED_PRECONDITION`), sem criação de submissão.
+  - Payload completo retornado pela API:
+    - `status_code=400`
+    - `x-kaggle-requestid=3adfc068346e3b6d86931f97f3296a74`
+    - `body={"error":{"code":400,"message":"Submission not allowed:  Your team has used its daily Submission allowance (5) today, please try again tomorrow UTC (49 minutes from now).","status":"FAILED_PRECONDITION"}}`
+- Conclusão/ação:
+  - Tentativa bloqueada por quota diária de submissão; novas tentativas cegas devem permanecer bloqueadas até reset da cota.
+  - Janela mínima de re-tentativa indicada pela API: após `2026-02-18T23:59:22Z` (UTC).
+
+## 2026-02-18 - marcusvinicius/Codex - ADHOC (retry de submissão forçada; quota ainda ativa)
+
+- Data UTC: `2026-02-18T23:53:20Z`
+- Plano: `ADHOC`
+- Objetivo:
+  - Repetir submissão forçada do mesmo notebook (`v108`) após janela de espera.
+- Comandos executados:
+  - `kaggle competitions submit stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 108 -m "FORCED by user: PLAN-142 memory-safe submission (local=0.252964) retry"`
+  - Captura de payload via API:
+    - `api.competition_submit_code(... kernel='marcux777/stanford-rna3d-submit-prod-v2', kernel_version=108, ...)`
+- Resultado:
+  - HTTP `400` (`FAILED_PRECONDITION`) novamente.
+  - `x-kaggle-requestid=474cdbd6a3d5bdcab174be8ee5bbbaeb`
+  - `body={"error":{"code":400,"message":"Submission not allowed:  Your team has used its daily Submission allowance (5) today, please try again tomorrow UTC (6 minutes from now).","status":"FAILED_PRECONDITION"}}`
+- Conclusão:
+  - Cota diária ainda não havia resetado no momento da tentativa.
+  - Próxima janela estimada de retry: `2026-02-18T23:59:20Z` (UTC).
+
+## 2026-02-19 - marcusvinicius/Codex - ADHOC (retry de submissão forçada; submissão criada)
+
+- Data UTC: `2026-02-19T00:01:20Z`
+- Plano: `ADHOC`
+- Objetivo:
+  - Repetir submissão forçada do notebook `v108` após reset da cota diária.
+- Comando executado:
+  - `kaggle competitions submit stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 108 -m "FORCED by user: PLAN-142 memory-safe submission (local=0.252964) retry2"`
+- Resultado:
+  - Submissão criada com sucesso.
+  - `ref=50448285`
+  - `status=SubmissionStatus.PENDING`
+  - `description="FORCED by user: PLAN-142 memory-safe submission (local=0.252964) retry2"`
+- Conclusão:
+  - Submit notebook-only executado conforme solicitado, aguardando processamento final do Kaggle.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-142 (debug OOM hidden + submits forçados v109..v112 + fallback v77)
+
+- Data UTC: `2026-02-19T01:04:22Z`
+- Plano: `PLAN-142`
+- Objetivo/hipótese:
+  - Eliminar falha de memória no hidden rerun da submissão notebook-only e executar nova submissão forçada com evidência completa.
+- Comparação (baseline vs novo):
+  - Baseline de referência local: `0.261` (`EXPERIMENTS.md`).
+  - Artefatos memory-safe (`v108/v109`) mantiveram `score_local=0.252964...` (abaixo do baseline), mas usuário solicitou envio forçado.
+- Comandos executados (principais):
+  - Status/submissões:
+    - `kaggle competitions submissions -c stanford-rna-3d-folding-2`
+    - `python - <<'PY' ... api.competition_submissions('stanford-rna-3d-folding-2') ... PY`
+  - Push/monitor de versões notebook:
+    - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` (v110, v111, v112)
+    - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2`
+    - `kaggle kernels output marcux777/stanford-rna3d-submit-prod-v2 -p runs/20260219_plan142_kernel_output_v11x -o`
+  - Tentativas de submit:
+    - `kaggle competitions submit stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 110 -m "FORCED by user: PLAN-142 TBM chunking + TOP_K16 (RAM-safe)"`
+    - `kaggle competitions submit stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 77 -m "FORCED by user: fallback to stable notebook v77 (avoid OOM)"`
+  - Captura de payload API em erro:
+    - `python - <<'PY' ... api.competition_submit_code(...)
+      except HTTPError: print(status_code, x-kaggle-requestid, body) ... PY`
+- Versão de código/dados:
+  - Código: `git 9bf0253`
+  - Notebook alvo: `marcux777/stanford-rna3d-submit-prod-v2`
+  - Competição: `stanford-rna-3d-folding-2`
+- Artefatos gerados:
+  - `runs/20260219_plan142_kernel_output_v110/` (log + outputs)
+  - `runs/20260219_plan142_kernel_output_v111/` (log + outputs)
+  - `runs/20260219_plan142_kernel_output_v112/` (log + outputs)
+  - `runs/20260219_plan142_tbm_probe_9MME/` (probe local de cobertura TBM)
+- Métricas/resultado observados:
+  - Submissões:
+    - `ref=50448465` (`v109`, custom streaming export) -> `COMPLETE` com `error_description="Your notebook requested more memory (RAM) than is available."`.
+    - `ref=50448928` (`v77`, fallback estável solicitado) -> `PENDING` no momento do registro.
+  - v110 (`Kernel version 110`):
+    - `ERROR` no notebook por fallback DRfold2: `model_1.pdb ausente` para `9HRO` (antes da correção do resolver).
+  - v111 (`Kernel version 111`):
+    - `ERROR` no notebook durante DRfold2 para `9MME`; `runner falhou` com `IndexError` no `DRfold_infer.py` (ausência de `opt_0*`).
+  - v112 (`Kernel version 112`):
+    - `ERROR` fail-fast em fallback RNApro por assets ausentes: `[LOAD] ... assets phase2 nao encontrados (markers ausentes)`.
+  - Probe local TBM para `9MME`:
+    - `predict-tbm` falhou com `alvos sem templates validos para TBM (cobertura insuficiente para export estrito)`.
+- Conclusão:
+  - OOM do hidden foi reproduzido e confirmado para a trilha `v109`.
+  - As iterações `v110..v112` melhoraram diagnóstico, porém não geraram candidato estável public-run para novo submit nessa trilha.
+  - Submissão forçada por versão estável histórica (`v77`) foi criada e está em monitoramento (`ref=50448928`, `PENDING`).
+- Próximos passos:
+  - Confirmar desfecho de `ref=50448928` (score/erro final).
+  - Se necessário, projetar fallback explícito para target ultra-longo (`9MME`) sem dependência de Phase2 assets e sem quebrar contrato estrito.
