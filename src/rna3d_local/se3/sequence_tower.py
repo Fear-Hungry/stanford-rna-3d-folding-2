@@ -63,22 +63,42 @@ class _MambaLikeBlock(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
 
+    @staticmethod
+    def _parallel_associative_scan(u: torch.Tensor, decay: torch.Tensor) -> torch.Tensor:
+        if u.ndim != 2:
+            raise ValueError(f"scan espera u com 2 dimensoes [L, C]; recebido={tuple(u.shape)}")
+        if decay.ndim != 1:
+            raise ValueError(f"scan espera decay com 1 dimensao [C]; recebido={tuple(decay.shape)}")
+        if int(u.shape[1]) != int(decay.shape[0]):
+            raise ValueError(
+                "scan com dimensoes incompativeis: "
+                f"u.shape={tuple(u.shape)} decay.shape={tuple(decay.shape)}"
+            )
+        length = int(u.shape[0])
+        if length == 0:
+            return u
+        a = decay.to(dtype=u.dtype, device=u.device).unsqueeze(0).expand(length, -1).clone()
+        b = u
+        step = 1
+        # Hillis-Steele scan para s_t = decay * s_(t-1) + u_t sem loop por posicao.
+        while step < length:
+            a_next = a.clone()
+            b_next = b.clone()
+            a_next[step:] = a[step:] * a[:-step]
+            b_next[step:] = b[step:] + (a[step:] * b[:-step])
+            a = a_next
+            b = b_next
+            step <<= 1
+        return b
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         hidden = self.norm_state(x)
         u = self.in_proj(hidden)
         gate = torch.sigmoid(self.gate_proj(hidden))
-        decay = torch.sigmoid(self.state_decay).to(dtype=x.dtype, device=x.device)
-        state_f = torch.zeros((x.shape[1],), dtype=x.dtype, device=x.device)
-        forward_out = torch.zeros_like(u)
-        for index in range(int(x.shape[0])):
-            state_f = (decay * state_f) + u[index]
-            forward_out[index] = state_f * gate[index]
-
-        state_b = torch.zeros((x.shape[1],), dtype=x.dtype, device=x.device)
-        backward_out = torch.zeros_like(u)
-        for index in reversed(range(int(x.shape[0]))):
-            state_b = (decay * state_b) + u[index]
-            backward_out[index] = state_b * gate[index]
+        decay = torch.sigmoid(self.state_decay).to(dtype=u.dtype, device=u.device)
+        forward_out = self._parallel_associative_scan(u, decay) * gate
+        backward_state = self._parallel_associative_scan(torch.flip(u, dims=(0,)), decay)
+        backward_out = torch.flip(backward_state, dims=(0,)) * gate
 
         state_out = 0.5 * (forward_out + backward_out)
         x = x + self.out_proj(state_out)

@@ -288,6 +288,19 @@ def _prepare_training_tensors(
     }
 
 
+def _epoch_graph_indices(
+    *,
+    graph_count: int,
+    generator: torch.Generator,
+    stage: str,
+    location: str,
+) -> list[int]:
+    if int(graph_count) <= 0:
+        raise_error(stage, location, "graph_count invalido para embaralhamento de treino", impact="1", examples=[str(graph_count)])
+    order = torch.randperm(int(graph_count), generator=generator, device="cpu").tolist()
+    return [int(item) for item in order]
+
+
 def train_se3_generator(
     *,
     repo_root: Path,
@@ -461,8 +474,14 @@ def train_se3_generator(
         epoch_generative = 0.0
         epoch_crop_length = 0.0
         epoch_crop_count = 0
+        epoch_graph_indices = _epoch_graph_indices(
+            graph_count=graph_count,
+            generator=rng,
+            stage=stage,
+            location=location,
+        )
         optimizer.zero_grad(set_to_none=True)
-        for graph_index in range(graph_count):
+        for graph_offset, graph_index in enumerate(epoch_graph_indices):
             graph = graphs[graph_index] if graphs is not None else store.load_graph(graph_index)  # type: ignore[union-attr]
             prepared = _prepare_training_tensors(
                 graph=graph,
@@ -537,7 +556,7 @@ def train_se3_generator(
                     loss_generative = loss_generative + flow.forward_loss(h=h_fused, x_cond=x_coarse, x_true=coords_true)
                 loss = loss_structural + loss_generative
             (loss / float(accumulation_steps)).backward()
-            should_step = ((graph_index + 1) % int(accumulation_steps) == 0) or (graph_index == (graph_count - 1))
+            should_step = ((graph_offset + 1) % int(accumulation_steps) == 0) or (graph_offset == (graph_count - 1))
             if should_step:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)

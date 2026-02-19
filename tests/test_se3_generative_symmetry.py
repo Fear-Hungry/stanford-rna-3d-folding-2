@@ -78,6 +78,48 @@ def test_flow_predict_velocity_is_se3_equivariant() -> None:
     assert torch.allclose(vel_t, vel, atol=2e-4, rtol=2e-4)
 
 
+def test_diffusion_predict_noise_uses_neighbor_context() -> None:
+    torch.manual_seed(0)
+    n = 8
+    hidden = 8
+    model = Se3Diffusion(hidden_dim=hidden, num_steps=8).eval()
+
+    x_cond = _make_non_degenerate_chain(n)
+    h = torch.randn(n, hidden)
+    t = torch.tensor([0.5], dtype=torch.float32)
+    delta_base = 0.1 * torch.randn(n, 3)
+    noise_base = model._predict_noise(h, delta_base, x_cond, t)
+
+    delta_changed = delta_base.clone()
+    delta_changed[6] = delta_changed[6] + torch.tensor([0.4, -0.2, 0.3], dtype=torch.float32)
+    noise_changed = model._predict_noise(h, delta_changed, x_cond, t)
+
+    # Residuo 2 manteve as mesmas features locais; variacao vem da mensagem dos vizinhos.
+    delta_norm = float(torch.linalg.norm(noise_changed[2] - noise_base[2]).item())
+    assert delta_norm > 1e-5
+
+
+def test_flow_predict_velocity_uses_neighbor_context() -> None:
+    torch.manual_seed(0)
+    n = 8
+    hidden = 8
+    model = Se3FlowMatching(hidden_dim=hidden, num_steps=8).eval()
+
+    x_cond = _make_non_degenerate_chain(n)
+    h = torch.randn(n, hidden)
+    tau = torch.tensor([0.3], dtype=torch.float32)
+    x_t_base = x_cond + (0.2 * torch.randn(n, 3))
+    vel_base = model._predict_velocity(h, x_t_base, x_cond, tau)
+
+    x_t_changed = x_t_base.clone()
+    x_t_changed[6] = x_t_changed[6] + torch.tensor([0.3, -0.2, 0.35], dtype=torch.float32)
+    vel_changed = model._predict_velocity(h, x_t_changed, x_cond, tau)
+
+    # Residuo 2 manteve as mesmas features locais; variacao vem da mensagem dos vizinhos.
+    delta_norm = float(torch.linalg.norm(vel_changed[2] - vel_base[2]).item())
+    assert delta_norm > 1e-5
+
+
 def test_diffusion_sample_is_se3_equivariant_for_fixed_seed() -> None:
     torch.manual_seed(0)
     n = 7

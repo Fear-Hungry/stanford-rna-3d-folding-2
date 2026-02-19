@@ -1979,3 +1979,261 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - Esta iteracao valida contrato sintatico/estrutural local; score final e runtime/estabilidade hidden ainda dependem de rerun completo no Kaggle.
   - O budget de DRfold2 (`DRFOLD2_MAX_TARGETS`, `DRFOLD2_MAX_SEQ_LEN`, `DRFOLD2_SIMILARITY_THRESHOLD`) pode exigir ajuste fino conforme tempo total de notebook.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-147 (vetorizacao do scan mamba_like anti-timeout)
+
+- Data UTC: `2026-02-19T18:31:41Z`
+- Plano: `PLAN-147`
+- Resumo:
+  - Removido o loop Python por posicao de sequencia no `_MambaLikeBlock` (`sequence_tower.py`) e substituido por scan associativo vetorizado (`Hillis-Steele`) por canal.
+  - Mantida a semantica de recorrencia `s_t = decay * s_(t-1) + u_t` para os caminhos forward e backward, preservando o contrato de shape do bloco.
+  - Adicionado teste de equivalencia numerica entre a implementacao de referencia (loop) e a nova implementacao vetorizada para direcao direta/reversa.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sequence_tower.py`
+  - `tests/test_sequence_tower.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_sequence_tower.py` -> `2 passed`
+  - `python -m pytest -q tests/test_se3_memory.py` -> `1 failed` (falha de contrato esperada no ambiente atual sem CUDA: `autocast_bfloat16 exige treino em CUDA`)
+- Riscos conhecidos / follow-ups:
+  - O scan associativo aumenta alocacoes temporarias por passo logaritmico; se houver pressao de memoria em casos extremos, avaliar kernel dedicado (CUDA) ou variante fused.
+  - Benchmark de latencia end-to-end em GPU do ambiente alvo ainda pendente para quantificar ganho absoluto de tempo por sequencia longa.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-148 (survival por alvo no notebook, sem dummy sintetico)
+
+- Data UTC: `2026-02-19T18:35:51Z`
+- Plano: `PLAN-148`
+- Resumo:
+  - Ajustado o notebook de submissao para evitar abort total quando DRfold2 falha em alvos isolados.
+  - `_predict_drfold2_selected` passou a operar em modo de quarentena por alvo:
+    - excecoes por alvo sao capturadas localmente;
+    - o alvo com falha e mantido explicitamente no caminho TBM base;
+    - alvos com sucesso seguem para patch DRfold2.
+  - Adicionado artefato de diagnostico `drfold2_failed_targets.txt` no run dir do notebook com erros por alvo.
+  - Mantido contrato estrito de submissao final (sem uso de coordenadas dummy sinteticas).
+- Arquivos principais tocados:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m py_compile /tmp/nb113_cell1.py` -> `ok`
+  - `python - <<'PY' ... compile(code, ipynb, 'exec') ... PY` -> `compile_ok (870 linhas)`
+  - `python - <<'PY' ... assert chaves target_fail/fallback_tbm/succeeded_ids ... PY` -> `ok`
+- Riscos conhecidos / follow-ups:
+  - O isolamento atual foi aplicado no trecho DRfold2 do notebook de submissao; falhas catastróficas no caminho TBM ainda seguem fail-fast (comportamento deliberado por contrato).
+  - Se necessário, replicar padrão de quarentena por alvo para outros runners offline usados em notebooks futuros (chai1/boltz1/rnapro), sempre sem fallback sintetico silencioso.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-149 (fallback de grafo vetorizado com cdist no torch_sparse)
+
+- Data UTC: `2026-02-19T18:55:41Z`
+- Plano: `PLAN-149`
+- Resumo:
+  - Substituido fallback antigo de `torch_sparse` (grade/celulas + loop Python por no) por fallback vetorizado com `torch.cdist` por blocos em `sparse_graph.py`.
+  - Quando `torch_cluster.radius_graph` falha/nao esta disponivel, o backend agora:
+    - calcula distancias por bloco (`chunk_size`) em tensor;
+    - remove auto-arestas;
+    - aplica filtro por raio e `topk` para respeitar `max_neighbors` por no.
+  - Mantida a rota preferencial via `torch_cluster` quando operacional.
+  - Cobertura de testes atualizada para os dois caminhos (com e sem `torch_cluster`).
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sparse_graph.py`
+  - `tests/test_se3_memory.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_sparse_graph_edge_direction.py tests/test_se3_memory.py::test_sparse_radius_graph_limits_neighbors tests/test_se3_memory.py::test_sparse_radius_graph_includes_pair_edges_without_exceeding_budget tests/test_se3_memory.py::test_torch_sparse_backend_does_not_use_dense_cdist tests/test_se3_memory.py::test_torch_sparse_backend_uses_dense_cdist_when_torch_cluster_unavailable` -> `6 passed`
+- Riscos conhecidos / follow-ups:
+  - `torch.cdist` em fallback pode elevar pico de memoria para blocos grandes; tuning de `graph_chunk_size` continua sendo alavanca principal em sequencias gigantes.
+  - Se houver necessidade de throughput adicional, avaliar kernel dedicado/fused para radius graph no caminho fallback.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-150 (auto-reparo de permissao executavel para USalign)
+
+- Data UTC: `2026-02-19T18:57:36Z`
+- Plano: `PLAN-150`
+- Resumo:
+  - Implementado auto-reparo de permissao executavel (`chmod 0o755`) para USalign antes da validacao `X_OK`.
+  - `USalignBestOf5Scorer` agora tenta restaurar permissao e revalida executabilidade com erro explicito caso nao consiga.
+  - `_ensure_usalign_executable` em `homology_folds.py` recebeu o mesmo comportamento para clustering estrutural.
+  - Fluxo permanece fail-fast com mensagens acionaveis quando binario segue nao executavel apos tentativa de `chmod`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/evaluation/usalign_scorer.py`
+  - `src/rna3d_local/homology_folds.py`
+  - `tests/test_usalign_scorer.py`
+  - `tests/test_homology_folds_structural.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_usalign_scorer.py tests/test_homology_folds_structural.py` -> `7 passed`
+- Riscos conhecidos / follow-ups:
+  - Em datasets read-only ou sem permissao de escrita no arquivo, `chmod` pode falhar; nesses casos o erro continua bloqueando execucao com diagnostico explicito (comportamento esperado por contrato).
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-151 (survival de export/submissao com dummy deterministico)
+
+- Data UTC: `2026-02-19T19:18:39Z`
+- Plano: `PLAN-151`
+- Resumo:
+  - Ajustado `hybrid_router` para nao abortar quando um alvo fica sem cobertura apos tentativas de recovery; o alvo e marcado no `routing` com `fallback_source=no_coverage` e o pipeline segue.
+  - Ajustado `export_submission` (vetorizado) para nao interromper em `missing_rows`, preenchendo lacunas por `model_id/resid` com coordenadas dummy deterministicas (`x=resid*3.0`, `y=0.0`, `z=0.0`).
+  - Ajustado `_export_submission_streaming` com a mesma estrategia de dummy para faltas de particao do alvo, residuo ou modelo, com aviso explicito e contabilizacao.
+  - Mantida validacao final obrigatoria via `validate_submission_against_sample`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/submission.py`
+  - `tests/test_description_and_submission.py`
+  - `tests/test_phase2_hybrid.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_description_and_submission.py tests/test_phase2_hybrid.py` -> `14 passed`
+  - `python -m pytest -q tests/test_usalign_scorer.py tests/test_homology_folds_structural.py` -> `7 passed`
+- Riscos conhecidos / follow-ups:
+  - Coordenadas dummy reduzem qualidade local para alvos faltantes; objetivo e robustez de termino (evitar erro global de submissao), nao ganho de acuracia nesses casos.
+  - Logs de aviso devem ser monitorados no notebook para quantificar impacto de cobertura faltante por alvo.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-152 (remocao de leakage em chemical_exposure)
+
+- Data UTC: `2026-02-19T19:38:18Z`
+- Plano: `PLAN-152`
+- Resumo:
+  - Removido vazamento de gabarito em `compute_chemical_exposure_mapping`: `chem_exposure` nao usa mais coordenadas reais de `pdb_labels` (sem `centroid/dist/geom_exposure`).
+  - A exposicao agora e derivada exclusivamente de `reactivity_dms` e `reactivity_2a3`, mantendo consistencia entre treino e inferencia.
+  - `source` foi consolidado para `quickstart_only`, inclusive quando `pdb_labels` e fornecido.
+  - Mantida validacao minima de `pdb_labels` por chave (`target_id/resid`) e unicidade, sem acessar coordenadas.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/chemical_mapping.py`
+  - `tests/test_chemical_mapping.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_chemical_mapping.py` -> `3 passed`
+  - `python -m pytest -q tests/test_se3_pipeline.py` -> `2 failed` por ambiente sem CUDA (`autocast_bfloat16 exige treino em CUDA`), sem indicio de regressao funcional em `chemical_mapping`.
+- Riscos conhecidos / follow-ups:
+  - Monitorar distribuicao de `chemical_mapping_source_counts` em novos runs; agora esperado majoritariamente `quickstart_only`.
+  - Revalidar pipeline completo de treino SE(3) em maquina com CUDA disponivel para cobertura end-to-end.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-153 (blindagem fail-safe por alvo na exportacao)
+
+- Data UTC: `2026-02-19T19:41:13Z`
+- Plano: `PLAN-153`
+- Resumo:
+  - Reforcado o export de submissao com blindagem por alvo/linha para evitar abort total:
+    - falha ao carregar predicoes de um `target_id` agora aciona fallback dummy apenas para aquele alvo;
+    - excecao por linha no parsing/processamento agora e capturada e a linha e emitida com dummy;
+    - falha no particionamento de predictions ativa modo dummy global, preservando geracao de `submission.csv`.
+  - `export_submission` passou a priorizar modo fail-safe por padrao (`RNA3D_FAILSAFE_PER_TARGET=1`), usando caminho streaming por alvo.
+  - Mantida validacao final `check_submission` no final do export.
+- Arquivos principais tocados:
+  - `src/rna3d_local/submission.py`
+  - `tests/test_description_and_submission.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_description_and_submission.py` -> `5 passed`
+  - `python -m pytest -q tests/test_phase2_hybrid.py` -> `10 passed`
+- Riscos conhecidos / follow-ups:
+  - Modo fail-safe prioriza finalizacao da submissao sobre qualidade local em alvos problemáticos (coordenadas dummy podem reduzir score pontual).
+  - Em caso de volume alto de alvos com dummy, investigar causa raiz upstream (runner/modelo/particionamento) para recuperar acuracia.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-154 (blindagem OpenMM multicadeia + skip foundation)
+
+- Data UTC: `2026-02-19T19:46:01Z`
+- Plano: `PLAN-154`
+- Resumo:
+  - Corrigido risco de ligação indevida entre cadeias na minimização:
+    - `_build_covalent_pairs` agora considera `chain_index` opcional e só cria ligação quando resíduos adjacentes pertencem à mesma cadeia.
+    - `_minimize_openmm` passou a receber `chain_index` e valida tamanho consistente com `residue_index`.
+  - Adicionada política de preservação para fontes foundation:
+    - `minimize_ensemble` pula minimização para fontes `chai/boltz/rnapro/foundation` e mantém coordenadas originais.
+  - Fortalecido rastreamento e controle operacional:
+    - ordenação por `residue_index_1d` quando disponível;
+    - novas colunas `refinement_skipped` e `refinement_skip_reason`;
+    - novo contador de manifest `n_target_models_skipped_foundation_source`.
+  - Propagação de metadados de cadeia para inferência:
+    - `se3_pipeline` passa a exportar `chain_index` e `residue_index_1d`;
+    - `ensemble/select_top5.py`, `hybrid_router.py` e `hybrid_select.py` preservam colunas opcionais de cadeia quando presentes.
+- Arquivos principais tocados:
+  - `src/rna3d_local/minimization.py`
+  - `src/rna3d_local/se3_pipeline.py`
+  - `src/rna3d_local/ensemble/select_top5.py`
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/hybrid_select.py`
+  - `tests/test_minimization.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_minimization.py` -> `9 passed`
+  - `python -m pytest -q tests/test_phase2_hybrid.py` -> `10 passed` (1 warning de CUDA indisponivel no ambiente)
+- Riscos conhecidos / follow-ups:
+  - Em predições sem metadado de cadeia (`chain_index` ausente), a proteção intercadeia depende de `residue_index_1d` quando disponível; fontes externas legadas sem essa coluna permanecem com menor granularidade de proteção.
+  - Se necessário, expandir contrato de export dos runners externos para incluir `chain_index` explicitamente.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-155 (denoiser generativo com message passing)
+
+- Data UTC: `2026-02-19T19:51:33Z`
+- Plano: `PLAN-155`
+- Resumo:
+  - Substituido denoiser pointwise (`nn.Sequential`) de `Se3Diffusion` e `Se3FlowMatching` por bloco de message passing local SE(3)-equivariante.
+  - O novo bloco agrega mensagens entre residuos com geometria relativa (`x_j - x_i`) projetada no frame local equivarante de cada residuo, combinando:
+    - gates de no (`src/dst`) e aresta (distancia + vetor relativo local);
+    - agregacao atencional por vizinho;
+    - residual geometrico explicito para evitar colapso pointwise.
+  - Mantida saida vetorial em coordenadas globais via projecao de volta no frame equivarante.
+  - Adicionados testes para garantir que a predicao agora depende do contexto dos vizinhos (nao apenas de features locais do proprio residuo), sem regressao dos testes de simetria.
+- Arquivos principais tocados:
+  - `src/rna3d_local/generative/diffusion_se3.py`
+  - `src/rna3d_local/generative/flow_matching_se3.py`
+  - `tests/test_se3_generative_symmetry.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_se3_generative_symmetry.py` -> `6 passed`
+  - `python -m pytest -q tests/test_best_of5_strategy.py` -> `4 passed`
+- Riscos conhecidos / follow-ups:
+  - A agregacao densa atual e `O(N^2)` em memoria/tempo por chamada do denoiser; para alvos muito longos, pode ser necessario limitar vizinhanca (`top-k`/raio) mantendo equivariancia.
+  - Recomendado benchmarkar throughput/VRAM em GPU real com tamanhos altos de RNA para calibrar budget e possivel sparsificacao do bloco.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-156 (diversidade estrutural por RMSD/Kabsch)
+
+- Data UTC: `2026-02-19T19:53:59Z`
+- Plano: `PLAN-156`
+- Resumo:
+  - Corrigida a metrica de diversidade para remover cosseno em vetor achatado de coordenadas.
+  - `build_sample_vectors` passou a manter representacao estrutural `(N,3)` centrada/alinhada por Kabsch em vez de vetor `3N` normalizado.
+  - `cosine_similarity` foi reimplementada como similaridade estrutural baseada em RMSD apos alinhamento de Kabsch, com normalizacao tipo TM (`1 / (1 + (RMSD/d0)^2)`), preservando assinatura para compatibilidade interna.
+  - `approx_tm_distance`, `average_similarity`, clustering de medoides e selecao greedy passaram a operar sobre essa similaridade estrutural fisicamente coerente.
+  - Testes de diversidade foram atualizados para o novo contrato de shape e para validar robustez a dobra local de cauda.
+- Arquivos principais tocados:
+  - `src/rna3d_local/ensemble/diversity.py`
+  - `tests/test_diversity_rotation_invariance.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_diversity_rotation_invariance.py` -> `5 passed`
+  - `python -m pytest -q tests/test_best_of5_strategy.py` -> `4 passed`
+  - `python -m pytest -q tests/test_qa_ranker_se3.py` -> `2 passed`
+- Riscos conhecidos / follow-ups:
+  - A normalizacao estrutural atual usa `d0` fixado em `>=1.0`; pode requerer calibracao por comprimento para manter o melhor trade-off entre exploracao de diversidade e preservacao de qualidade.
+  - O calculo de similaridade realinha pares sob demanda; em conjuntos muito grandes, avaliar cache de distancia/similaridade por alvo para reduzir custo.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-157 (embaralhamento por epoca no treino SE3)
+
+- Data UTC: `2026-02-19T19:55:47Z`
+- Plano: `PLAN-157`
+- Resumo:
+  - Corrigido o loop de treino para remover ordem fixa de grafos em todas as epocas.
+  - Adicionado helper `_epoch_graph_indices` com `torch.randperm` + `torch.Generator` seedado para gerar permutacao completa por epoca.
+  - O loop principal passou de `for graph_index in range(graph_count)` para iteracao na ordem embaralhada por epoca.
+  - Ajustado o criterio de `optimizer.step()` para usar o offset da iteracao (`graph_offset`) em vez do indice absoluto do grafo, preservando comportamento correto de `gradient_accumulation_steps`.
+  - Incluido teste unitario dedicado para validar permutacao, reproducibilidade por seed e mudanca de ordem entre epocas.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `tests/test_trainer_se3_shuffle.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_trainer_se3_shuffle.py` -> `2 passed`
+  - `python -m pytest -q tests/test_best_of5_strategy.py` -> `4 passed`
+- Riscos conhecidos / follow-ups:
+  - O embaralhamento aumenta variancia entre execucoes com seeds diferentes (esperado); manter seed fixo continua obrigatorio para comparacoes reprodutiveis.
+  - Se for necessario replay exato de ordem por epoca em diagnostico, considerar registrar no manifest o hash da ordem de indices por epoca.

@@ -58,17 +58,12 @@ def compute_chemical_exposure_mapping(
         label="chemical_features",
     )
     _assert_unique_keys(chemical_features, label="chemical_features", stage=stage, location=location)
-    labels = None
+    # NOTE: pdb_labels is intentionally not used to build exposure features.
+    # Mixing ground-truth 3D coordinates into exposure causes train/inference drift
+    # and target leakage. Exposure must come only from chemical reactivity signals.
     if pdb_labels is not None:
-        require_columns(pdb_labels, ["target_id", "resid", "x", "y", "z"], stage=stage, location=location, label="pdb_labels")
-        _assert_unique_keys(pdb_labels, label="pdb_labels", stage=stage, location=location)
-        labels = pdb_labels.select(
-            pl.col("target_id").cast(pl.Utf8),
-            pl.col("resid").cast(pl.Int32),
-            pl.col("x").cast(pl.Float64),
-            pl.col("y").cast(pl.Float64),
-            pl.col("z").cast(pl.Float64),
-        )
+        require_columns(pdb_labels, ["target_id", "resid"], stage=stage, location=location, label="pdb_labels")
+        _assert_unique_keys(pdb_labels.select(pl.col("target_id"), pl.col("resid")), label="pdb_labels", stage=stage, location=location)
     chem_cast = chemical_features.select(
         pl.col("target_id").cast(pl.Utf8),
         pl.col("resid").cast(pl.Int32),
@@ -110,24 +105,6 @@ def compute_chemical_exposure_mapping(
         a3 = torch.tensor(chem_rows.get_column("reactivity_2a3").to_numpy(), dtype=torch.float32)
         chem_exposure = (_minmax_norm(dms) + _minmax_norm(a3)) / 2.0
         source = "quickstart_only"
-        if labels is not None:
-            label_rows = labels.filter(pl.col("target_id") == tid).sort("resid")
-            if label_rows.height != length:
-                raise_error(
-                    stage,
-                    location,
-                    "pdb_labels sem cobertura completa para target",
-                    impact=str(abs(int(length - label_rows.height))),
-                    examples=[f"{tid}:expected={length}:got={int(label_rows.height)}"],
-                )
-            coords = torch.tensor(label_rows.select("x", "y", "z").to_numpy(), dtype=torch.float32)
-            if bool(torch.isnan(coords).any()):
-                raise_error(stage, location, "pdb_labels contem coordenadas nulas", impact="1", examples=[tid])
-            centroid = coords.mean(dim=0, keepdim=True)
-            dist = torch.linalg.norm(coords - centroid, dim=1)
-            geom_exposure = _minmax_norm(dist)
-            chem_exposure = torch.clamp((chem_exposure + geom_exposure) / 2.0, min=0.0, max=1.0)
-            source = "quickstart_pdb_cross"
         outputs[tid] = ChemicalExposureTarget(target_id=tid, sequence=seq, exposure=chem_exposure, source=source)
     if not outputs:
         raise_error(stage, location, "nenhum target para chemical mapping", impact="0", examples=[])

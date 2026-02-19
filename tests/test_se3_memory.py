@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
+import sys
 
 import polars as pl
 import pytest
@@ -136,6 +138,24 @@ def test_torch_geometric_backend_contract() -> None:
 
 
 def test_torch_sparse_backend_does_not_use_dense_cdist(monkeypatch) -> None:
+    torch_cluster = types.ModuleType("torch_cluster")
+
+    def radius_graph(coords, r, loop, max_num_neighbors):  # noqa: ARG001
+        n = int(coords.shape[0])
+        src = []
+        dst = []
+        for center in range(n):
+            for neigh in range(max(0, center - 1), min(n, center + 2)):
+                if neigh == center:
+                    continue
+                # PyG convention: [neighbor, center]
+                src.append(neigh)
+                dst.append(center)
+        return torch.tensor([src, dst], dtype=torch.long, device=coords.device)
+
+    torch_cluster.radius_graph = radius_graph  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch_cluster", torch_cluster)
+
     def _raise_cdist(*_args, **_kwargs):
         raise AssertionError("torch.cdist nao deve ser chamado no backend torch_sparse")
 
@@ -158,6 +178,42 @@ def test_torch_sparse_backend_does_not_use_dense_cdist(monkeypatch) -> None:
         location="tests/test_se3_memory.py:test_torch_sparse_backend_does_not_use_dense_cdist",
     )
     assert int(graph.src.numel()) > 0
+
+
+def test_torch_sparse_backend_uses_dense_cdist_when_torch_cluster_unavailable(monkeypatch) -> None:
+    # Forca import sem radius_graph para acionar fallback vetorizado.
+    monkeypatch.setitem(sys.modules, "torch_cluster", types.ModuleType("torch_cluster"))
+
+    cdist_calls = {"n": 0}
+    original_cdist = torch.cdist
+
+    def _counting_cdist(*args, **kwargs):
+        cdist_calls["n"] += 1
+        return original_cdist(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "cdist", _counting_cdist)
+    coords = torch.stack(
+        [
+            torch.arange(0, 20, dtype=torch.float32) * 2.2,
+            torch.sin(torch.arange(0, 20, dtype=torch.float32) * 0.25),
+            torch.cos(torch.arange(0, 20, dtype=torch.float32) * 0.25),
+        ],
+        dim=1,
+    )
+    graph = build_sparse_radius_graph(
+        coords=coords,
+        radius_angstrom=10.0,
+        max_neighbors=5,
+        backend="torch_sparse",
+        chunk_size=6,
+        stage="TEST",
+        location="tests/test_se3_memory.py:test_torch_sparse_backend_uses_dense_cdist_when_torch_cluster_unavailable",
+    )
+    assert int(graph.src.numel()) > 0
+    assert cdist_calls["n"] > 0
+    out_degree = torch.zeros((int(coords.shape[0]),), dtype=torch.int64)
+    out_degree.index_add_(0, graph.src.cpu(), torch.ones_like(graph.src.cpu(), dtype=torch.int64))
+    assert int(out_degree.max().item()) <= 5
 
 
 def test_train_and_sample_se3_with_linear_memory_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

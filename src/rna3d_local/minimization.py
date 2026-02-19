@@ -20,12 +20,23 @@ class MinimizeEnsembleResult:
 
 
 _OPENMM_LONG_SKIP_LEN = 350
+_FOUNDATION_SOURCE_TOKENS = ("chai", "boltz", "rnapro", "foundation")
 
 
-def _build_covalent_pairs(resids: list[int]) -> list[tuple[int, int]]:
+def _is_foundation_source(source_name: str) -> bool:
+    name = str(source_name).strip().lower()
+    return any(token in name for token in _FOUNDATION_SOURCE_TOKENS)
+
+
+def _build_covalent_pairs(resids: list[int], chain_index: list[int] | None = None) -> list[tuple[int, int]]:
+    if chain_index is not None and int(len(chain_index)) != int(len(resids)):
+        raise ValueError(f"chain_index_len={len(chain_index)} resid_len={len(resids)}")
     pairs: list[tuple[int, int]] = []
     for idx in range(len(resids) - 1):
-        if int(resids[idx + 1]) - int(resids[idx]) == 1:
+        same_chain = True
+        if chain_index is not None:
+            same_chain = int(chain_index[idx + 1]) == int(chain_index[idx])
+        if same_chain and int(resids[idx + 1]) - int(resids[idx]) == 1:
             pairs.append((idx, idx + 1))
     return pairs
 
@@ -34,6 +45,7 @@ def _minimize_openmm(
     *,
     coords_angstrom: np.ndarray,
     residue_index: np.ndarray,
+    chain_index: np.ndarray | None,
     max_iterations: int,
     bond_length_angstrom: float,
     bond_force_k: float,
@@ -61,7 +73,19 @@ def _minimize_openmm(
     for _ in range(count):
         system.addParticle(12.0)
 
-    covalent_pairs = _build_covalent_pairs([int(item) for item in residue_index.tolist()])
+    try:
+        covalent_pairs = _build_covalent_pairs(
+            [int(item) for item in residue_index.tolist()],
+            None if chain_index is None else [int(item) for item in chain_index.tolist()],
+        )
+    except ValueError as exc:
+        raise_error(
+            stage,
+            location,
+            "chain_index/residue_index com comprimento inconsistente na minimizacao",
+            impact="1",
+            examples=[str(exc)],
+        )
     bond_force = mm.HarmonicBondForce()
     for i, j in covalent_pairs:
         bond_force.addBond(int(i), int(j), float(bond_length_angstrom) * 0.1, float(bond_force_k))
@@ -207,18 +231,48 @@ def minimize_ensemble(
     mean_shift_sum = 0.0
     mean_shift_count = 0
     skipped_openmm_long = 0
+    skipped_foundation_sources = 0
     for group_key, group_df in pred.group_by(["target_id", "model_id"], maintain_order=True):
         target_id = str(group_key[0]) if isinstance(group_key, tuple) else str(group_key)
         model_id = int(group_key[1]) if isinstance(group_key, tuple) else 0
-        part = group_df.sort("resid")
+        sort_col = "resid"
+        if "residue_index_1d" in group_df.columns:
+            residue_index_1d = group_df.get_column("residue_index_1d")
+            if int(residue_index_1d.null_count()) == 0:
+                sort_col = "residue_index_1d"
+        part = group_df.sort(sort_col)
         coords = part.select(pl.col("x").cast(pl.Float64), pl.col("y").cast(pl.Float64), pl.col("z").cast(pl.Float64)).to_numpy()
         if not np.isfinite(coords).all():
             raise_error(stage, location, "coordenadas invalidas antes da minimizacao", impact="1", examples=[f"{target_id}:{model_id}"])
-        residues = part.get_column("resid").cast(pl.Int64).to_numpy()
+        residue_index = part.get_column(sort_col).cast(pl.Int64).to_numpy()
+        chain_index: np.ndarray | None = None
+        if "chain_index" in part.columns:
+            chain_col = part.get_column("chain_index")
+            if int(chain_col.null_count()) == 0:
+                chain_index = chain_col.cast(pl.Int64).to_numpy()
+        source_name = "unknown"
+        if "source" in part.columns:
+            source_values = part.get_column("source").drop_nulls().head(1).to_list()
+            if source_values:
+                source_name = str(source_values[0])
         sequence_length = int(part.height)
-        if minimization_enabled and backend_name == "openmm" and sequence_length > _OPENMM_LONG_SKIP_LEN:
+        refinement_steps = int(max_iterations_int)
+        refinement_skip_reason: str | None = None
+        if minimization_enabled and _is_foundation_source(source_name):
+            minimized = np.asarray(coords, dtype=np.float64)
+            skipped_foundation_sources += 1
+            refinement_steps = 0
+            refinement_skip_reason = "foundation_source"
+            print(
+                f"[{stage}] [{location}] fonte foundation: minimizacao pulada para preservar geometria original | "
+                f"impacto=1 | exemplos={target_id}:{model_id}:source={source_name}",
+                file=sys.stderr,
+            )
+        elif minimization_enabled and backend_name == "openmm" and sequence_length > _OPENMM_LONG_SKIP_LEN:
             minimized = np.asarray(coords, dtype=np.float64)
             skipped_openmm_long += 1
+            refinement_steps = 0
+            refinement_skip_reason = "openmm_long_skip"
             print(
                 f"[{stage}] [{location}] alvo longo: OpenMM pulado para evitar timeout/OOM | impacto=1 | exemplos={target_id}:{model_id}:len={sequence_length}",
                 file=sys.stderr,
@@ -226,7 +280,8 @@ def minimize_ensemble(
         elif minimization_enabled and backend_name == "openmm":
             minimized = _minimize_openmm(
                 coords_angstrom=np.asarray(coords, dtype=np.float64),
-                residue_index=np.asarray(residues, dtype=np.int64),
+                residue_index=np.asarray(residue_index, dtype=np.int64),
+                chain_index=(None if chain_index is None else np.asarray(chain_index, dtype=np.int64)),
                 max_iterations=max_iterations_int,
                 bond_length_angstrom=float(bond_length_angstrom),
                 bond_force_k=float(bond_force_k),
@@ -243,6 +298,8 @@ def minimize_ensemble(
             minimized = _minimize_pyrosetta(coords_angstrom=np.asarray(coords, dtype=np.float64), stage=stage, location=location)
         else:
             minimized = np.asarray(coords, dtype=np.float64)
+            refinement_steps = 0
+            refinement_skip_reason = "max_iterations_zero"
         if minimized.shape != coords.shape:
             raise_error(stage, location, "backend de minimizacao retornou shape invalido", impact="1", examples=[f"{target_id}:{model_id}:{minimized.shape}!={coords.shape}"])
         if not np.isfinite(minimized).all():
@@ -257,8 +314,10 @@ def minimize_ensemble(
                 pl.Series("y", minimized[:, 1]),
                 pl.Series("z", minimized[:, 2]),
                 pl.lit(str(backend_name)).alias("refinement_backend"),
-                pl.lit(max_iterations_int).alias("refinement_steps"),
+                pl.lit(int(refinement_steps)).alias("refinement_steps"),
                 pl.lit(float(position_restraint_k)).alias("refinement_position_restraint_k"),
+                pl.lit(bool(refinement_skip_reason is not None)).alias("refinement_skipped"),
+                pl.lit(None if refinement_skip_reason is None else str(refinement_skip_reason)).alias("refinement_skip_reason"),
             ]
         )
         out_parts.append(out_part)
@@ -296,6 +355,7 @@ def minimize_ensemble(
                 "shift_max_angstrom": float(max_shift),
                 "shift_mean_angstrom": float(mean_shift_sum / float(max(mean_shift_count, 1))),
                 "n_target_models_openmm_skipped_long": int(skipped_openmm_long),
+                "n_target_models_skipped_foundation_source": int(skipped_foundation_sources),
             },
             "sha256": {"predictions.parquet": sha256_file(out_path)},
         },

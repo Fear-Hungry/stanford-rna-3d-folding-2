@@ -133,7 +133,24 @@ def _ensure_usalign_executable(path: str, *, stage: str, location: str) -> Path:
     if not usalign_path.is_file():
         raise_error(stage, location, "usalign_bin nao e arquivo", impact="1", examples=[str(usalign_path)])
     if not os.access(usalign_path, os.X_OK):
-        raise_error(stage, location, "binario USalign sem permissao de execucao", impact="1", examples=[str(usalign_path)])
+        try:
+            usalign_path.chmod(0o755)
+        except Exception as exc:  # noqa: BLE001
+            raise_error(
+                stage,
+                location,
+                "binario USalign sem permissao de execucao e falha ao aplicar chmod",
+                impact="1",
+                examples=[str(usalign_path), f"{type(exc).__name__}:{exc}"],
+            )
+    if not os.access(usalign_path, os.X_OK):
+        raise_error(
+            stage,
+            location,
+            "binario USalign segue sem permissao de execucao apos chmod",
+            impact="1",
+            examples=[str(usalign_path)],
+        )
     return usalign_path
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import math
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,30 @@ from .io_tables import read_table
 @dataclass(frozen=True)
 class SubmissionExportResult:
     submission_path: Path
+
+
+def _dummy_coords_for_resid(resid_key: int) -> tuple[float, float, float]:
+    # Deterministic "linha reta" fallback keeps CSV valid when a target/model is missing.
+    return (float(int(resid_key)) * 3.0, 0.0, 0.0)
+
+
+def _warn_submission_survival(*, stage: str, location: str, cause: str, impact: str, examples: list[str]) -> None:
+    print(
+        f"[{stage}] [{location}] {cause} | impacto={impact} | exemplos={','.join(examples[:8])}",
+        file=sys.stderr,
+    )
+
+
+def _safe_resid_for_dummy(*, row: dict[str, str], key: str, row_index: int) -> int:
+    try:
+        if "_" in key:
+            return int(key.rsplit("_", 1)[1])
+    except Exception:
+        pass
+    try:
+        return int(str(row.get("resid", "")).strip())
+    except Exception:
+        return int(row_index + 1)
 
 
 def _model_ids_from_sample_columns(columns: list[str], *, stage: str, location: str) -> list[int]:
@@ -81,7 +106,14 @@ def _load_target_pred_map(
     tdir = pred_part_dir / f"target_id={target_id}"
     files = sorted(tdir.glob("*.parquet"))
     if not files:
-        raise_error(stage, location, "predictions sem particao do target_id", impact="1", examples=[str(tdir)])
+        _warn_submission_survival(
+            stage=stage,
+            location=location,
+            cause="predictions sem particao do target_id; aplicando coordenadas dummy",
+            impact="1",
+            examples=[target_id],
+        )
+        return {}
     df = pl.read_parquet([str(p) for p in files])
     required = ["target_id", "model_id", "resid", "x", "y", "z"]
     missing = [c for c in required if c not in df.columns]
@@ -138,12 +170,24 @@ def _load_target_pred_map(
     for mid in model_ids:
         c = int(counts[int(mid)])
         if c <= 0:
-            raise_error(stage, location, "predictions sem coordenadas para model_id (center)", impact="1", examples=[f"{target_id}:{mid}"])
+            continue
         sx, sy, sz = sums[int(mid)]
         means[int(mid)] = (sx / c, sy / c, sz / c)
+    if not means:
+        _warn_submission_survival(
+            stage=stage,
+            location=location,
+            cause="predictions sem coordenadas validas para target_id; aplicando coordenadas dummy",
+            impact="1",
+            examples=[target_id],
+        )
+        return {}
     for per_resid in coords.values():
         for mid, (x, y, z) in list(per_resid.items()):
-            mx, my, mz = means[int(mid)]
+            mean = means.get(int(mid))
+            if mean is None:
+                continue
+            mx, my, mz = mean
             per_resid[int(mid)] = (float(x) - mx, float(y) - my, float(z) - mz)
     return coords
 
@@ -157,11 +201,23 @@ def _export_submission_streaming(
     stage = "EXPORT"
     location = "src/rna3d_local/submission.py:_export_submission_streaming"
 
+    pred_part_dir: Path | None = None
+    force_dummy_all_targets = False
     if predictions_long_path.is_dir():
         pred_part_dir = predictions_long_path
     else:
         pred_part_dir = out_path.parent / f"{predictions_long_path.stem}_by_target"
-        _partition_predictions_by_target(predictions_long_path=predictions_long_path, out_dir=pred_part_dir, stage=stage, location=location)
+        try:
+            _partition_predictions_by_target(predictions_long_path=predictions_long_path, out_dir=pred_part_dir, stage=stage, location=location)
+        except Exception as exc:  # noqa: BLE001
+            force_dummy_all_targets = True
+            _warn_submission_survival(
+                stage=stage,
+                location=location,
+                cause="falha ao particionar predictions; forçando dummy para todos os alvos",
+                impact="1",
+                examples=[f"{type(exc).__name__}:{exc}"],
+            )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -180,44 +236,96 @@ def _export_submission_streaming(
 
             current_target: str | None = None
             current_coords: dict[int, dict[int, tuple[float, float, float]]] | None = None
+            dummy_rows = 0
+            dummy_cells = 0
+            dummy_examples: list[str] = []
             for row_index, row in enumerate(reader):
-                key = str(row.get("ID", ""))
-                if "_" not in key:
-                    raise_error(stage, location, "ID invalido (esperado <target>_<resid>)", impact="1", examples=[key])
-                target_id = _target_id_from_key(key)
                 try:
+                    key = str(row.get("ID", ""))
+                    if "_" not in key:
+                        raise ValueError(f"ID invalido: {key}")
+                    target_id = _target_id_from_key(key)
                     resid_key = _resid_from_key(key)
-                except Exception:
-                    raise_error(stage, location, "ID invalido (esperado <target>_<resid>)", impact="1", examples=[key])
-                try:
                     resid_col = int(str(row.get("resid", "")).strip())
-                except Exception:
-                    raise_error(stage, location, "sample com resid invalido", impact="1", examples=[f"{key}:{row.get('resid')}"])
-                if resid_col != resid_key:
-                    raise_error(stage, location, "sample com resid divergente do ID", impact="1", examples=[f"{key}:resid={resid_col}"])
+                    if resid_col != resid_key:
+                        raise ValueError(f"resid divergente no sample: {key}:resid={resid_col}")
 
-                if target_id != current_target:
-                    current_target = target_id
-                    current_coords = _load_target_pred_map(
-                        pred_part_dir=pred_part_dir,
-                        target_id=target_id,
-                        model_ids=model_ids,
+                    if target_id != current_target:
+                        current_target = target_id
+                        if force_dummy_all_targets:
+                            current_coords = {}
+                        else:
+                            if pred_part_dir is None:
+                                current_coords = {}
+                            else:
+                                try:
+                                    current_coords = _load_target_pred_map(
+                                        pred_part_dir=pred_part_dir,
+                                        target_id=target_id,
+                                        model_ids=model_ids,
+                                        stage=stage,
+                                        location=location,
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    current_coords = {}
+                                    _warn_submission_survival(
+                                        stage=stage,
+                                        location=location,
+                                        cause="falha ao carregar predicoes do alvo; aplicando dummy no alvo",
+                                        impact="1",
+                                        examples=[f"{target_id}:{type(exc).__name__}:{exc}"],
+                                    )
+
+                    assert current_coords is not None
+                    per_resid = current_coords.get(int(resid_key))
+                    used_dummy = False
+                    if per_resid is None:
+                        per_resid = {}
+                        used_dummy = True
+                    for mid in model_ids:
+                        if mid in per_resid:
+                            x, y, z = per_resid[mid]
+                        else:
+                            x, y, z = _dummy_coords_for_resid(int(resid_key))
+                            dummy_cells += 1
+                            used_dummy = True
+                            if len(dummy_examples) < 8:
+                                dummy_examples.append(f"{target_id}:{mid}:{resid_key}")
+                        row[f"x_{mid}"] = str(float(x))
+                        row[f"y_{mid}"] = str(float(y))
+                        row[f"z_{mid}"] = str(float(z))
+                    if used_dummy:
+                        dummy_rows += 1
+                    writer.writerow(row)
+                except Exception as exc:  # noqa: BLE001
+                    key = str(row.get("ID", ""))
+                    resid_key = _safe_resid_for_dummy(row=row, key=key, row_index=row_index)
+                    target_id = _target_id_from_key(key) if "_" in key else f"row_{int(row_index)}"
+                    for mid in model_ids:
+                        x, y, z = _dummy_coords_for_resid(int(resid_key))
+                        row[f"x_{mid}"] = str(float(x))
+                        row[f"y_{mid}"] = str(float(y))
+                        row[f"z_{mid}"] = str(float(z))
+                        dummy_cells += 1
+                        if len(dummy_examples) < 8:
+                            dummy_examples.append(f"{target_id}:{mid}:{resid_key}")
+                    dummy_rows += 1
+                    writer.writerow(row)
+                    _warn_submission_survival(
                         stage=stage,
                         location=location,
+                        cause="erro por linha durante export; linha preenchida com dummy",
+                        impact="1",
+                        examples=[f"{target_id}:{type(exc).__name__}:{exc}"],
                     )
-
-                assert current_coords is not None
-                per_resid = current_coords.get(int(resid_key))
-                if per_resid is None:
-                    raise_error(stage, location, "predictions sem resid para alvo", impact="1", examples=[f"{target_id}:{resid_key}"])
-                for mid in model_ids:
-                    if mid not in per_resid:
-                        raise_error(stage, location, "predictions sem model_id para resid", impact="1", examples=[f"{target_id}:{mid}:{resid_key}"])
-                    x, y, z = per_resid[mid]
-                    row[f"x_{mid}"] = str(float(x))
-                    row[f"y_{mid}"] = str(float(y))
-                    row[f"z_{mid}"] = str(float(z))
-                writer.writerow(row)
+            if dummy_cells > 0:
+                _warn_submission_survival(
+                    stage=stage,
+                    location=location,
+                    cause="submissao exportada com lacunas preenchidas por coordenadas dummy",
+                    impact=str(dummy_cells),
+                    examples=dummy_examples[:8] + [f"rows={dummy_rows}"],
+                )
     except OSError as exc:
         raise_error(stage, location, "falha de IO ao exportar submissao (streaming)", impact="1", examples=[f"{type(exc).__name__}:{exc}"])
 
@@ -243,6 +351,9 @@ def export_submission(
     predictions_long_path: Path,
     out_path: Path,
 ) -> SubmissionExportResult:
+    # Kaggle hidden sets can contain pathological targets; default to per-target fail-safe export.
+    if os.environ.get("RNA3D_FAILSAFE_PER_TARGET", "1").strip() != "0":
+        return _export_submission_streaming(sample_path=sample_path, predictions_long_path=predictions_long_path, out_path=out_path)
     if _should_use_streaming_export(sample_path=sample_path, predictions_long_path=predictions_long_path):
         return _export_submission_streaming(sample_path=sample_path, predictions_long_path=predictions_long_path, out_path=out_path)
 
@@ -332,10 +443,10 @@ def export_submission(
             .head(8)
             .to_list()
         )
-        raise_error(
-            stage,
-            location,
-            "predictions long com chave faltante para sample",
+        _warn_submission_survival(
+            stage=stage,
+            location=location,
+            cause="predictions long com chave faltante para sample; aplicando coordenadas dummy",
             impact=str(int(missing_rows.height)),
             examples=[str(x) for x in examples],
         )
@@ -343,11 +454,12 @@ def export_submission(
     aggs: list[pl.Expr] = [pl.first("ID").alias("ID"), pl.first("resname").alias("resname"), pl.first("resid").alias("resid")]
     for mid in model_ids:
         k = int(mid)
+        resid_dummy_x = pl.first("resid_key").cast(pl.Float64) * pl.lit(3.0)
         aggs.extend(
             [
-                pl.when(pl.col("model_id") == k).then(pl.col("x")).max().alias(f"x_{k}"),
-                pl.when(pl.col("model_id") == k).then(pl.col("y")).max().alias(f"y_{k}"),
-                pl.when(pl.col("model_id") == k).then(pl.col("z")).max().alias(f"z_{k}"),
+                pl.when(pl.col("model_id") == k).then(pl.col("x")).max().fill_null(resid_dummy_x).alias(f"x_{k}"),
+                pl.when(pl.col("model_id") == k).then(pl.col("y")).max().fill_null(pl.lit(0.0)).alias(f"y_{k}"),
+                pl.when(pl.col("model_id") == k).then(pl.col("z")).max().fill_null(pl.lit(0.0)).alias(f"z_{k}"),
             ]
         )
     out = joined.group_by("_row", maintain_order=True).agg(aggs).sort("_row").drop("_row").select(out_cols)

@@ -389,7 +389,7 @@ def test_phase2_router_prefers_foundation_over_se3_when_available(tmp_path: Path
     assert routing.filter(pl.col("primary_source") != "foundation_trio").height == 0
 
 
-def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_path: Path) -> None:
+def test_phase2_router_short_bucket_recovers_with_tbm_when_foundation_missing_for_target(tmp_path: Path) -> None:
     targets = tmp_path / "targets.csv"
     _write_csv(
         targets,
@@ -408,7 +408,7 @@ def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_
     tbm = tmp_path / "tbm.parquet"
     _make_tbm(tbm)
 
-    # Chai/Boltz only run for a subset (T1), so short bucket must fail-fast (sem fallback silencioso).
+    # Chai/Boltz only run for a subset (T1); T2 deve acionar recovery explicito para TBM.
     foundation_targets = tmp_path / "foundation_targets.csv"
     _write_csv(
         foundation_targets,
@@ -441,20 +441,27 @@ def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_
                 )
     pl.DataFrame(rows).write_parquet(se3)
 
-    with pytest.raises(PipelineError, match="bucket short exige foundation trio completo"):
-        build_hybrid_candidates(
-            repo_root=tmp_path,
-            targets_path=targets,
-            retrieval_path=retrieval,
-            tbm_path=tbm,
-            out_path=tmp_path / "hybrid_candidates.parquet",
-            routing_path=tmp_path / "routing.parquet",
-            template_score_threshold=0.65,
-            rnapro_path=None,
-            chai1_path=chai.predictions_path,
-            boltz1_path=boltz.predictions_path,
-            se3_path=se3,
-        )
+    routed = build_hybrid_candidates(
+        repo_root=tmp_path,
+        targets_path=targets,
+        retrieval_path=retrieval,
+        tbm_path=tbm,
+        out_path=tmp_path / "hybrid_candidates.parquet",
+        routing_path=tmp_path / "routing.parquet",
+        template_score_threshold=0.65,
+        rnapro_path=None,
+        chai1_path=chai.predictions_path,
+        boltz1_path=boltz.predictions_path,
+        se3_path=se3,
+    )
+    routing = pl.read_parquet(routed.routing_path).sort("target_id")
+    t1 = routing.filter(pl.col("target_id") == "T1").row(0, named=True)
+    t2 = routing.filter(pl.col("target_id") == "T2").row(0, named=True)
+    assert str(t1["route_rule"]).startswith("len<=350->foundation_partial")
+    assert str(t2["route_rule"]).endswith("_coverage_recovery->tbm")
+    assert str(t2["primary_source"]) == "tbm"
+    assert bool(t2["fallback_used"]) is True
+    assert str(t2["fallback_source"]) == "tbm"
 
 
 def test_readiness_gate_blocks_non_improvement(tmp_path: Path) -> None:
@@ -599,7 +606,7 @@ def test_phase2_router_ultralong_falls_back_to_tbm_without_se3(tmp_path: Path) -
     assert routing.item(0, "fallback_used") is True
 
 
-def test_phase2_router_long_fails_when_mamba_and_tbm_missing(tmp_path: Path) -> None:
+def test_phase2_router_long_survives_when_mamba_and_tbm_missing(tmp_path: Path) -> None:
     targets = tmp_path / "targets.csv"
     _write_csv(
         targets,
@@ -611,20 +618,25 @@ def test_phase2_router_long_fails_when_mamba_and_tbm_missing(tmp_path: Path) -> 
     pl.DataFrame([{"target_id": "TLONG", "final_score": 0.99}]).write_parquet(retrieval)
     tbm = tmp_path / "tbm.parquet"
     pl.DataFrame([], schema={"target_id": pl.Utf8, "model_id": pl.Int32, "resid": pl.Int32, "resname": pl.Utf8, "x": pl.Float64, "y": pl.Float64, "z": pl.Float64}).write_parquet(tbm)
-    with pytest.raises(PipelineError, match="bucket long sem cobertura em se3_mamba e tbm"):
-        build_hybrid_candidates(
-            repo_root=tmp_path,
-            targets_path=targets,
-            retrieval_path=retrieval,
-            tbm_path=tbm,
-            out_path=tmp_path / "hybrid_candidates.parquet",
-            routing_path=tmp_path / "routing.parquet",
-            template_score_threshold=0.65,
-            rnapro_path=None,
-            chai1_path=None,
-            boltz1_path=None,
-            se3_mamba_path=None,
-        )
+    out = build_hybrid_candidates(
+        repo_root=tmp_path,
+        targets_path=targets,
+        retrieval_path=retrieval,
+        tbm_path=tbm,
+        out_path=tmp_path / "hybrid_candidates.parquet",
+        routing_path=tmp_path / "routing.parquet",
+        template_score_threshold=0.65,
+        rnapro_path=None,
+        chai1_path=None,
+        boltz1_path=None,
+        se3_mamba_path=None,
+    )
+    candidates = pl.read_parquet(out.candidates_path)
+    routing = pl.read_parquet(out.routing_path)
+    assert candidates.height == 0
+    assert routing.item(0, "fallback_used") is True
+    assert routing.item(0, "fallback_source") == "no_coverage"
+    assert routing.item(0, "primary_source") == "none"
 
 
 def test_phase2_router_fails_when_medium_threshold_not_greater_than_short(tmp_path: Path) -> None:

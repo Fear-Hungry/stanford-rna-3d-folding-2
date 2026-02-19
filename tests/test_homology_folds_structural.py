@@ -44,7 +44,8 @@ def test_build_homology_folds_usalign_tm_clusters_train_targets(tmp_path: Path, 
     _write_pdb_sequences(pdb_sequences)
     _write_labels(train_labels)
     usalign_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    os.chmod(usalign_bin, 0o755)
+    # Simula dataset Kaggle montado sem bit executavel.
+    os.chmod(usalign_bin, 0o644)
 
     def _fake_run(cmd, **kwargs):  # noqa: ANN001
         cand = Path(cmd[1]).stem
@@ -83,6 +84,7 @@ def test_build_homology_folds_usalign_tm_clusters_train_targets(tmp_path: Path, 
     t2 = folds.filter(pl.col("target_id") == "T2").row(0, named=True)
     assert t1["cluster_id"] == t2["cluster_id"]
     assert int(t1["fold_id"]) == int(t2["fold_id"])
+    assert os.access(usalign_bin, os.X_OK) is True
 
 
 def test_build_homology_folds_usalign_tm_requires_train_labels(tmp_path: Path) -> None:
@@ -113,4 +115,3 @@ def test_build_homology_folds_usalign_tm_requires_train_labels(tmp_path: Path) -
             description_column="description",
             strict_domain_stratification=False,
         )
-

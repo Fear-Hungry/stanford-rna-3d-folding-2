@@ -24,7 +24,8 @@ _CLASH_PENALTY = 0.40
 _KEEP_FRACTION = 0.50
 _MIN_DISTANCE = 2.1
 _COVALENT_SKIP = 1
-_TOP5_COLUMNS = ["target_id", "model_id", "resid", "resname", "x", "y", "z", "source", "confidence", "sample_id"]
+_TOP5_BASE_COLUMNS = ["target_id", "model_id", "resid", "resname", "x", "y", "z", "source", "confidence", "sample_id"]
+_TOP5_OPTIONAL_COLUMNS = ["chain_index", "residue_index_1d"]
 
 
 def _normalize_group_key(group_key: object) -> str:
@@ -130,12 +131,16 @@ def _materialize_selected_parts(*, sample_parts: dict[str, pl.DataFrame], select
     out_parts: list[pl.DataFrame] = []
     for model_id, sample_id in enumerate(selected_ids, start=1):
         sample_part = sample_parts[sample_id]
+        select_columns = list(_TOP5_BASE_COLUMNS)
+        for col in _TOP5_OPTIONAL_COLUMNS:
+            if col in sample_part.columns:
+                select_columns.append(col)
         out_parts.append(
             sample_part.with_columns(
                 pl.lit(int(model_id)).alias("model_id"),
                 pl.lit("generative_se3").alias("source"),
                 pl.col("qa_score").cast(pl.Float64).alias("confidence"),
-            ).select(_TOP5_COLUMNS)
+            ).select(select_columns)
         )
     return out_parts
 

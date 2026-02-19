@@ -143,20 +143,25 @@ def select_top5_hybrid(
                 examples=[tid],
             )
         selected_map = {sid: int(idx) for idx, sid in enumerate(selected_ids, start=1)}
+        select_exprs: list[pl.Expr] = [
+            pl.col("target_id").cast(pl.Utf8),
+            pl.col("model_id").cast(pl.Int32),
+            pl.col("resid").cast(pl.Int32),
+            pl.col("resname").cast(pl.Utf8),
+            pl.col("x").cast(pl.Float64),
+            pl.col("y").cast(pl.Float64),
+            pl.col("z").cast(pl.Float64),
+            pl.col("source").cast(pl.Utf8),
+            pl.col("confidence").cast(pl.Float64),
+        ]
+        if "chain_index" in target_df.columns:
+            select_exprs.append(pl.col("chain_index").cast(pl.Int32))
+        if "residue_index_1d" in target_df.columns:
+            select_exprs.append(pl.col("residue_index_1d").cast(pl.Int32))
         selected_df = (
             target_df.filter(pl.col("sample_id").is_in(selected_ids))
             .with_columns(pl.col("sample_id").replace(selected_map).cast(pl.Int32).alias("model_id"))
-            .select(
-                pl.col("target_id").cast(pl.Utf8),
-                pl.col("model_id").cast(pl.Int32),
-                pl.col("resid").cast(pl.Int32),
-                pl.col("resname").cast(pl.Utf8),
-                pl.col("x").cast(pl.Float64),
-                pl.col("y").cast(pl.Float64),
-                pl.col("z").cast(pl.Float64),
-                pl.col("source").cast(pl.Utf8),
-                pl.col("confidence").cast(pl.Float64),
-            )
+            .select(select_exprs)
             .sort(["target_id", "model_id", "resid"])
         )
         out_parts.append(selected_df)

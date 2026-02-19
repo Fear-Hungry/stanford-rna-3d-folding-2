@@ -2429,3 +2429,208 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Notebook compila localmente (`compile(cell_source, ...)`) sem erro.
   - `check-submission` local permanece parte obrigatoria do notebook antes da escrita final.
   - Nova versao nao reutiliza exatamente a logica de selecao/patch do v77 original (solucao diferente).
+
+## PLAN-147 - Remover loop Python por base no bloco mamba_like (anti-timeout)
+
+- Objetivo:
+  - Eliminar o loop Python O(L) por token no `_MambaLikeBlock` para evitar gargalo CPU-bound e timeout em sequencias longas.
+- Hipotese:
+  - Substituir o scan recorrente por um scan associativo vetorizado (`Hillis-Steele`) preserva contrato de shape e semantica da recorrencia por canal, com muito menos overhead de dispatch na GPU.
+- Mudancas:
+  - `src/rna3d_local/se3/sequence_tower.py`:
+    - introduzir helper `_parallel_associative_scan(u, decay)` sem loop por indice da sequencia;
+    - aplicar scan vetorizado nas direcoes direta e reversa no `forward` do `_MambaLikeBlock`;
+    - manter saida final e API do bloco inalteradas.
+  - `tests/test_sequence_tower.py`:
+    - adicionar teste de equivalencia numerica entre scan de referencia (loop) e scan associativo vetorizado (direta e reversa).
+- Criterios de aceite:
+  - `pytest -q tests/test_sequence_tower.py` passa.
+  - Sem loop `for index in range(len(seq))` no caminho de inferencia do `_MambaLikeBlock`.
+
+## PLAN-148 - Survival por alvo no notebook (sem dummy sintetico)
+
+- Objetivo:
+  - Evitar crash global da submissao Kaggle quando DRfold2 falhar em um alvo isolado, mantendo conformidade com regras de contrato (sem fallback sintetico silencioso).
+- Hipotese:
+  - Isolar excecoes no loop por alvo do DRfold2 e aplicar fallback explicito para TBM no alvo com falha evita `Score=0.0` por abort total, preservando predições reais.
+- Mudancas:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`:
+    - `_predict_drfold2_selected` passa a processar por alvo com captura de excecao local e retorno de `succeeded_ids` + `failed_errors`;
+    - registro explicito de falhas em `drfold2_failed_targets.txt`;
+    - patch da submissao com DRfold2 somente para `succeeded_ids`; alvos falhos permanecem com TBM base;
+    - sem geracao de estrutura dummy/heuristica sintetica.
+- Criterios de aceite:
+  - Notebook compila localmente (`compile(cell_source, ...)`) sem erro.
+  - Logs do notebook incluem `target_fail -> fallback_tbm` para falhas por alvo de DRfold2.
+  - Pipeline continua completo com `check-submission` ao final quando houver falhas parciais de DRfold2.
+
+## PLAN-149 - Fallback de grafo torch_sparse vetorizado com cdist (anti-timeout CPU)
+
+- Objetivo:
+  - Remover fallback CPU com loop por no em `sparse_graph.py` e substitui-lo por fallback vetorizado em tensores (preferencia por GPU) para evitar timeout em inferencia longa.
+- Hipotese:
+  - Usar `torch.cdist` por blocos (`chunk_size`) e selecionar vizinhos por `topk` elimina o gargalo Python por no sem comprometer corretude de arestas dentro do raio.
+- Mudancas:
+  - `src/rna3d_local/se3/sparse_graph.py`:
+    - quando `torch_cluster.radius_graph` falhar/ausente, fallback passa a usar `torch.cdist` vetorizado;
+    - remocao do algoritmo antigo baseado em grade/celulas com loop Python por `src_idx`;
+    - preservacao de `max_neighbors` por no e sem auto-arestas.
+  - `tests/test_se3_memory.py`:
+    - ajustar teste para garantir que, com `torch_cluster` funcional, `cdist` nao e usado;
+    - adicionar teste para garantir que, sem `torch_cluster`, fallback vetorizado usa `cdist` e respeita budget de vizinhos.
+- Criterios de aceite:
+  - `pytest` dos testes de grafo relevantes passa.
+  - Sem loop `for src_idx in range(n_nodes)` no fallback do backend `torch_sparse`.
+
+## PLAN-150 - Auto-reparo de permissao executavel para USalign (Kaggle datasets)
+
+- Objetivo:
+  - Evitar falha prematura quando o Kaggle monta datasets offline sem bit executavel nos binarios utilitarios.
+- Hipotese:
+  - Tentar `chmod 0o755` antes do check de `X_OK` torna os fluxos de score/clustering estrutural robustos sem relaxar fail-fast.
+- Mudancas:
+  - `src/rna3d_local/evaluation/usalign_scorer.py`:
+    - adicionar helper para garantir executabilidade do binario (`exists`/`is_file` + `chmod` + revalidacao).
+  - `src/rna3d_local/homology_folds.py`:
+    - aplicar tentativa de `chmod 0o755` em `_ensure_usalign_executable` antes de falhar.
+  - Testes:
+    - `tests/test_usalign_scorer.py`: novo caso cobrindo binario iniciado sem permissao de execucao.
+    - `tests/test_homology_folds_structural.py`: scenario atualizado para iniciar com `0o644` e validar recuperacao.
+- Criterios de aceite:
+  - `pytest -q tests/test_usalign_scorer.py tests/test_homology_folds_structural.py` passa.
+  - Falhas de permissao continuam explicitas quando `chmod` nao resolver (read-only/permissao negada).
+
+## PLAN-151 - Survival de export/submissao para cobertura incompleta (dummy deterministico)
+
+- Objetivo:
+  - Garantir que a submissao Kaggle finalize mesmo quando um alvo ficar sem cobertura de predicao em algum modelo/rota.
+- Hipotese:
+  - Trocar abort em falta de cobertura por preenchimento deterministico por residuo (linha reta) evita `Submission Error` global e impede score 0.0 por crash total.
+- Mudancas:
+  - `src/rna3d_local/hybrid_router.py`:
+    - quando nao houver cobertura apos recovery, registrar em `routing` (`fallback_source=no_coverage`) e seguir sem abortar;
+    - permitir saida de candidatos vazia com aviso explicito para o export final.
+  - `src/rna3d_local/submission.py`:
+    - remover abort por `missing_rows` em `export_submission` e preencher faltas com coordenadas dummy deterministicas (`x=resid*3.0`, `y=0.0`, `z=0.0`);
+    - aplicar a mesma estrategia no caminho `_export_submission_streaming` para faltas de `target/resid/model_id`;
+    - registrar avisos explicitos com contagem e exemplos quando dummy for usado.
+  - `tests/test_description_and_submission.py`:
+    - adicionar casos para validar dummy no caminho nao-streaming e streaming.
+  - `tests/test_phase2_hybrid.py`:
+    - atualizar cenario long sem cobertura para validar modo survival (sem excecao).
+- Criterios de aceite:
+  - `pytest -q tests/test_description_and_submission.py tests/test_phase2_hybrid.py` passa.
+  - `check_submission` valida o CSV final mesmo quando houver lacunas de predicao na entrada.
+
+## PLAN-152 - Remocao de data leakage em chemical_exposure (sem uso de coordenada real)
+
+- Objetivo:
+  - Eliminar vazamento de gabarito no treino SE(3) removendo qualquer dependencia de coordenadas `pdb_labels` na construcao de `chem_exposure`.
+- Hipotese:
+  - Construir `chem_exposure` exclusivamente a partir de `reactivity_dms` e `reactivity_2a3` alinha distribuicao treino/inferencia e evita sobreajuste por leitura indireta do target 3D.
+- Mudancas:
+  - `src/rna3d_local/training/chemical_mapping.py`:
+    - remover cruzamento com geometria (`centroid/dist/geom_exposure`) quando `pdb_labels` estiver presente;
+    - manter `source="quickstart_only"` para todos os caminhos;
+    - preservar validacao estrutural minima de `pdb_labels` (chaves `target_id/resid` + unicidade), sem usar coordenadas.
+  - `tests/test_chemical_mapping.py`:
+    - atualizar teste para garantir que exposicao com/sem `pdb_labels` e identica.
+- Criterios de aceite:
+  - `pytest -q tests/test_chemical_mapping.py` passa.
+  - nao existem referencias a `geom_exposure` em `chemical_mapping.py`.
+
+## PLAN-153 - Blindagem fail-safe por alvo no export da submissao
+
+- Objetivo:
+  - Evitar crash global da submissao Kaggle quando um alvo isolado falhar por dados sujos, erro de parse ou excecao interna de carregamento de predicoes.
+- Hipotese:
+  - Processar cada linha/alvo em bloco `try/except Exception` no export streaming e preencher com dummy deterministico quando houver falha garante finalizacao do `submission.csv` em vez de `Score 0.00` por erro total.
+- Mudancas:
+  - `src/rna3d_local/submission.py`:
+    - adicionar `_safe_resid_for_dummy` para derivar resid fallback robusto;
+    - no `_export_submission_streaming`, capturar falhas por alvo ao carregar particao e falhas por linha durante parse/processamento, preenchendo coordenadas via `_dummy_coords_for_resid`;
+    - em falha de particionamento parquet, ativar modo `dummy` global para todos os alvos;
+    - tornar o `export_submission` fail-safe por padrao (`RNA3D_FAILSAFE_PER_TARGET=1`), priorizando o caminho streaming por alvo.
+  - `tests/test_description_and_submission.py`:
+    - novo teste com falha injetada em `_load_target_pred_map` para validar continuidade com dummy e submissao valida.
+- Criterios de aceite:
+  - `pytest -q tests/test_description_and_submission.py` passa.
+  - `pytest -q tests/test_phase2_hybrid.py` continua passando sem regressao.
+
+## PLAN-154 - Blindagem de minimizacao OpenMM para multicadeia e fontes foundation
+
+- Objetivo:
+  - Evitar distorcao estrutural na minimizacao (OpenMM) por ligacao covalente indevida entre cadeias e por relaxacao agressiva em saidas de Foundation Models.
+- Hipotese:
+  - Restringir pares covalentes a residuos adjacentes na mesma cadeia (`chain_index`) e pular minimizacao para fontes foundation (`chai/boltz/rnapro`) preserva geometria util sem degradar TM-score por sobre-refino.
+- Mudancas:
+  - `src/rna3d_local/minimization.py`:
+    - `_build_covalent_pairs` passa a respeitar `chain_index` opcional;
+    - `_minimize_openmm` recebe `chain_index` e valida consistencia com `residue_index`;
+    - `minimize_ensemble` pula refinamento para fontes foundation com log explicito e contadores no manifest;
+    - `minimize_ensemble` usa `residue_index_1d` quando disponivel para ordenacao/continuidade, e adiciona metadados `refinement_skipped`/`refinement_skip_reason`.
+  - Propagacao de metadados de cadeia para permitir minimizacao informada:
+    - `src/rna3d_local/se3_pipeline.py`: incluir `chain_index` e `residue_index_1d` nas amostras geradas.
+    - `src/rna3d_local/ensemble/select_top5.py`: preservar colunas opcionais de cadeia no top5 se3.
+    - `src/rna3d_local/hybrid_router.py`: normalizar e manter `chain_index`/`residue_index_1d` quando presentes.
+    - `src/rna3d_local/hybrid_select.py`: preservar colunas opcionais de cadeia no top5 hybrid.
+  - `tests/test_minimization.py`:
+    - novo teste para fronteira de cadeia em `_build_covalent_pairs`;
+    - novo teste para skip de minimizacao em fonte foundation.
+- Criterios de aceite:
+  - `pytest -q tests/test_minimization.py` passa.
+  - `pytest -q tests/test_phase2_hybrid.py` passa sem regressao.
+
+## PLAN-155 - Denoiser generativo com message passing SE(3)-equivariante
+
+- Objetivo:
+  - Remover miopia pointwise dos denoisers (`diffusion` e `flow matching`) para que cada residuo incorpore contexto espacial dos vizinhos durante predicao de ruido/velocidade.
+- Hipotese:
+  - Um bloco de mensagens baseado em geometria relativa no referencial local equivarante melhora consistencia estrutural (menos clashes e nuvens amorfas) sem quebrar invariancia translacional/equivariancia rotacional.
+- Mudancas:
+  - `src/rna3d_local/generative/diffusion_se3.py`:
+    - substituir `nn.Sequential` pointwise por bloco de message passing local usando coordenadas ruidosas (`x_cond + delta_noisy`);
+    - manter saida vetorial em coordenadas globais via frames equivariantes.
+  - `src/rna3d_local/generative/flow_matching_se3.py`:
+    - aplicar a mesma arquitetura de message passing para predicao de velocidade com `x_t`.
+  - `tests/test_se3_generative_symmetry.py`:
+    - adicionar cobertura para garantir dependencia contextual (saida de um residuo muda quando vizinho muda) preservando propriedades SE(3) existentes.
+- Criterios de aceite:
+  - `pytest -q tests/test_se3_generative_symmetry.py` passa.
+  - `pytest -q tests/test_best_of5_strategy.py` passa sem regressao de integracao.
+
+## PLAN-156 - Diversidade estrutural por RMSD/Kabsch (sem cosseno em vetor achatado)
+
+- Objetivo:
+  - Corrigir a metrica de diversidade para refletir distancia estrutural fisica entre conformacoes de RNA, removendo dependencia de cosseno em coordenadas achatadas.
+- Hipotese:
+  - Similaridade baseada em RMSD apos alinhamento de Kabsch (com escala tipo TM para normalizacao) melhora a selecao de medoides e evita favorecer outliers geometricamente quebrados.
+- Mudancas:
+  - `src/rna3d_local/ensemble/diversity.py`:
+    - substituir representacao vetorial achatada por coordenadas alinhadas/centradas por amostra;
+    - reimplementar `cosine_similarity` como similaridade estrutural (RMSD/Kabsch + normalizacao), preservando assinatura para compatibilidade interna;
+    - manter `approx_tm_distance`, `average_similarity` e seletores usando a nova similaridade estrutural.
+  - `tests/test_diversity_rotation_invariance.py`:
+    - adaptar teste de contrato de shape para matriz `(N,3)`;
+    - adicionar teste cobrindo sensibilidade controlada a deformacao local (cauda) sem colapso extremo da similaridade.
+- Criterios de aceite:
+  - `pytest -q tests/test_diversity_rotation_invariance.py` passa.
+  - `pytest -q tests/test_best_of5_strategy.py` passa sem regressao.
+
+## PLAN-157 - Embaralhamento por epoca no treino SE3 (anti-bias de ordem fixa)
+
+- Objetivo:
+  - Eliminar viés de gradiente por ordem fixa dos grafos no loop de treino, garantindo estocasticidade entre épocas.
+- Hipotese:
+  - Iterar os grafos com permutação `randperm` por época melhora mistura dos micro-lotes sob `gradient_accumulation_steps` e reduz overfitting local por blocos repetidos.
+- Mudancas:
+  - `src/rna3d_local/training/trainer_se3.py`:
+    - adicionar helper para gerar ordem de índices embaralhada por época com `torch.randperm` e `torch.Generator` seedado;
+    - substituir iteração sequencial `range(graph_count)` por iteração nessa ordem;
+    - preservar stepping por posição da iteração (não pelo índice absoluto do grafo).
+  - `tests/test_trainer_se3_shuffle.py`:
+    - validar que a ordem por época é uma permutação completa sem duplicatas;
+    - validar reprodutibilidade quando seed/generator inicial são iguais.
+- Criterios de aceite:
+  - `pytest -q tests/test_trainer_se3_shuffle.py` passa.
+  - `pytest -q tests/test_best_of5_strategy.py` passa sem regressao.

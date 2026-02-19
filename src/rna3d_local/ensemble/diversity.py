@@ -44,12 +44,53 @@ def _kabsch_align_centered(mobile_centered: np.ndarray, target_centered: np.ndar
     return mobile_centered @ rotation.T
 
 
-def _vector_from_centered_coords(coords_centered: np.ndarray) -> np.ndarray:
-    vec = coords_centered.reshape(-1)
-    norm = float(np.linalg.norm(vec))
-    if norm <= _VECTOR_EPS:
-        return np.zeros_like(vec)
-    return vec / norm
+def _validate_coord_matrix(coords: np.ndarray, *, function: str, arg_name: str) -> None:
+    if coords.ndim != 2:
+        _raise_diversity_contract(
+            function,
+            "coordenadas devem ser matriz 2D (N,3)",
+            impact="1",
+            examples=[f"{arg_name}.ndim={coords.ndim}"],
+        )
+    if int(coords.shape[1]) != 3:
+        _raise_diversity_contract(
+            function,
+            "coordenadas devem ter 3 colunas (x,y,z)",
+            impact="1",
+            examples=[f"{arg_name}.shape={coords.shape}"],
+        )
+    if int(coords.shape[0]) <= 0:
+        _raise_diversity_contract(
+            function,
+            "coordenadas vazias para similaridade estrutural",
+            impact="1",
+            examples=[f"{arg_name}.shape={coords.shape}"],
+        )
+    if not bool(np.isfinite(coords).all()):
+        _raise_diversity_contract(
+            function,
+            "coordenadas nao-finitas para similaridade estrutural",
+            impact="1",
+            examples=[f"{arg_name}.shape={coords.shape}"],
+        )
+
+
+def _tm_like_scale(n_res: int) -> float:
+    if int(n_res) <= 0:
+        _raise_diversity_contract("cosine_similarity", "n_res invalido para normalizacao estrutural", impact="1", examples=[str(n_res)])
+    if int(n_res) < 20:
+        return 1.0
+    value = (1.24 * ((float(n_res) - 15.0) ** (1.0 / 3.0))) - 1.8
+    return max(1.0, float(value))
+
+
+def _aligned_rmsd(mobile: np.ndarray, target: np.ndarray) -> float:
+    mobile_centered = mobile - mobile.mean(axis=0, keepdims=True)
+    target_centered = target - target.mean(axis=0, keepdims=True)
+    aligned = _kabsch_align_centered(mobile_centered, target_centered)
+    delta = aligned - target_centered
+    sq = np.sum(delta * delta, axis=1)
+    return float(math.sqrt(max(_VECTOR_EPS, float(np.mean(sq)))))
 
 
 def _coords_for_sample(sample_df: pl.DataFrame) -> np.ndarray:
@@ -114,7 +155,7 @@ def build_sample_vectors(target_df: pl.DataFrame, *, stage: str, location: str, 
     if anchor_len <= 1:
         raise_error(stage, location, "anchor com residuos insuficientes para diversidade", impact="1", examples=[anchor_id, f"n={anchor_len}"])
 
-    vectors[anchor_id] = _vector_from_centered_coords(anchor_centered)
+    vectors[anchor_id] = anchor_centered
     for sample_id, sample_part in sample_parts.items():
         if sample_id == anchor_id:
             continue
@@ -156,36 +197,24 @@ def build_sample_vectors(target_df: pl.DataFrame, *, stage: str, location: str, 
 
         coords_centered = coords - coords.mean(axis=0, keepdims=True)
         aligned = _kabsch_align_centered(coords_centered, anchor_centered)
-        vectors[sample_id] = _vector_from_centered_coords(aligned)
+        vectors[sample_id] = aligned
     return vectors
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    if a.ndim != 1:
-        _raise_diversity_contract(
-            "cosine_similarity",
-            "vetores devem ser 1D para similaridade",
-            impact="1",
-            examples=[f"a.ndim={a.ndim}"],
-        )
-    if b.ndim != 1:
-        _raise_diversity_contract(
-            "cosine_similarity",
-            "vetores devem ser 1D para similaridade",
-            impact="1",
-            examples=[f"b.ndim={b.ndim}"],
-        )
+    _validate_coord_matrix(a, function="cosine_similarity", arg_name="a")
+    _validate_coord_matrix(b, function="cosine_similarity", arg_name="b")
     if a.shape != b.shape:
         _raise_diversity_contract(
             "cosine_similarity",
-            "vetores com shape divergente para similaridade",
+            "coordenadas com shape divergente para similaridade estrutural",
             impact="1",
             examples=[f"a={a.shape}", f"b={b.shape}"],
         )
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    if denom <= _VECTOR_EPS:
-        return 0.0
-    return float(np.dot(a, b) / denom)
+    rmsd = _aligned_rmsd(a, b)
+    d0 = _tm_like_scale(int(a.shape[0]))
+    sim = 1.0 / (1.0 + ((rmsd / d0) ** 2))
+    return float(min(1.0, max(0.0, sim)))
 
 
 def approx_tm_distance(a: np.ndarray, b: np.ndarray) -> float:

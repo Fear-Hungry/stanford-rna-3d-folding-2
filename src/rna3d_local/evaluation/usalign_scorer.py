@@ -30,6 +30,35 @@ class _TargetRows:
     rows: list[dict[str, object]]
 
 
+def _ensure_executable_binary(path: Path, *, stage: str, location: str, label: str) -> Path:
+    resolved = Path(path).resolve()
+    if not resolved.exists():
+        raise_error(stage, location, f"binario {label} ausente", impact="1", examples=[str(resolved)])
+    if not resolved.is_file():
+        raise_error(stage, location, f"binario {label} invalido (nao e arquivo)", impact="1", examples=[str(resolved)])
+    if os.access(resolved, os.X_OK):
+        return resolved
+    try:
+        resolved.chmod(0o755)
+    except Exception as exc:  # noqa: BLE001
+        raise_error(
+            stage,
+            location,
+            f"binario {label} sem permissao de execucao e falha ao aplicar chmod",
+            impact="1",
+            examples=[str(resolved), f"{type(exc).__name__}:{exc}"],
+        )
+    if not os.access(resolved, os.X_OK):
+        raise_error(
+            stage,
+            location,
+            f"binario {label} segue sem permissao de execucao apos chmod",
+            impact="1",
+            examples=[str(resolved)],
+        )
+    return resolved
+
+
 class USalignBestOf5Scorer:
     def __init__(
         self,
@@ -45,10 +74,12 @@ class USalignBestOf5Scorer:
         self.missing_coord_threshold = float(missing_coord_threshold)
         stage = "SCORE_LOCAL_BESTOF5"
         location = "src/rna3d_local/evaluation/usalign_scorer.py:USalignBestOf5Scorer.__init__"
-        if not self.usalign_path.exists():
-            raise_error(stage, location, "binario USalign ausente", impact="1", examples=[str(self.usalign_path)])
-        if not os.access(self.usalign_path, os.X_OK):
-            raise_error(stage, location, "binario USalign sem permissao de execucao", impact="1", examples=[str(self.usalign_path)])
+        self.usalign_path = _ensure_executable_binary(
+            self.usalign_path,
+            stage=stage,
+            location=location,
+            label="USalign",
+        )
         if self.timeout_seconds <= 0:
             raise_error(stage, location, "timeout_seconds invalido (<=0)", impact="1", examples=[str(self.timeout_seconds)])
         if self.ground_truth_mode not in {"single", "best_of_gt_copies"}:

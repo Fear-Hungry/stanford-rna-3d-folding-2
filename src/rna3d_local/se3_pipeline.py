@@ -135,6 +135,8 @@ def sample_se3_ensemble(
                             "x": float(coords[idx, 0].item()),
                             "y": float(coords[idx, 1].item()),
                             "z": float(coords[idx, 2].item()),
+                            "chain_index": int(graph.chain_index[idx].item()),
+                            "residue_index_1d": int(graph.residue_index[idx].item()),
                             "method": method_name,
                             "source": "generative_se3",
                             "confidence": float(confidence),

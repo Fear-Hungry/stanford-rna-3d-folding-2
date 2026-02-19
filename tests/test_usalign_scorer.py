@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import polars as pl
@@ -185,3 +186,30 @@ def test_score_local_bestof5_best_of_gt_copies(tmp_path: Path) -> None:
     )
     assert result.n_targets == 1
     assert result.score == pytest.approx(0.90, abs=1e-6)
+
+
+def test_score_local_bestof5_recovers_missing_execute_permission(tmp_path: Path) -> None:
+    usalign_bin = tmp_path / "USalign"
+    _write_fake_usalign(usalign_bin)
+    usalign_bin.chmod(0o644)
+    assert os.access(usalign_bin, os.X_OK) is False
+
+    ground_truth = tmp_path / "ground_truth.csv"
+    submission = tmp_path / "submission.csv"
+    score_json = tmp_path / "score.json"
+    pl.DataFrame(
+        [
+            {"ID": "T1_1", "resname": "A", "x": 0.0, "y": 0.0, "z": 0.0},
+            {"ID": "T1_2", "resname": "C", "x": 1.0, "y": 0.0, "z": 0.0},
+        ]
+    ).write_csv(ground_truth)
+    _write_submission(submission, ids=["T1_1", "T1_2"])
+    result = score_local_bestof5(
+        ground_truth_path=ground_truth,
+        submission_path=submission,
+        usalign_path=usalign_bin,
+        score_json_path=score_json,
+        report_path=None,
+    )
+    assert result.n_targets == 1
+    assert os.access(usalign_bin, os.X_OK) is True

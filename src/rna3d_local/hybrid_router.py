@@ -54,6 +54,8 @@ def _normalize_predictions_table(df: pl.DataFrame, *, source: str, stage: str, l
         pl.col("z").cast(pl.Float64),
         (pl.col("confidence").cast(pl.Float64) if "confidence" in df.columns else pl.lit(None).cast(pl.Float64)).alias("confidence"),
         (pl.col("source").cast(pl.Utf8) if "source" in df.columns else pl.lit(source)).alias("source"),
+        (pl.col("chain_index").cast(pl.Int32) if "chain_index" in df.columns else pl.lit(None).cast(pl.Int32)).alias("chain_index"),
+        (pl.col("residue_index_1d").cast(pl.Int32) if "residue_index_1d" in df.columns else pl.lit(None).cast(pl.Int32)).alias("residue_index_1d"),
     )
     dup = out.group_by(["target_id", "model_id", "resid"]).agg(pl.len().alias("n")).filter(pl.col("n") > 1)
     if dup.height > 0:
@@ -87,7 +89,19 @@ def _template_score_by_target(retrieval: pl.DataFrame, *, stage: str, location: 
 
 
 def _target_subset(df: pl.DataFrame, *, target_id: str) -> pl.DataFrame:
-    return df.filter(pl.col("target_id") == target_id).select("target_id", "model_id", "resid", "resname", "x", "y", "z", "confidence", "source")
+    return df.filter(pl.col("target_id") == target_id).select(
+        "target_id",
+        "model_id",
+        "resid",
+        "resname",
+        "x",
+        "y",
+        "z",
+        "confidence",
+        "source",
+        "chain_index",
+        "residue_index_1d",
+    )
 
 
 def _length_bucket(*, length: int, short_max_len: int, medium_max_len: int) -> str:
@@ -170,6 +184,25 @@ def build_hybrid_candidates(
     )
     candidate_parts: list[pl.DataFrame] = []
     routing_rows: list[dict[str, object]] = []
+
+    def _recovery_sources_for_target(*, tid: str, target_score: float) -> list[tuple[str, pl.DataFrame]]:
+        out: list[tuple[str, pl.DataFrame]] = []
+        tbm_t = _target_subset(tbm, target_id=tid).with_columns(
+            pl.coalesce([pl.col("confidence"), pl.lit(float(target_score))]).alias("confidence")
+        )
+        out.append(("tbm", tbm_t))
+        if se3_mamba is not None:
+            out.append(("se3_mamba", _target_subset(se3_mamba, target_id=tid)))
+        if se3_flash is not None:
+            out.append(("se3_flash", _target_subset(se3_flash, target_id=tid)))
+        if rnapro is not None:
+            out.append(("rnapro", _target_subset(rnapro, target_id=tid)))
+        if chai1 is not None:
+            out.append(("chai1", _target_subset(chai1, target_id=tid)))
+        if boltz1 is not None:
+            out.append(("boltz1", _target_subset(boltz1, target_id=tid)))
+        return out
+
     for row in targets.select("target_id", "sequence", "ligand_SMILES").iter_rows(named=True):
         tid = str(row["target_id"])
         sequence = str(row["sequence"])
@@ -182,56 +215,59 @@ def build_hybrid_candidates(
         fallback_source: str | None = None
 
         if length_bucket == "short":
-            missing_sources: list[str] = []
-            if chai1 is None:
-                missing_sources.append("chai1")
-            if boltz1 is None:
-                missing_sources.append("boltz1")
-            if rnapro is None:
-                missing_sources.append("rnapro")
-            if missing_sources:
-                raise_error(
-                    stage,
-                    location,
-                    "bucket short exige foundation trio completo",
-                    impact=str(int(len(missing_sources))),
-                    examples=[f"{tid}:L={target_length}", *missing_sources],
+            foundation_parts: list[pl.DataFrame] = []
+            present_sources = 0
+            for source_name, source_df in (("chai1", chai1), ("boltz1", boltz1), ("rnapro", rnapro)):
+                if source_df is None:
+                    continue
+                present_sources += 1
+                part = _target_subset(source_df, target_id=tid)
+                if part.height > 0:
+                    foundation_parts.append(part)
+            if foundation_parts:
+                primary_df = pl.concat(foundation_parts, how="vertical_relaxed").sort(["source", "model_id", "resid"])
+            else:
+                primary_df = pl.DataFrame(schema=tbm.schema)
+            if present_sources == 3 and len(foundation_parts) == 3:
+                primary_source = "foundation_trio"
+                rule = f"len<={effective_short_max}->foundation_trio"
+            elif foundation_parts:
+                primary_source = "foundation_partial"
+                fallback_used = True
+                fallback_source = "foundation_partial"
+                rule = f"len<={effective_short_max}->foundation_partial"
+                print(
+                    f"[{stage}] [{location}] bucket short degradado para cobertura parcial de foundation | "
+                    f"impacto=1 | exemplos={tid}:L={target_length}:parts={len(foundation_parts)}",
+                    file=sys.stderr,
                 )
-            chai_t = _target_subset(chai1, target_id=tid)  # type: ignore[arg-type]
-            boltz_t = _target_subset(boltz1, target_id=tid)  # type: ignore[arg-type]
-            rnapro_t = _target_subset(rnapro, target_id=tid)  # type: ignore[arg-type]
-            if chai_t.height == 0 or boltz_t.height == 0 or rnapro_t.height == 0:
-                raise_error(
-                    stage,
-                    location,
-                    "cobertura incompleta no bucket short (foundation trio)",
-                    impact="1",
-                    examples=[f"{tid}:chai={chai_t.height}:boltz={boltz_t.height}:rnapro={rnapro_t.height}"],
+            else:
+                primary_source = "foundation_missing"
+                fallback_used = True
+                fallback_source = "coverage_recovery_pending"
+                rule = f"len<={effective_short_max}->foundation_missing"
+                print(
+                    f"[{stage}] [{location}] bucket short sem cobertura foundation para alvo; iniciando recovery | "
+                    f"impacto=1 | exemplos={tid}:L={target_length}",
+                    file=sys.stderr,
                 )
-            primary_df = pl.concat([chai_t, boltz_t, rnapro_t], how="vertical_relaxed").sort(["source", "model_id", "resid"])
-            primary_source = "foundation_trio"
-            rule = f"len<={effective_short_max}->foundation_trio"
             _aggressive_foundation_offload(model=None, stage=stage, location=location, context=f"{tid}:foundation_trio")
         elif length_bucket == "medium":
             if se3_flash is None:
-                raise_error(
-                    stage,
-                    location,
-                    "bucket medium exige se3_flash",
-                    impact="1",
-                    examples=[f"{tid}:L={target_length}", "forneca --se3-flash ou --se3 legado"],
+                primary_df = pl.DataFrame(schema=tbm.schema)
+                primary_source = "se3_flash_missing"
+                fallback_used = True
+                fallback_source = "coverage_recovery_pending"
+                rule = f"{effective_short_max}<len<={effective_medium_max}->se3_flash_missing"
+                print(
+                    f"[{stage}] [{location}] bucket medium sem se3_flash; iniciando recovery | "
+                    f"impacto=1 | exemplos={tid}:L={target_length}",
+                    file=sys.stderr,
                 )
-            primary_df = _target_subset(se3_flash, target_id=tid)
-            if primary_df.height == 0:
-                raise_error(
-                    stage,
-                    location,
-                    "bucket medium sem cobertura em se3_flash",
-                    impact="1",
-                    examples=[f"{tid}:L={target_length}"],
-                )
-            primary_source = "se3_flash"
-            rule = f"{effective_short_max}<len<={effective_medium_max}->se3_flash"
+            else:
+                primary_df = _target_subset(se3_flash, target_id=tid)
+                primary_source = "se3_flash"
+                rule = f"{effective_short_max}<len<={effective_medium_max}->se3_flash"
         else:
             rule = f"len>{effective_medium_max}->tbm+se3_mamba"
             mamba_t = pl.DataFrame()
@@ -246,14 +282,17 @@ def build_hybrid_candidates(
             if tbm_t.height > 0:
                 parts.append(tbm_t)
             if not parts:
-                raise_error(
-                    stage,
-                    location,
-                    "bucket long sem cobertura em se3_mamba e tbm",
-                    impact="1",
-                    examples=[f"{tid}:L={target_length}", f"mamba={mamba_t.height}", f"tbm={tbm_t.height}"],
+                primary_df = pl.DataFrame(schema=tbm.schema)
+                primary_source = "tbm+se3_mamba_missing"
+                fallback_used = True
+                fallback_source = "coverage_recovery_pending"
+                rule = f"{rule}_missing"
+                print(
+                    f"[{stage}] [{location}] bucket long sem cobertura em se3_mamba e tbm; iniciando recovery | "
+                    f"impacto=1 | exemplos={tid}:L={target_length}:mamba={mamba_t.height}:tbm={tbm_t.height}",
+                    file=sys.stderr,
                 )
-            if len(parts) == 2:
+            elif len(parts) == 2:
                 primary_df = pl.concat(parts, how="vertical_relaxed").sort(["source", "model_id", "resid"])
                 primary_source = "tbm+se3_mamba"
             else:
@@ -268,7 +307,50 @@ def build_hybrid_candidates(
                 )
 
         if primary_df.height == 0:
-            raise_error(stage, location, "fonte primaria sem cobertura do alvo", impact="1", examples=[f"{tid}:{primary_source}"])
+            recovered_df: pl.DataFrame | None = None
+            recovered_source: str | None = None
+            for source_name, source_df in _recovery_sources_for_target(tid=tid, target_score=score):
+                if source_df.height > 0:
+                    recovered_df = source_df.sort(["source", "model_id", "resid"])
+                    recovered_source = source_name
+                    break
+            if recovered_df is None or recovered_source is None:
+                fallback_used = True
+                fallback_source = "no_coverage"
+                primary_source = "none"
+                rule = f"{rule}_coverage_recovery->none"
+                routing_rows.append(
+                    {
+                        "target_id": tid,
+                        "target_length": int(target_length),
+                        "length_bucket": length_bucket,
+                        "short_max_len": int(effective_short_max),
+                        "medium_max_len": int(effective_medium_max),
+                        "template_score": score,
+                        "template_strong": bool(template_strong),
+                        "has_ligand": bool(has_ligand),
+                        "route_rule": rule,
+                        "primary_source": primary_source,
+                        "fallback_used": bool(fallback_used),
+                        "fallback_source": fallback_source,
+                    }
+                )
+                print(
+                    f"[{stage}] [{location}] alvo sem cobertura em todas as fontes; alvo sera preenchido no export da submissao | "
+                    f"impacto=1 | exemplos={tid}:len={target_length}",
+                    file=sys.stderr,
+                )
+                continue
+            fallback_used = True
+            fallback_source = str(recovered_source)
+            primary_df = recovered_df
+            primary_source = str(recovered_source)
+            rule = f"{rule}_coverage_recovery->{recovered_source}"
+            print(
+                f"[{stage}] [{location}] recovery de cobertura aplicado | "
+                f"impacto=1 | exemplos={tid}:len={target_length}:{recovered_source}",
+                file=sys.stderr,
+            )
         primary_df = primary_df.with_columns(pl.lit(rule).alias("route_rule"))
         candidate_parts.append(primary_df)
 
@@ -290,9 +372,16 @@ def build_hybrid_candidates(
         )
 
     if not candidate_parts:
-        raise_error(stage, location, "nenhum candidato gerado pelo roteador", impact="0", examples=[])
-
-    candidates = pl.concat(candidate_parts, how="vertical_relaxed").sort(["target_id", "source", "model_id", "resid"])
+        print(
+            f"[{stage}] [{location}] nenhum candidato gerado pelo roteador; export seguira com preenchimento dummy por submissao | "
+            "impacto=1 | exemplos=global",
+            file=sys.stderr,
+        )
+        empty_schema = dict(tbm.schema)
+        empty_schema["route_rule"] = pl.Utf8
+        candidates = pl.DataFrame(schema=empty_schema)
+    else:
+        candidates = pl.concat(candidate_parts, how="vertical_relaxed").sort(["target_id", "source", "model_id", "resid"])
     write_table(candidates, out_path)
     routing = pl.DataFrame(routing_rows).sort("target_id")
     write_table(routing, routing_path)

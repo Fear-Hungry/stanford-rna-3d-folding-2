@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+import torch
 
 from rna3d_local.errors import PipelineError
 from rna3d_local.training.chemical_mapping import compute_chemical_exposure_mapping
@@ -33,20 +34,29 @@ def _labels_complete() -> pl.DataFrame:
     )
 
 
-def test_compute_chemical_mapping_crosses_quickstart_and_pdb() -> None:
-    out = compute_chemical_exposure_mapping(
+def test_compute_chemical_mapping_ignores_pdb_geometry_for_exposure() -> None:
+    out_with_pdb = compute_chemical_exposure_mapping(
         targets=_targets(),
         chemical_features=_chemical_complete(),
         pdb_labels=_labels_complete(),
         chain_separator="|",
         stage="TEST",
-        location="tests/test_chemical_mapping.py:test_compute_chemical_mapping_crosses_quickstart_and_pdb",
+        location="tests/test_chemical_mapping.py:test_compute_chemical_mapping_ignores_pdb_geometry_for_exposure",
     )
-    target = out["T1"]
-    assert target.source == "quickstart_pdb_cross"
+    out_without_pdb = compute_chemical_exposure_mapping(
+        targets=_targets(),
+        chemical_features=_chemical_complete(),
+        pdb_labels=None,
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_chemical_mapping.py:test_compute_chemical_mapping_ignores_pdb_geometry_for_exposure",
+    )
+    target = out_with_pdb["T1"]
+    assert target.source == "quickstart_only"
     assert int(target.exposure.numel()) == 4
     assert float(target.exposure.min().item()) >= 0.0
     assert float(target.exposure.max().item()) <= 1.0
+    assert bool(torch.allclose(target.exposure, out_without_pdb["T1"].exposure))
 
 
 def test_compute_chemical_mapping_without_pdb_uses_quickstart_only() -> None:

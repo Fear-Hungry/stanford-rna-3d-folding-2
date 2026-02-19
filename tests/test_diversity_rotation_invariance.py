@@ -69,4 +69,13 @@ def test_build_sample_vectors_fails_on_resid_mismatch_same_length() -> None:
 
 def test_cosine_similarity_fails_on_shape_mismatch() -> None:
     with pytest.raises(PipelineError, match="shape divergente"):
-        cosine_similarity(np.zeros((8,), dtype=np.float64), np.zeros((9,), dtype=np.float64))
+        cosine_similarity(np.zeros((8, 3), dtype=np.float64), np.zeros((9, 3), dtype=np.float64))
+
+
+def test_structural_similarity_is_robust_to_local_tail_bend() -> None:
+    base = np.stack([np.arange(0.0, 15.0), np.zeros((15,), dtype=np.float64), np.zeros((15,), dtype=np.float64)], axis=1)
+    bent = base.copy()
+    # Dobra local na cauda: parte majoritaria da estrutura permanece identica.
+    bent[12:, 1] = np.array([0.8, 1.6, 2.2], dtype=np.float64)
+    sim = cosine_similarity(base, bent)
+    assert 0.55 < sim < 0.999

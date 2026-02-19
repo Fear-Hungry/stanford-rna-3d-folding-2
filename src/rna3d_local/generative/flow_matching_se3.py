@@ -53,6 +53,69 @@ def _build_equivariant_frames(x: torch.Tensor) -> torch.Tensor:
     return torch.stack([tangent, axis_y, axis_z], dim=-1)
 
 
+class _EquivariantLocalMessageDenoiser(nn.Module):
+    def __init__(self, hidden_dim: int) -> None:
+        super().__init__()
+        edge_hidden = max(16, int(hidden_dim) // 2)
+        self.node_proj = nn.Sequential(
+            nn.Linear(hidden_dim + 3 + 3, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
+        self.src_gate = nn.Linear(hidden_dim, 1)
+        self.dst_gate = nn.Linear(hidden_dim, 1)
+        self.neighbor_scale = nn.Linear(hidden_dim, 1)
+        self.edge_gate = nn.Sequential(
+            nn.Linear(4, edge_hidden),
+            nn.SiLU(),
+            nn.Linear(edge_hidden, 1),
+        )
+        self.out = nn.Sequential(
+            nn.Linear(hidden_dim + 3 + 3, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 3),
+        )
+
+    def _aggregate_local_messages(self, node_hidden: torch.Tensor, x_current: torch.Tensor, frames: torch.Tensor) -> torch.Tensor:
+        n_res = int(x_current.shape[0])
+        if n_res <= 1:
+            return torch.zeros((n_res, 3), device=x_current.device, dtype=x_current.dtype)
+
+        rel = x_current.unsqueeze(0) - x_current.unsqueeze(1)
+        rel_local = torch.einsum("nij,nmj->nmi", frames.transpose(1, 2), rel)
+        dist = torch.linalg.norm(rel_local, dim=-1, keepdim=True)
+        edge_feat = torch.cat([rel_local, dist], dim=-1)
+        logits = self.src_gate(node_hidden).unsqueeze(1)
+        logits = logits + self.dst_gate(node_hidden).unsqueeze(0)
+        logits = logits + self.edge_gate(edge_feat)
+        logits_2d = logits.squeeze(-1)
+
+        mask_diag = torch.eye(n_res, device=x_current.device, dtype=torch.bool)
+        logits_2d = logits_2d.masked_fill(mask_diag, -1e4)
+        attn = torch.softmax(logits_2d, dim=1)
+        attn = attn.masked_fill(mask_diag, 0.0)
+        attn = attn / attn.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        neighbor_scale = torch.sigmoid(self.neighbor_scale(node_hidden)).squeeze(-1)
+        return torch.einsum("nm,m,nmi->ni", attn, neighbor_scale, rel_local)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        delta_local: torch.Tensor,
+        t_emb: torch.Tensor,
+        x_current: torch.Tensor,
+        frames: torch.Tensor,
+    ) -> torch.Tensor:
+        node_feat = torch.cat([h, delta_local, t_emb], dim=-1)
+        node_hidden = self.node_proj(node_feat)
+        local_messages = self._aggregate_local_messages(node_hidden=node_hidden, x_current=x_current, frames=frames)
+        update_feat = torch.cat([node_hidden, delta_local, local_messages], dim=-1)
+        local_update = self.out(update_feat)
+        # Keep an explicit geometric residual so the denoiser cannot collapse to purely pointwise behavior.
+        return local_update + (0.25 * local_messages)
+
+
 class Se3FlowMatching(nn.Module):
     def __init__(self, hidden_dim: int, num_steps: int) -> None:
         super().__init__()
@@ -60,22 +123,24 @@ class Se3FlowMatching(nn.Module):
         self.num_steps = int(num_steps)
         if self.num_steps <= 1:
             raise ValueError("num_steps must be > 1")
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim + 3 + 3, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, 3),
-        )
+        self.denoiser = _EquivariantLocalMessageDenoiser(hidden_dim=hidden_dim)
 
     def _predict_velocity(self, h: torch.Tensor, x_t: torch.Tensor, x_cond: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:
-        t_emb = _time_embedding(tau).expand(x_t.shape[0], -1)
-        frames = _build_equivariant_frames(x_cond.to(dtype=torch.float32)).to(dtype=x_cond.dtype)
-        delta = x_t - x_cond
+        geom_dtype = torch.float32
+        frames = _build_equivariant_frames(x_cond.to(dtype=geom_dtype)).to(dtype=geom_dtype, device=x_cond.device)
+        delta = x_t.to(dtype=geom_dtype) - x_cond.to(dtype=geom_dtype)
         delta_local = torch.einsum("nij,nj->ni", frames.transpose(1, 2), delta)
-        feat = torch.cat([h, delta_local, t_emb], dim=-1)
-        vel_local = self.net(feat)
-        return torch.einsum("nij,nj->ni", frames, vel_local)
+        t_emb = _time_embedding(tau).expand(x_t.shape[0], -1).to(device=h.device, dtype=geom_dtype)
+        h_feat = h.to(dtype=geom_dtype)
+        vel_local = self.denoiser(
+            h=h_feat,
+            delta_local=delta_local,
+            t_emb=t_emb,
+            x_current=x_t.to(dtype=geom_dtype),
+            frames=frames,
+        )
+        vel_global = torch.einsum("nij,nj->ni", frames, vel_local)
+        return vel_global.to(dtype=x_t.dtype)
 
     def forward_loss(self, h: torch.Tensor, x_cond: torch.Tensor, x_true: torch.Tensor) -> torch.Tensor:
         device = x_true.device
