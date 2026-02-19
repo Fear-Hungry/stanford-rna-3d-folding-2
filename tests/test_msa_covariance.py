@@ -166,3 +166,95 @@ def test_compute_msa_covariance_mmseqs_backend_parallel_consistent(monkeypatch: 
     assert sorted(serial.keys()) == sorted(parallel.keys())
     for target_id in serial:
         assert int(serial[target_id].pair_src.numel()) == int(parallel[target_id].pair_src.numel())
+
+
+def test_compute_msa_covariance_applies_dynamic_cap_for_medium_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_depths: list[int] = []
+
+    def _fake_run_mmseqs_chain_alignments(
+        *,
+        mmseqs_bin: str,
+        mmseqs_db: str,
+        chain_sequence: str,
+        query_id: str,
+        max_msa_sequences: int,
+        stage: str,
+        location: str,
+    ) -> np.ndarray:
+        base = _encode_seq(chain_sequence)
+        rows: list[np.ndarray] = [base]
+        for idx in range(1, int(max_msa_sequences)):
+            row = base.copy()
+            pos = idx % max(1, row.size)
+            row[pos] = np.int16((int(row[pos]) + int((idx % 3) + 1)) % 4)
+            rows.append(row)
+        return np.stack(rows, axis=0)
+
+    def _fake_covariance_pairs_from_alignment(*, aligned: np.ndarray, max_cov_positions: int, max_cov_pairs: int) -> list[tuple[int, int, float]]:
+        captured_depths.append(int(aligned.shape[0]))
+        return [(1, 2, 0.9)]
+
+    monkeypatch.setattr(msa_covariance, "_run_mmseqs_chain_alignments", _fake_run_mmseqs_chain_alignments)
+    monkeypatch.setattr(msa_covariance, "_covariance_pairs_from_alignment", _fake_covariance_pairs_from_alignment)
+    targets = pl.DataFrame([{"target_id": "TMED", "sequence": ("A" * 500), "temporal_cutoff": "2024-01-01"}])
+    out = compute_msa_covariance(
+        targets=targets,
+        backend="mmseqs2",
+        mmseqs_bin="mmseqs",
+        mmseqs_db="/tmp/fake_db",
+        cache_dir=None,
+        chain_separator="|",
+        max_msa_sequences=96,
+        max_cov_positions=64,
+        max_cov_pairs=512,
+        stage="TEST",
+        location="tests/test_msa_covariance.py:test_compute_msa_covariance_applies_dynamic_cap_for_medium_targets",
+    )
+    assert "TMED" in out
+    assert captured_depths == [64]
+
+
+def test_compute_msa_covariance_applies_dynamic_cap_for_long_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_depths: list[int] = []
+
+    def _fake_run_mmseqs_chain_alignments(
+        *,
+        mmseqs_bin: str,
+        mmseqs_db: str,
+        chain_sequence: str,
+        query_id: str,
+        max_msa_sequences: int,
+        stage: str,
+        location: str,
+    ) -> np.ndarray:
+        base = _encode_seq(chain_sequence)
+        rows: list[np.ndarray] = [base]
+        for idx in range(1, int(max_msa_sequences)):
+            row = base.copy()
+            pos = idx % max(1, row.size)
+            row[pos] = np.int16((int(row[pos]) + int((idx % 3) + 1)) % 4)
+            rows.append(row)
+        return np.stack(rows, axis=0)
+
+    def _fake_covariance_pairs_from_alignment(*, aligned: np.ndarray, max_cov_positions: int, max_cov_pairs: int) -> list[tuple[int, int, float]]:
+        captured_depths.append(int(aligned.shape[0]))
+        return [(1, 2, 0.9)]
+
+    monkeypatch.setattr(msa_covariance, "_run_mmseqs_chain_alignments", _fake_run_mmseqs_chain_alignments)
+    monkeypatch.setattr(msa_covariance, "_covariance_pairs_from_alignment", _fake_covariance_pairs_from_alignment)
+    targets = pl.DataFrame([{"target_id": "TLONG", "sequence": ("A" * 700), "temporal_cutoff": "2024-01-01"}])
+    out = compute_msa_covariance(
+        targets=targets,
+        backend="mmseqs2",
+        mmseqs_bin="mmseqs",
+        mmseqs_db="/tmp/fake_db",
+        cache_dir=None,
+        chain_separator="|",
+        max_msa_sequences=96,
+        max_cov_positions=64,
+        max_cov_pairs=512,
+        stage="TEST",
+        location="tests/test_msa_covariance.py:test_compute_msa_covariance_applies_dynamic_cap_for_long_targets",
+    )
+    assert "TLONG" in out
+    assert captured_depths == [32]

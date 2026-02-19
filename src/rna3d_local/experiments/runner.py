@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 import platform
@@ -7,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,106 @@ class RunExperimentResult:
     recipe_resolved_path: Path
     meta_path: Path
     report_path: Path
+
+
+@dataclass(frozen=True)
+class SafePredictResult:
+    ok: bool
+    prediction: Any | None
+    error_kind: str | None
+    model_name: str
+    sequence_len: int
+    error_message: str | None = None
+
+
+def _load_torch_module() -> Any:
+    import torch  # type: ignore
+
+    return torch
+
+
+def _safe_predict_error_message(*, location: str, cause: str, impact: str, examples: list[str]) -> str:
+    joined = ",".join(str(item) for item in examples)
+    return f"[INFER] [{location}] {cause} | impacto={impact} | exemplos={joined}"
+
+
+def safe_predict(
+    model_runner_class: type,
+    sequence: str,
+    *args: object,
+    stage: str = "INFER",
+    location: str = "src/rna3d_local/experiments/runner.py:safe_predict",
+    **kwargs: object,
+) -> SafePredictResult:
+    sequence_len = int(len(sequence))
+    model_name = str(getattr(model_runner_class, "__name__", model_runner_class))
+    model = None
+    torch_module: Any | None = None
+    try:
+        try:
+            torch_module = _load_torch_module()
+        except Exception as exc:
+            raise_error(stage, location, "falha ao importar torch para inferencia", impact="1", examples=[f"{model_name}:{type(exc).__name__}:{exc}"])
+        model = model_runner_class()
+        infer_ctx = torch_module.inference_mode() if hasattr(torch_module, "inference_mode") else nullcontext()
+        use_cuda = bool(getattr(torch_module, "cuda", None) is not None and torch_module.cuda.is_available())
+        autocast_ctx = (
+            torch_module.autocast(device_type="cuda", dtype=torch_module.bfloat16)
+            if use_cuda and hasattr(torch_module, "autocast")
+            else nullcontext()
+        )
+        with infer_ctx, autocast_ctx:
+            prediction = model.predict(sequence, *args, **kwargs)
+        return SafePredictResult(
+            ok=True,
+            prediction=prediction,
+            error_kind=None,
+            model_name=model_name,
+            sequence_len=sequence_len,
+            error_message=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        oom_type = None
+        if torch_module is not None and getattr(torch_module, "cuda", None) is not None:
+            oom_type = getattr(torch_module.cuda, "OutOfMemoryError", None)
+        if oom_type is not None and isinstance(exc, oom_type):
+            message = _safe_predict_error_message(
+                location=location,
+                cause="OOM durante inferencia; fallback explicito habilitado",
+                impact="1",
+                examples=[f"{model_name}:L={sequence_len}:{type(exc).__name__}:{exc}"],
+            )
+            print(message, file=sys.stderr)
+            return SafePredictResult(
+                ok=False,
+                prediction=None,
+                error_kind="oom",
+                model_name=model_name,
+                sequence_len=sequence_len,
+                error_message=message,
+            )
+        raise_error(
+            stage,
+            location,
+            "falha na inferencia do modelo",
+            impact="1",
+            examples=[f"{model_name}:L={sequence_len}:{type(exc).__name__}:{exc}"],
+        )
+    finally:
+        if model is not None:
+            to_fn = getattr(model, "to", None)
+            if callable(to_fn):
+                try:
+                    to_fn("cpu")
+                except Exception:
+                    pass
+            del model
+        gc.collect()
+        if torch_module is not None and getattr(torch_module, "cuda", None) is not None and torch_module.cuda.is_available():
+            try:
+                torch_module.cuda.empty_cache()
+            except Exception:
+                pass
 
 
 def _sanitize_token(text: str) -> str:

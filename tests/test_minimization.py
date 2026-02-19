@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -200,3 +201,46 @@ def test_minimize_ensemble_fails_when_iterations_negative(tmp_path: Path) -> Non
             position_restraint_k=800.0,
             openmm_platform=None,
         )
+
+
+def test_minimize_ensemble_skips_openmm_for_long_targets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _forbidden_minimize_openmm(**kwargs: object) -> np.ndarray:
+        raise AssertionError("openmm backend nao deve ser chamado para alvo com len(sequence)>350")
+
+    monkeypatch.setattr(minimization, "_minimize_openmm", _forbidden_minimize_openmm)
+    rows = []
+    for resid in range(1, 352):
+        rows.append(
+            {
+                "target_id": "TLONG",
+                "model_id": 1,
+                "resid": resid,
+                "resname": "A",
+                "x": float(resid),
+                "y": float(resid + 1),
+                "z": float(resid + 2),
+            }
+        )
+    pred = tmp_path / "pred_long.parquet"
+    out = tmp_path / "pred_long_min.parquet"
+    pl.DataFrame(rows).write_parquet(pred)
+    result = minimize_ensemble(
+        repo_root=tmp_path,
+        predictions_path=pred,
+        out_path=out,
+        backend="openmm",
+        max_iterations=20,
+        bond_length_angstrom=5.9,
+        bond_force_k=60.0,
+        angle_force_k=8.0,
+        angle_target_deg=120.0,
+        vdw_min_distance_angstrom=2.1,
+        vdw_epsilon=0.2,
+        position_restraint_k=800.0,
+        openmm_platform=None,
+    )
+    refined = pl.read_parquet(result.predictions_path).sort(["target_id", "model_id", "resid"])
+    original = pl.read_parquet(pred).sort(["target_id", "model_id", "resid"])
+    assert np.allclose(refined.select(["x", "y", "z"]).to_numpy(), original.select(["x", "y", "z"]).to_numpy())
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert int(manifest["stats"]["n_target_models_openmm_skipped_long"]) == 1

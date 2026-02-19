@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ _CANONICAL_PAIR_INDEX = {
     (0, 2),  # AG Hoogsteen proxy
     (2, 0),  # GA Hoogsteen proxy
 }
+_SHORT_MAX_LEN = 350
+_MEDIUM_MAX_LEN = 600
+_MSA_CAP_MEDIUM = 64
+_MSA_CAP_LONG = 32
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,58 @@ def _map_target_alignment_to_query(qaln: str, taln: str, query_length: int) -> n
             mapped[q_index] = _NUC_TO_INT[t_char.replace("T", "U")]
         q_index += 1
     return mapped
+
+
+def _dynamic_msa_cap(*, sequence_length: int, configured_max_msa_sequences: int) -> int:
+    seq_len = int(sequence_length)
+    if seq_len > _MEDIUM_MAX_LEN:
+        return int(min(int(configured_max_msa_sequences), int(_MSA_CAP_LONG)))
+    if seq_len > _SHORT_MAX_LEN:
+        return int(min(int(configured_max_msa_sequences), int(_MSA_CAP_MEDIUM)))
+    return int(configured_max_msa_sequences)
+
+
+def _normalized_hamming_distance(left: np.ndarray, right: np.ndarray) -> float:
+    mask = (left >= 0) & (right >= 0)
+    if not np.any(mask):
+        return 0.0
+    return float(np.mean(left[mask] != right[mask]))
+
+
+def _select_hamming_diverse_alignment(*, aligned: np.ndarray, max_sequences: int) -> np.ndarray:
+    if aligned.ndim != 2:
+        return aligned
+    n_rows = int(aligned.shape[0])
+    limit = int(max_sequences)
+    if limit >= n_rows:
+        return aligned
+    if limit <= 0:
+        return aligned[:0, :]
+    if limit == 1:
+        return aligned[:1, :]
+
+    selected: list[int] = [0]
+    remaining: list[int] = list(range(1, n_rows))
+
+    seed_idx = max(remaining, key=lambda idx: (_normalized_hamming_distance(aligned[idx], aligned[0]), -idx))
+    selected.append(int(seed_idx))
+    remaining.remove(int(seed_idx))
+
+    while len(selected) < limit and remaining:
+        best_idx = remaining[0]
+        best_key = (-1.0, -1.0, -best_idx)
+        for idx in remaining:
+            distances = [_normalized_hamming_distance(aligned[idx], aligned[sel]) for sel in selected]
+            min_dist = float(min(distances))
+            mean_dist = float(sum(distances) / max(1, len(distances)))
+            key = (min_dist, mean_dist, -idx)
+            if key > best_key:
+                best_key = key
+                best_idx = idx
+        selected.append(int(best_idx))
+        remaining.remove(int(best_idx))
+    keep = np.array(selected, dtype=np.int64)
+    return aligned[keep, :]
 
 
 def _run_mmseqs_chain_alignments(
@@ -273,6 +330,10 @@ def _compute_single_target(
         target_id=tid,
     )
     joined_sequence = "".join(parsed.residues)
+    effective_max_msa_sequences = _dynamic_msa_cap(
+        sequence_length=len(joined_sequence),
+        configured_max_msa_sequences=int(max_msa_sequences),
+    )
     global_pairs: list[tuple[int, int, float]] = []
     offset = 0
     for chain_idx, chain_length in enumerate(parsed.chain_lengths):
@@ -293,8 +354,17 @@ def _compute_single_target(
                 stage=stage,
                 location=location,
             )
-            chain_pairs = _covariance_pairs_from_alignment(
+            aligned_diverse = _select_hamming_diverse_alignment(
                 aligned=aligned,
+                max_sequences=effective_max_msa_sequences,
+            )
+            if int(aligned_diverse.shape[0]) < int(aligned.shape[0]):
+                print(
+                    f"[{stage}] [{location}] cap dinamico de MSA aplicado | impacto={int(aligned.shape[0] - aligned_diverse.shape[0])} | exemplos={tid}:L={len(joined_sequence)}:chain={chain_idx}:depth={int(aligned.shape[0])}->{int(aligned_diverse.shape[0])}",
+                    file=sys.stderr,
+                )
+            chain_pairs = _covariance_pairs_from_alignment(
+                aligned=aligned_diverse,
                 max_cov_positions=max_cov_positions,
                 max_cov_pairs=max_cov_pairs,
             )

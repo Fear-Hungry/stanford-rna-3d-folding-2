@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,9 @@ from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 class MinimizeEnsembleResult:
     predictions_path: Path
     manifest_path: Path
+
+
+_OPENMM_LONG_SKIP_LEN = 350
 
 
 def _build_covalent_pairs(resids: list[int]) -> list[tuple[int, int]]:
@@ -202,6 +206,7 @@ def minimize_ensemble(
     max_shift = 0.0
     mean_shift_sum = 0.0
     mean_shift_count = 0
+    skipped_openmm_long = 0
     for group_key, group_df in pred.group_by(["target_id", "model_id"], maintain_order=True):
         target_id = str(group_key[0]) if isinstance(group_key, tuple) else str(group_key)
         model_id = int(group_key[1]) if isinstance(group_key, tuple) else 0
@@ -210,7 +215,15 @@ def minimize_ensemble(
         if not np.isfinite(coords).all():
             raise_error(stage, location, "coordenadas invalidas antes da minimizacao", impact="1", examples=[f"{target_id}:{model_id}"])
         residues = part.get_column("resid").cast(pl.Int64).to_numpy()
-        if minimization_enabled and backend_name == "openmm":
+        sequence_length = int(part.height)
+        if minimization_enabled and backend_name == "openmm" and sequence_length > _OPENMM_LONG_SKIP_LEN:
+            minimized = np.asarray(coords, dtype=np.float64)
+            skipped_openmm_long += 1
+            print(
+                f"[{stage}] [{location}] alvo longo: OpenMM pulado para evitar timeout/OOM | impacto=1 | exemplos={target_id}:{model_id}:len={sequence_length}",
+                file=sys.stderr,
+            )
+        elif minimization_enabled and backend_name == "openmm":
             minimized = _minimize_openmm(
                 coords_angstrom=np.asarray(coords, dtype=np.float64),
                 residue_index=np.asarray(residues, dtype=np.int64),
@@ -282,6 +295,7 @@ def minimize_ensemble(
                 "n_target_models": int(out.select("target_id", "model_id").unique().height),
                 "shift_max_angstrom": float(max_shift),
                 "shift_mean_angstrom": float(mean_shift_sum / float(max(mean_shift_count, 1))),
+                "n_target_models_openmm_skipped_long": int(skipped_openmm_long),
             },
             "sha256": {"predictions.parquet": sha256_file(out_path)},
         },

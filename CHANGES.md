@@ -1867,3 +1867,91 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - O target fallback ultra-longo (`9MME`) segue sendo o principal gargalo de runtime/estabilidade no hidden rerun quando dependente de DRfold2.
   - Runtime Kaggle atual não expõe assets Phase2 esperados pelo fallback RNApro; fallback permanece bloqueado por contrato nesse caminho.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-143 (refatoracao de condicionais complexas em diversidade)
+
+- Data UTC: `2026-02-19T14:43:46Z`
+- Plano: `PLAN-143`
+- Resumo:
+  - Refatoradas condicionais compostas em `src/rna3d_local/ensemble/diversity.py` para checks atomicos, preservando comportamento fail-fast.
+  - `_kabsch_align_centered` agora valida shape/dimensao em etapas, evitando expressao booleana composta.
+  - `cosine_similarity` agora valida `a` e `b` separadamente (sem condicional com `or`).
+  - Simplificadas condicionais compostas adicionais em `prune_low_quality_half`, `select_cluster_medoids` e `greedy_diverse_selection` para melhorar legibilidade e manutencao.
+- Arquivos principais tocados:
+  - `src/rna3d_local/ensemble/diversity.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q tests/test_diversity_rotation_invariance.py tests/test_best_of5_strategy.py` -> `8 passed`
+  - `python - <<'PY' ... ast walk if/while with and/or ... PY` -> `nenhuma condicional composta remanescente`
+- Riscos conhecidos / follow-ups:
+  - A validacao foi direcionada aos testes de diversidade/top5; a suite completa nao foi executada nesta iteracao.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-144 (roteamento de sobrevivencia por comprimento no hybrid_router)
+
+- Data UTC: `2026-02-19T15:00:59Z`
+- Plano: `PLAN-144`
+- Resumo:
+  - Implementado funil rigido por comprimento no `hybrid_router` com prioridade maxima sobre regras antigas de template/ligand:
+    - `L <= 350` -> foundation trio obrigatorio (`chai1 + boltz1 + rnapro`);
+    - `350 < L <= 600` -> `se3_flash`;
+    - `L > 600` -> `se3_mamba` com fallback explicito para `tbm`.
+  - Mantida compatibilidade de CLI com `--se3` legado (alias para `--se3-flash` e `--se3-mamba`) e `--ultra-long-seq-threshold` (alias legado de `--medium-max-len`).
+  - Expandido `routing.parquet` com `length_bucket`, thresholds efetivos e campos de fallback.
+  - Expandido `hybrid_router_manifest.json` com paths separados (`se3_flash`, `se3_mamba`, `se3_legacy`) e estatisticas por bucket/fallback.
+  - Testes de roteamento atualizados para novas regras e novos cenarios fail-fast.
+  - Documentacao/receitas alinhadas para os novos argumentos do roteador.
+- Arquivos principais tocados:
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_phase2_hybrid.py`
+  - `README.md`
+  - `docs/SUBMARINO_RUNBOOK.md`
+  - `experiments/recipes/E30_hybrid_select_tune_thresholds.json`
+  - `experiments/recipes/E31_hybrid_select_minimize_openmm.json`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m compileall -q src/rna3d_local/hybrid_router.py src/rna3d_local/cli.py src/rna3d_local/cli_parser.py` -> `compile_ok`
+  - `python -m rna3d_local build-hybrid-candidates --help` -> novas flags exibidas (`--short-max-len`, `--medium-max-len`, `--se3-flash`, `--se3-mamba`)
+  - `pytest -q tests/test_phase2_hybrid.py` -> `10 passed`
+- Riscos conhecidos / follow-ups:
+  - O roteador agora e estrito no bucket `short`; pipelines que ainda executam foundation em `test_sequences.csv` inteiro podem sofrer OOM antes da etapa de roteamento se nao particionarem os alvos por comprimento.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-145 (hardening anti-OOM/timeout survival mode)
+
+- Data UTC: `2026-02-19T16:17:35Z`
+- Plano: `PLAN-145`
+- Resumo:
+  - Adicionado hardening de alocacao CUDA no fluxo de submissao notebook com `PYTORCH_ALLOC_CONF` e compatibilidade legada `PYTORCH_CUDA_ALLOC_CONF`.
+  - Implementado `safe_predict` em `src/rna3d_local/experiments/runner.py` com:
+    - `inference_mode` + `autocast` BF16 em CUDA;
+    - captura explicita de `OutOfMemoryError` retornando estado estruturado (`SafePredictResult`) sem fallback silencioso;
+    - limpeza agressiva pos-inferencia (`to('cpu')`, `gc.collect`, `torch.cuda.empty_cache`).
+  - Evoluido `src/rna3d_local/hybrid_router.py` no bucket longo para usar `TBM + se3_mamba` quando ambos existirem e degradacao explicita para fonte unica quando cobertura parcial.
+  - Aplicado cap dinamico de MSA em `src/rna3d_local/training/msa_covariance.py`:
+    - `350 < L <= 600` -> no maximo `64`;
+    - `L > 600` -> no maximo `32`;
+    - selecao por diversidade de Hamming antes da extracao de pares de covariancia.
+  - Adicionado corta-fogo em `src/rna3d_local/minimization.py` para pular OpenMM automaticamente quando `len(sequence) > 350`, com rastreabilidade no log e no manifest.
+  - Atualizada a especificacao do `PLAN-145` em `PLANS.md` para refletir thresholds efetivos e estrategia final.
+  - Cobertura de testes expandida para os novos contratos (`safe_predict`, roteamento longo dual-stack, cap dinamico de MSA e skip de OpenMM em alvos longos).
+- Arquivos principais tocados:
+  - `src/rna3d_local/submit_kaggle_notebook.py`
+  - `src/rna3d_local/experiments/runner.py`
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/training/msa_covariance.py`
+  - `src/rna3d_local/minimization.py`
+  - `tests/test_experiments_runner_safe_predict.py`
+  - `tests/test_phase2_hybrid.py`
+  - `tests/test_msa_covariance.py`
+  - `tests/test_minimization.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `pytest -q tests/test_experiments_runner_safe_predict.py tests/test_phase2_hybrid.py tests/test_msa_covariance.py tests/test_minimization.py` -> `26 passed`
+  - `pytest -q tests/test_submit_kaggle_notebook_cli.py` -> `2 passed`
+- Riscos conhecidos / follow-ups:
+  - O warning de ambiente CUDA/allocator pode aparecer em ambiente CPU-only durante testes de router quando `torch` e importado indiretamente; nao afeta o contrato funcional validado.
+  - `safe_predict` foi introduzido e testado em isolamento; integracao progressiva nos runners externos pode ser feita em iteracao seguinte para cobertura ponta-a-ponta completa.

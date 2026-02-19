@@ -209,15 +209,16 @@ def test_phase2_router_and_top5_selection(tmp_path: Path) -> None:
     )
     routing = pl.read_parquet(routed.routing_path).sort("target_id")
     rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["T1"] == "template->tbm"
-    assert rules["T2"] == "orphan->chai1+boltz1"
-    assert rules["T3"] == "ligand->boltz1"
+    assert rules["T1"] == "len<=350->foundation_trio"
+    assert rules["T2"] == "len<=350->foundation_trio"
+    assert rules["T3"] == "len<=350->foundation_trio"
 
     candidates = pl.read_parquet(routed.candidates_path)
-    assert candidates.filter(pl.col("source") == "chai1_boltz1_ensemble").height == 0
-    t2_sources = set(candidates.filter(pl.col("target_id") == "T2").select("source").unique().get_column("source").to_list())
-    assert "chai1" in t2_sources
-    assert "boltz1" in t2_sources
+    for tid in ("T1", "T2", "T3"):
+        tid_sources = set(candidates.filter(pl.col("target_id") == tid).select("source").unique().get_column("source").to_list())
+        assert "chai1" in tid_sources
+        assert "boltz1" in tid_sources
+        assert "rnapro" in tid_sources
 
     top5 = select_top5_hybrid(
         repo_root=tmp_path,
@@ -236,17 +237,17 @@ def test_hybrid_router_injects_tbm_confidence_from_template_score(tmp_path: Path
     _write_csv(
         targets,
         [
-            {"target_id": "T1", "sequence": "AC", "ligand_SMILES": ""},
+            {"target_id": "TLONG", "sequence": ("A" * 601), "ligand_SMILES": ""},
         ],
     )
     retrieval = tmp_path / "retrieval.parquet"
-    pl.DataFrame([{"target_id": "T1", "final_score": 0.88}]).write_parquet(retrieval)
+    pl.DataFrame([{"target_id": "TLONG", "final_score": 0.88}]).write_parquet(retrieval)
 
     tbm = tmp_path / "tbm.parquet"
     pl.DataFrame(
         [
-            {"target_id": "T1", "model_id": 1, "resid": 1, "resname": "A", "x": 0.0, "y": 0.0, "z": 0.0},
-            {"target_id": "T1", "model_id": 1, "resid": 2, "resname": "C", "x": 1.0, "y": 0.0, "z": 0.0},
+            {"target_id": "TLONG", "model_id": 1, "resid": 1, "resname": "A", "x": 0.0, "y": 0.0, "z": 0.0},
+            {"target_id": "TLONG", "model_id": 1, "resid": 2, "resname": "A", "x": 1.0, "y": 0.0, "z": 0.0},
         ]
     ).write_parquet(tbm)
 
@@ -263,6 +264,12 @@ def test_hybrid_router_injects_tbm_confidence_from_template_score(tmp_path: Path
         boltz1_path=None,
         se3_path=None,
     )
+    routing = pl.read_parquet(out.routing_path)
+    assert routing.item(0, "route_rule") == "len>600->tbm+se3_mamba_fallback->tbm"
+    assert routing.item(0, "primary_source") == "tbm"
+    assert routing.item(0, "fallback_used") is True
+    assert routing.item(0, "fallback_source") == "tbm"
+
     candidates = pl.read_parquet(out.candidates_path)
     tbm_rows = candidates.filter(pl.col("source") == "tbm")
     assert tbm_rows.height == 2
@@ -275,26 +282,45 @@ def test_phase2_router_falls_back_when_template_strong_without_tbm_coverage(tmp_
     _write_csv(
         targets,
         [
-            {"target_id": "T1", "sequence": "AC", "ligand_SMILES": ""},
-            {"target_id": "T2", "sequence": "GU", "ligand_SMILES": ""},
+            {"target_id": "TMED", "sequence": ("A" * 400), "ligand_SMILES": ""},
         ],
     )
     retrieval = tmp_path / "retrieval.parquet"
-    pl.DataFrame(
-        [
-            {"target_id": "T1", "final_score": 0.95},
-            {"target_id": "T2", "final_score": 0.10},
-        ]
-    ).write_parquet(retrieval)
+    pl.DataFrame([{"target_id": "TMED", "final_score": 0.95}]).write_parquet(retrieval)
     tbm = tmp_path / "tbm.parquet"
-    _make_tbm(tbm)
-    tbm_df = pl.read_parquet(tbm).filter(pl.col("target_id") != "T1")
-    tbm_df.write_parquet(tbm)
-
-    rna_dir, chai_dir, boltz_dir = _make_model_dirs(tmp_path / "models")
-    rna = predict_rnapro_offline(repo_root=tmp_path, model_dir=rna_dir, targets_path=targets, out_path=tmp_path / "rnapro.parquet", n_models=5)
-    chai = predict_chai1_offline(repo_root=tmp_path, model_dir=chai_dir, targets_path=targets, out_path=tmp_path / "chai.parquet", n_models=5)
-    boltz = predict_boltz1_offline(repo_root=tmp_path, model_dir=boltz_dir, targets_path=targets, out_path=tmp_path / "boltz.parquet", n_models=5)
+    se3_flash = tmp_path / "se3_flash.parquet"
+    tbm_rows: list[dict[str, object]] = []
+    se3_rows: list[dict[str, object]] = []
+    for model_id in range(1, 6):
+        for resid in range(1, 401):
+            tbm_rows.append(
+                {
+                    "target_id": "TMED",
+                    "model_id": model_id,
+                    "resid": resid,
+                    "resname": "A",
+                    "x": float(model_id + resid),
+                    "y": float(model_id + resid + 1),
+                    "z": float(model_id + resid + 2),
+                    "source": "tbm",
+                    "confidence": 0.9,
+                }
+            )
+            se3_rows.append(
+                {
+                    "target_id": "TMED",
+                    "model_id": model_id,
+                    "resid": resid,
+                    "resname": "A",
+                    "x": float(model_id + resid + 10),
+                    "y": float(model_id + resid + 11),
+                    "z": float(model_id + resid + 12),
+                    "source": "generative_se3",
+                    "confidence": 0.82,
+                }
+            )
+    pl.DataFrame(tbm_rows).write_parquet(tbm)
+    pl.DataFrame(se3_rows).write_parquet(se3_flash)
 
     routed = build_hybrid_candidates(
         repo_root=tmp_path,
@@ -304,13 +330,15 @@ def test_phase2_router_falls_back_when_template_strong_without_tbm_coverage(tmp_
         out_path=tmp_path / "hybrid_candidates.parquet",
         routing_path=tmp_path / "routing.parquet",
         template_score_threshold=0.65,
-        rnapro_path=rna.predictions_path,
-        chai1_path=chai.predictions_path,
-        boltz1_path=boltz.predictions_path,
+        rnapro_path=None,
+        chai1_path=None,
+        boltz1_path=None,
+        se3_flash_path=se3_flash,
     )
     routing = pl.read_parquet(routed.routing_path).sort("target_id")
     rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["T1"] == "template_missing->chai1+boltz1"
+    assert rules["TMED"] == "350<len<=600->se3_flash"
+    assert routing.item(0, "primary_source") == "se3_flash"
 
 
 def test_phase2_router_prefers_foundation_over_se3_when_available(tmp_path: Path) -> None:
@@ -356,7 +384,9 @@ def test_phase2_router_prefers_foundation_over_se3_when_available(tmp_path: Path
     )
     routing = pl.read_parquet(routed.routing_path).sort("target_id")
     rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["T2"] == "orphan->chai1+boltz1"
+    assert rules["T1"] == "len<=350->foundation_trio"
+    assert rules["T2"] == "len<=350->foundation_trio"
+    assert routing.filter(pl.col("primary_source") != "foundation_trio").height == 0
 
 
 def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_path: Path) -> None:
@@ -378,7 +408,7 @@ def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_
     tbm = tmp_path / "tbm.parquet"
     _make_tbm(tbm)
 
-    # Chai/Boltz only run for a subset (T1), so T2 must route to SE(3) fallback.
+    # Chai/Boltz only run for a subset (T1), so short bucket must fail-fast (sem fallback silencioso).
     foundation_targets = tmp_path / "foundation_targets.csv"
     _write_csv(
         foundation_targets,
@@ -387,7 +417,7 @@ def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_
         ],
     )
 
-    rna_dir, chai_dir, boltz_dir = _make_model_dirs(tmp_path / "models")
+    _rna_dir, chai_dir, boltz_dir = _make_model_dirs(tmp_path / "models")
     chai = predict_chai1_offline(repo_root=tmp_path, model_dir=chai_dir, targets_path=foundation_targets, out_path=tmp_path / "chai.parquet", n_models=5)
     boltz = predict_boltz1_offline(repo_root=tmp_path, model_dir=boltz_dir, targets_path=foundation_targets, out_path=tmp_path / "boltz.parquet", n_models=5)
 
@@ -411,23 +441,20 @@ def test_phase2_router_falls_back_to_se3_when_chai_boltz_missing_for_target(tmp_
                 )
     pl.DataFrame(rows).write_parquet(se3)
 
-    routed = build_hybrid_candidates(
-        repo_root=tmp_path,
-        targets_path=targets,
-        retrieval_path=retrieval,
-        tbm_path=tbm,
-        out_path=tmp_path / "hybrid_candidates.parquet",
-        routing_path=tmp_path / "routing.parquet",
-        template_score_threshold=0.65,
-        rnapro_path=None,
-        chai1_path=chai.predictions_path,
-        boltz1_path=boltz.predictions_path,
-        se3_path=se3,
-    )
-    routing = pl.read_parquet(routed.routing_path).sort("target_id")
-    rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["T1"] == "orphan->chai1+boltz1"
-    assert rules["T2"] == "orphan_missing->generative_se3"
+    with pytest.raises(PipelineError, match="bucket short exige foundation trio completo"):
+        build_hybrid_candidates(
+            repo_root=tmp_path,
+            targets_path=targets,
+            retrieval_path=retrieval,
+            tbm_path=tbm,
+            out_path=tmp_path / "hybrid_candidates.parquet",
+            routing_path=tmp_path / "routing.parquet",
+            template_score_threshold=0.65,
+            rnapro_path=None,
+            chai1_path=chai.predictions_path,
+            boltz1_path=boltz.predictions_path,
+            se3_path=se3,
+        )
 
 
 def test_readiness_gate_blocks_non_improvement(tmp_path: Path) -> None:
@@ -528,13 +555,15 @@ def test_phase2_router_ultralong_forces_se3_fallback(tmp_path: Path) -> None:
         se3_path=se3,
     )
     routing = pl.read_parquet(out.routing_path)
-    assert routing.item(0, "route_rule") == "ultralong->generative_se3"
-    assert routing.item(0, "primary_source") == "generative_se3"
+    assert routing.item(0, "route_rule") == "len>1500->tbm+se3_mamba"
+    assert routing.item(0, "primary_source") == "tbm+se3_mamba"
+    assert routing.item(0, "fallback_used") is False
     candidates = pl.read_parquet(out.candidates_path)
-    assert candidates.filter(pl.col("source") != "generative_se3").height == 0
+    assert candidates.filter(pl.col("source") == "generative_se3").height > 0
+    assert candidates.filter(pl.col("source") == "tbm").height > 0
 
 
-def test_phase2_router_ultralong_fails_without_se3(tmp_path: Path) -> None:
+def test_phase2_router_ultralong_falls_back_to_tbm_without_se3(tmp_path: Path) -> None:
     targets = tmp_path / "targets.csv"
     _write_csv(
         targets,
@@ -550,7 +579,39 @@ def test_phase2_router_ultralong_fails_without_se3(tmp_path: Path) -> None:
             {"target_id": "TLONG", "model_id": 1, "resid": 1, "resname": "A", "x": 1.0, "y": 2.0, "z": 3.0, "source": "tbm", "confidence": 0.9},
         ]
     ).write_parquet(tbm)
-    with pytest.raises(PipelineError, match="ultralongo exige se3_path"):
+    out = build_hybrid_candidates(
+        repo_root=tmp_path,
+        targets_path=targets,
+        retrieval_path=retrieval,
+        tbm_path=tbm,
+        out_path=tmp_path / "hybrid_candidates.parquet",
+        routing_path=tmp_path / "routing.parquet",
+        template_score_threshold=0.65,
+        ultra_long_seq_threshold=1500,
+        rnapro_path=None,
+        chai1_path=None,
+        boltz1_path=None,
+        se3_path=None,
+    )
+    routing = pl.read_parquet(out.routing_path)
+    assert routing.item(0, "route_rule") == "len>1500->tbm+se3_mamba_fallback->tbm"
+    assert routing.item(0, "primary_source") == "tbm"
+    assert routing.item(0, "fallback_used") is True
+
+
+def test_phase2_router_long_fails_when_mamba_and_tbm_missing(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    _write_csv(
+        targets,
+        [
+            {"target_id": "TLONG", "sequence": ("A" * 601), "ligand_SMILES": ""},
+        ],
+    )
+    retrieval = tmp_path / "retrieval.parquet"
+    pl.DataFrame([{"target_id": "TLONG", "final_score": 0.99}]).write_parquet(retrieval)
+    tbm = tmp_path / "tbm.parquet"
+    pl.DataFrame([], schema={"target_id": pl.Utf8, "model_id": pl.Int32, "resid": pl.Int32, "resname": pl.Utf8, "x": pl.Float64, "y": pl.Float64, "z": pl.Float64}).write_parquet(tbm)
+    with pytest.raises(PipelineError, match="bucket long sem cobertura em se3_mamba e tbm"):
         build_hybrid_candidates(
             repo_root=tmp_path,
             targets_path=targets,
@@ -559,7 +620,31 @@ def test_phase2_router_ultralong_fails_without_se3(tmp_path: Path) -> None:
             out_path=tmp_path / "hybrid_candidates.parquet",
             routing_path=tmp_path / "routing.parquet",
             template_score_threshold=0.65,
-            ultra_long_seq_threshold=1500,
+            rnapro_path=None,
+            chai1_path=None,
+            boltz1_path=None,
+            se3_mamba_path=None,
+        )
+
+
+def test_phase2_router_fails_when_medium_threshold_not_greater_than_short(tmp_path: Path) -> None:
+    targets = tmp_path / "targets.csv"
+    _write_csv(targets, [{"target_id": "T1", "sequence": "AC", "ligand_SMILES": ""}])
+    retrieval = tmp_path / "retrieval.parquet"
+    pl.DataFrame([{"target_id": "T1", "final_score": 0.1}]).write_parquet(retrieval)
+    tbm = tmp_path / "tbm.parquet"
+    _make_tbm(tbm)
+    with pytest.raises(PipelineError, match="medium_max_len deve ser maior que short_max_len"):
+        build_hybrid_candidates(
+            repo_root=tmp_path,
+            targets_path=targets,
+            retrieval_path=retrieval,
+            tbm_path=tbm,
+            out_path=tmp_path / "hybrid_candidates.parquet",
+            routing_path=tmp_path / "routing.parquet",
+            template_score_threshold=0.65,
+            short_max_len=600,
+            medium_max_len=600,
             rnapro_path=None,
             chai1_path=None,
             boltz1_path=None,

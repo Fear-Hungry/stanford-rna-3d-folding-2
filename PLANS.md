@@ -2348,3 +2348,60 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - Kernel Kaggle completa em `COMPLETE` e gera `/kaggle/working/submission.csv`.
   - `check-submission` local do output do kernel passa.
   - Submit notebook-only executa sem `error_description` de OOM.
+
+## PLAN-143 - Refatoracao de condicionais complexas em diversidade
+
+- Objetivo:
+  - Remover condicionais complexas reportadas em `src/rna3d_local/ensemble/diversity.py` sem alterar o contrato funcional.
+- Hipotese:
+  - Quebrar expressoes booleanas compostas em validacoes atomicas melhora legibilidade e atende code health sem regressao de comportamento.
+- Mudancas:
+  - Refatorar validacao de shape em `_kabsch_align_centered` para checks sequenciais.
+  - Refatorar validacao de dimensionalidade em `cosine_similarity` para checks independentes.
+  - Simplificar condicionais compostas adicionais em `prune_low_quality_half`, `select_cluster_medoids` e `greedy_diverse_selection`.
+  - Preservar erros fail-fast e mensagens acionaveis.
+- Criterios de aceite:
+  - `pytest -q tests/test_diversity_rotation_invariance.py tests/test_best_of5_strategy.py` passa.
+  - Sem regressao de contrato nas validacoes estritas de diversidade.
+
+## PLAN-144 - Roteamento de sobrevivencia por comprimento no hybrid_router
+
+- Objetivo:
+  - Implementar funil rigido por comprimento de sequencia para evitar OOM de Transformers pesados e manter fail-fast em cobertura.
+- Hipotese:
+  - Priorizar roteamento por bucket de comprimento (`<=350`, `351..600`, `>600`) reduz risco operacional de OOM sem fallback silencioso.
+- Mudancas:
+  - `src/rna3d_local/hybrid_router.py`:
+    - bucket `short` (`L <= 350`) roteia exclusivamente para foundation trio (`chai1`, `boltz1`, `rnapro`) com cobertura obrigatoria das 3 fontes;
+    - bucket `medium` (`350 < L <= 600`) roteia exclusivamente para `se3_flash`;
+    - bucket `long` (`L > 600`) roteia para `se3_mamba`, com fallback explicito para `tbm` quando faltar cobertura mamba;
+    - priorizacao por comprimento tem precedencia sobre regras antigas de template/ligand;
+    - ampliar `routing.parquet` com `length_bucket`, thresholds efetivos e sinalizacao de fallback;
+    - ampliar `manifest` com thresholds e contagens por bucket/fallback.
+  - `src/rna3d_local/cli_parser.py` + `src/rna3d_local/cli.py`:
+    - adicionar `--short-max-len`, `--medium-max-len`, `--se3-flash`, `--se3-mamba`;
+    - manter `--se3` legado como alias temporario para compatibilidade.
+  - Atualizar testes de roteamento em `tests/test_phase2_hybrid.py` para as novas regras.
+  - Atualizar docs/receitas (`README.md`, `docs/SUBMARINO_RUNBOOK.md`, receitas E30/E31).
+- Criterios de aceite:
+  - `pytest -q tests/test_phase2_hybrid.py` passa com os novos cenarios de bucket.
+  - `build-hybrid-candidates --help` expõe as novas flags.
+  - Em rotas longas sem `se3_mamba`, fallback `tbm` ocorre apenas quando TBM cobre o alvo; caso contrario falha cedo com erro acionavel.
+
+## PLAN-145 - Hardening anti-OOM/timeout para submissao Kaggle (survival mode)
+
+- Objetivo:
+  - Reduzir falhas catastróficas (OOM/timeout) em inferência/submissão para sequências longas, trocando zeros por predições válidas.
+- Hipotese:
+  - Endurecer alocação CUDA, limpeza pós-inferência, gate de minimização e cap dinâmico de MSA reduz picos de memória sem quebrar contratos estritos.
+- Mudancas:
+  - Configurar `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8` antes do uso de `torch` nos módulos de inferência.
+  - Introduzir execução segura de inferência (`inference_mode` + autocast BF16 em CUDA + cleanup agressivo) nos runners pesados.
+  - Atualizar `hybrid_router` para bucket `long` incluir `TBM + Mamba` quando ambos existirem, com degradação explícita para fonte única quando faltar cobertura parcial.
+  - Aplicar cap dinâmico de MSA por comprimento (`350 < L <= 600` -> `max_msa_sequences <= 64`; `L > 600` -> `max_msa_sequences <= 32`) com seleção por diversidade de Hamming.
+  - Pular OpenMM automaticamente em minimização para sequências longas (`len > 350`) com rastreabilidade explícita.
+  - Cobrir com testes unitários de roteamento longo, cap dinâmico de MSA e gate de minimização.
+- Criterios de aceite:
+  - `pytest -q tests/test_phase2_hybrid.py tests/test_msa_covariance.py tests/test_minimization.py` passa.
+  - `build-hybrid-candidates --help` mantém compatibilidade de flags legadas e novas.
+  - Em bucket `long`, quando houver cobertura de `tbm` e `se3_mamba`, ambos entram no pool de candidatos.

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+# Reduz fragmentacao de VRAM em execucoes com tamanhos de alvo heterogeneos.
+_ALLOC_CONF = "expandable_segments:True,garbage_collection_threshold:0.8"
+os.environ.setdefault("PYTORCH_ALLOC_CONF", _ALLOC_CONF)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", _ALLOC_CONF)
 
 from .errors import raise_error
 from .submission import check_submission
