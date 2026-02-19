@@ -157,3 +157,9 @@ Regras:
 - artefatos gerados em `runs/` (paths) + logs;
 - metricas/score obtidos e custo (tempo, GPU/CPU, RAM quando relevante);
 - conclusao + proximos passos (referenciar `PLANS.md` quando virar trabalho).
+8. Escopo permitido de `PLANS.md`, `CHANGES.md` e `EXPERIMENTS.md`:
+- Registrar somente planos, mudancas e experimentos com impacto direto em:
+  - acuracia/poder preditivo dos modelos;
+  - pontuacao no Kaggle (local ou leaderboard);
+  - robustez competitiva relacionada ao score (ex.: evitar OOM/timeout que gera score 0).
+- Nao usar esses arquivos para registrar engenharia de ML geral sem impacto competitivo claro.

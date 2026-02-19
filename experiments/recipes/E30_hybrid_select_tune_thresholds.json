@@ -12,9 +12,11 @@
     "rnapro_predictions": "runs/phase2/rnapro.parquet",
     "chai1_predictions": "runs/phase2/chai1.parquet",
     "boltz1_predictions": "runs/phase2/boltz1.parquet",
-    "se3_predictions": "runs/se3/top5.parquet",
+    "se3_flash_predictions": "runs/se3/top5_flash.parquet",
+    "se3_mamba_predictions": "runs/se3/top5_mamba.parquet",
     "template_score_threshold": "0.65",
-    "ultra_long_seq_threshold": "1500",
+    "short_max_len": "350",
+    "medium_max_len": "600",
     "n_models": "5",
     "usalign_timeout": "900",
     "ground_truth_mode": "best_of_gt_copies"
@@ -39,16 +41,20 @@
         "{chai1_predictions}",
         "--boltz1",
         "{boltz1_predictions}",
-        "--se3",
-        "{se3_predictions}",
+        "--se3-flash",
+        "{se3_flash_predictions}",
+        "--se3-mamba",
+        "{se3_mamba_predictions}",
         "--out",
         "{run_dir}/hybrid_candidates.parquet",
         "--routing-out",
         "{run_dir}/routing.parquet",
         "--template-score-threshold",
         "{template_score_threshold}",
-        "--ultra-long-seq-threshold",
-        "{ultra_long_seq_threshold}"
+        "--short-max-len",
+        "{short_max_len}",
+        "--medium-max-len",
+        "{medium_max_len}"
       ]
     },
     {
@@ -124,4 +130,3 @@
     "{run_dir}/routing.parquet"
   ]
 }
-

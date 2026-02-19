@@ -2021,3 +2021,36 @@ Log append-only de experimentos executados.
 - Próximos passos:
   - Confirmar desfecho de `ref=50448928` (score/erro final).
   - Se necessário, projetar fallback explícito para target ultra-longo (`9MME`) sem dependência de Phase2 assets e sem quebrar contrato estrito.
+
+## 2026-02-19 - marcusvinicius/Codex - ADHOC (submit now do melhor candidato local v100)
+
+- Data UTC: `2026-02-19T17:13:47Z`
+- Plano: `ADHOC`
+- Objetivo/hipotese:
+  - Atender solicitacao explicita do usuario para submeter imediatamente no Kaggle usando o melhor candidato local com score validado.
+- Comparacao (baseline vs novo):
+  - Baseline de gate usado no fluxo estrito de submit-notebook: `0.292207`.
+  - Candidato: `0.30097500000000005` (`runs/20260218_hybrid_len68_centered/score.json`).
+- Comandos executados:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv`
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv --score-json runs/20260218_hybrid_len68_centered/score.json --baseline-score 0.292207 --report runs/20260219_plan145_submit_v100/readiness.json`
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 100 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv --notebook-output-path runs/20260218_plan136_kernel_output_v100/submission.csv --score-json runs/20260218_hybrid_len68_centered/score.json --baseline-score 0.292207 --message "FORCED by user: retry best local v100 (0.300975)" --execute-submit`
+  - `kaggle competitions submissions -c stanford-rna-3d-folding-2`
+  - `python - <<'PY' ... api.competition_submissions('stanford-rna-3d-folding-2') ... PY`
+- Versao de codigo/dados:
+  - Codigo: `git eb012ff`
+  - Notebook: `marcux777/stanford-rna3d-submit-prod-v2` (version `100`)
+  - Competicao: `stanford-rna-3d-folding-2`
+- Artefatos gerados:
+  - `runs/20260219_plan145_submit_v100/readiness.json`
+  - `runs/20260218_plan136_kernel_output_v100/submit_notebook_report.json`
+- Metricas/resultado:
+  - `check-submission`: `ok=true`
+  - `readiness`: `allowed=true`, `reason=strict_improvement_ok`
+  - `score_local(single/full28)`: `0.30097500000000005`
+  - Kaggle submit criado:
+    - `ref=50466078`
+    - `status=SubmissionStatus.PENDING`
+    - `description="FORCED by user: retry best local v100 (0.300975)"`
+- Conclusao:
+  - Submissao notebook-only enviada com sucesso para o melhor candidato local disponivel no momento; aguardando score final no Kaggle.

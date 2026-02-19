@@ -24,10 +24,10 @@ python -m rna3d_local score-local-bestof5 --ground-truth input/stanford-rna-3d-f
 python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2 --dry-run
 python -m rna3d_local fetch-pretrained-assets --assets-dir assets --include ribonanzanet2 --include boltz1
 python -m rna3d_local build-phase2-assets --assets-dir assets
-python -m rna3d_local predict-rnapro-offline --model-dir assets/models/rnapro --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/rnapro.parquet --n-models 5
-python -m rna3d_local predict-chai1-offline --model-dir assets/models/chai1 --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/chai1.parquet --n-models 5
-python -m rna3d_local predict-boltz1-offline --model-dir assets/models/boltz1 --targets input/stanford-rna-3d-folding-2/test_sequences.csv --out runs/phase2/boltz1.parquet --n-models 5
-python -m rna3d_local build-hybrid-candidates --targets input/stanford-rna-3d-folding-2/test_sequences.csv --retrieval runs/retrieval/retrieval_candidates.parquet --tbm runs/tbm/predictions.parquet --rnapro runs/phase2/rnapro.parquet --chai1 runs/phase2/chai1.parquet --boltz1 runs/phase2/boltz1.parquet --se3 runs/se3/top5.parquet --out runs/phase2/hybrid_candidates.parquet --routing-out runs/phase2/routing.parquet --template-score-threshold 0.65 --ultra-long-seq-threshold 1500
+python -m rna3d_local predict-rnapro-offline --model-dir assets/models/rnapro --targets runs/phase2/targets_short.csv --out runs/phase2/rnapro.parquet --n-models 5
+python -m rna3d_local predict-chai1-offline --model-dir assets/models/chai1 --targets runs/phase2/targets_short.csv --out runs/phase2/chai1.parquet --n-models 5
+python -m rna3d_local predict-boltz1-offline --model-dir assets/models/boltz1 --targets runs/phase2/targets_short.csv --out runs/phase2/boltz1.parquet --n-models 5
+python -m rna3d_local build-hybrid-candidates --targets input/stanford-rna-3d-folding-2/test_sequences.csv --retrieval runs/retrieval/retrieval_candidates.parquet --tbm runs/tbm/predictions.parquet --rnapro runs/phase2/rnapro.parquet --chai1 runs/phase2/chai1.parquet --boltz1 runs/phase2/boltz1.parquet --se3-flash runs/se3/top5_flash.parquet --se3-mamba runs/se3/top5_mamba.parquet --out runs/phase2/hybrid_candidates.parquet --routing-out runs/phase2/routing.parquet --template-score-threshold 0.65 --short-max-len 350 --medium-max-len 600
 python -m rna3d_local select-top5-hybrid --candidates runs/phase2/hybrid_candidates.parquet --out runs/phase2/hybrid_top5.parquet --n-models 5
 python -m rna3d_local minimize-ensemble --predictions runs/phase2/hybrid_top5.parquet --out runs/phase2/hybrid_top5_minimized.parquet --backend openmm --max-iterations 80 --bond-length-angstrom 5.9 --vdw-min-distance-angstrom 2.1 --position-restraint-k 800.0
 python -m rna3d_local export-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --predictions runs/phase2/hybrid_top5_minimized.parquet --out runs/phase2/submission.csv
@@ -142,13 +142,12 @@ python -m rna3d_local select-top5-se3 --ranked runs/se3/ranked.parquet --out run
 - Quando habilitada, a minimizacao roda em regime curto (`0 <= max_iterations <= 100`) e `backend=openmm` falha cedo se dependencia/plataforma estiver indisponivel.
 - `score-local-bestof5` usa o binario C++ do USalign para reproduzir Best-of-5 localmente e gerar `score.json` estrito para gating de submissao.
 - O caminho padrao competitivo usa `encoder=ribonanzanet2`, `backend=llama_cpp` e `ann_engine=faiss_ivfpq`.
-- FASE 2 usa roteamento deterministico:
-  - template forte -> TBM;
-  - alvos ultralongos (`L > --ultra-long-seq-threshold`) -> `generative_se3` obrigatorio;
-  - template/órfão fraco com `--se3` -> `generative_se3`;
-  - orfao sem ligante -> ensemble `chai1_boltz1_ensemble`;
-  - alvo com `ligand_SMILES` -> Boltz-1 primario;
-  - RNAPro entra como candidato suplementar quando fornecido.
+- FASE 2 usa roteamento deterministico por comprimento (prioridade maxima):
+  - `L <= --short-max-len` -> foundation trio obrigatorio (`chai1 + boltz1 + rnapro`);
+  - `--short-max-len < L <= --medium-max-len` -> `--se3-flash`;
+  - `L > --medium-max-len` -> `--se3-mamba`, com fallback explicito para `tbm`;
+  - `template_score` e `ligand_SMILES` permanecem apenas como metadados de diagnostico no `routing.parquet` (nao decidem rota primaria).
+  - `--se3` legado permanece como alias temporario para `--se3-flash` e `--se3-mamba`.
 
 ## Contratos de runners offline (Fase 2)
 

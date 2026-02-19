@@ -1955,3 +1955,27 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - O warning de ambiente CUDA/allocator pode aparecer em ambiente CPU-only durante testes de router quando `torch` e importado indiretamente; nao afeta o contrato funcional validado.
   - `safe_predict` foi introduzido e testado em isolamento; integracao progressiva nos runners externos pode ser feita em iteracao seguinte para cobertura ponta-a-ponta completa.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-146 (notebook submit v77-safe com estrategia alternativa)
+
+- Data UTC: `2026-02-19T17:40:24Z`
+- Plano: `PLAN-146`
+- Resumo:
+  - Rebaseado o notebook `stanford-rna3d-submit-prod-v2.ipynb` para a base estavel do fluxo dinamico `v77` (TBM + patch DRfold2), removendo o caminho `phase1/phase2_full` da versao que vinha falhando em formato.
+  - Substituida a selecao de alvos DRfold2 por estrategia alternativa de risco (`_select_drfold2_targets_by_risk`) combinando:
+    - baixa similaridade de retrieval (`retr_max_similarity < threshold`);
+    - limite de comprimento (`DRFOLD2_MAX_SEQ_LEN`);
+    - ordenacao por risco (`sim_gap` alto + maior comprimento) antes de limitar por budget.
+  - Adicionado hardening final de submissao com normalizacao estrita por `target_id/model_id` e clipping explicito (`SUBMISSION_ABS_CLIP`) antes do `check-submission`.
+  - Adicionada validacao explicita de bounds/valores finitos na submissao final (`_assert_submission_coord_bounds`) mantendo fail-fast e mensagens acionaveis.
+- Arquivos principais tocados:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m py_compile /tmp/v77_alt_cell1.py` -> `ok`
+  - `python - <<'PY' ... compile(code, ipynb, 'exec') ... PY` (na celula do notebook final) -> `compile_ok (840 linhas)`
+  - `python - <<'PY' ... assert chaves de hardening no notebook ... PY` -> `ok` (`_select_drfold2_targets_by_risk`, `_normalize_submission_coords`, `_assert_submission_coord_bounds`, `check-submission` presentes)
+- Riscos conhecidos / follow-ups:
+  - Esta iteracao valida contrato sintatico/estrutural local; score final e runtime/estabilidade hidden ainda dependem de rerun completo no Kaggle.
+  - O budget de DRfold2 (`DRFOLD2_MAX_TARGETS`, `DRFOLD2_MAX_SEQ_LEN`, `DRFOLD2_SIMILARITY_THRESHOLD`) pode exigir ajuste fino conforme tempo total de notebook.

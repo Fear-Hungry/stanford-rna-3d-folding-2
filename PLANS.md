@@ -2405,3 +2405,27 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `pytest -q tests/test_phase2_hybrid.py tests/test_msa_covariance.py tests/test_minimization.py` passa.
   - `build-hybrid-candidates --help` mantém compatibilidade de flags legadas e novas.
   - Em bucket `long`, quando houver cobertura de `tbm` e `se3_mamba`, ambos entram no pool de candidatos.
+
+## PLAN-146 - Notebook submit v77-safe com estrategia alternativa (sem repetir v100)
+
+- Status:
+  - Implementado localmente em `2026-02-19` (aguardando rerun/submissao no Kaggle para validacao de score).
+- Objetivo:
+  - Corrigir o caminho de submissao notebook-only com base no fluxo estavel do `v77`, mas com solucao efetivamente diferente da versao historica.
+- Hipotese:
+  - Reaproveitar o pipeline TBM+DRfold2 do v77 (que ja pontuou sem erro de formato) e trocar a estrategia de roteamento de patch + guardrails de coordenadas evita repetir falha de formato no hidden rerun.
+- Mudancas:
+  - Rebase do notebook `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb` para o fluxo `submission_notebook_dynamic_tbm_drfold2_router_v77`.
+  - Substituir selecao de alvos DRfold2 para criterio alternativo:
+    - filtrar por baixa similaridade + limite de comprimento (`DRFOLD2_MAX_SEQ_LEN`);
+    - ordenar por risco (similaridade crescente e comprimento decrescente);
+    - usar `DRFOLD2_MAX_TARGETS` ajustado para budget competitivo.
+  - Adicionar etapa obrigatoria de normalizacao final de submissao:
+    - centralizacao por `target_id`/modelo;
+    - clip explicito de coordenadas por limite seguro;
+    - validacao de bounds/valores antes do `check-submission`.
+  - Manter fail-fast em todas as etapas criticas (sem fallback silencioso).
+- Criterios de aceite:
+  - Notebook compila localmente (`compile(cell_source, ...)`) sem erro.
+  - `check-submission` local permanece parte obrigatoria do notebook antes da escrita final.
+  - Nova versao nao reutiliza exatamente a logica de selecao/patch do v77 original (solucao diferente).

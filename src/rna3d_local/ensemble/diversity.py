@@ -24,7 +24,15 @@ def _raise_diversity_contract(function: str, cause: str, *, impact: str, example
 
 
 def _kabsch_align_centered(mobile_centered: np.ndarray, target_centered: np.ndarray) -> np.ndarray:
-    if mobile_centered.shape != target_centered.shape or mobile_centered.ndim != 2 or mobile_centered.shape[1] != 3:
+    if mobile_centered.ndim != 2:
+        raise ValueError(f"kabsch coords shape invalido: mobile={mobile_centered.shape} target={target_centered.shape}")
+    if target_centered.ndim != 2:
+        raise ValueError(f"kabsch coords shape invalido: mobile={mobile_centered.shape} target={target_centered.shape}")
+    if int(mobile_centered.shape[1]) != 3:
+        raise ValueError(f"kabsch coords shape invalido: mobile={mobile_centered.shape} target={target_centered.shape}")
+    if int(target_centered.shape[1]) != 3:
+        raise ValueError(f"kabsch coords shape invalido: mobile={mobile_centered.shape} target={target_centered.shape}")
+    if mobile_centered.shape != target_centered.shape:
         raise ValueError(f"kabsch coords shape invalido: mobile={mobile_centered.shape} target={target_centered.shape}")
     cov = mobile_centered.T @ target_centered
     u, _s, vt = np.linalg.svd(cov, full_matrices=False)
@@ -153,12 +161,19 @@ def build_sample_vectors(target_df: pl.DataFrame, *, stage: str, location: str, 
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    if a.ndim != 1 or b.ndim != 1:
+    if a.ndim != 1:
         _raise_diversity_contract(
             "cosine_similarity",
             "vetores devem ser 1D para similaridade",
             impact="1",
-            examples=[f"a.ndim={a.ndim}", f"b.ndim={b.ndim}"],
+            examples=[f"a.ndim={a.ndim}"],
+        )
+    if b.ndim != 1:
+        _raise_diversity_contract(
+            "cosine_similarity",
+            "vetores devem ser 1D para similaridade",
+            impact="1",
+            examples=[f"b.ndim={b.ndim}"],
         )
     if a.shape != b.shape:
         _raise_diversity_contract(
@@ -278,9 +293,12 @@ def prune_low_quality_half(
 ) -> list[SampleCandidate]:
     if not candidates:
         raise_error(stage, location, "nenhum candidato disponivel para pre-filtro", impact="1", examples=[])
-    if not (0.0 < float(keep_fraction) <= 1.0):
+    keep_fraction_value = float(keep_fraction)
+    if keep_fraction_value <= 0.0:
         raise_error(stage, location, "keep_fraction invalido para pre-filtro", impact="1", examples=[str(keep_fraction)])
-    keep_count = max(int(min_keep), int(math.ceil(len(candidates) * float(keep_fraction))))
+    if keep_fraction_value > 1.0:
+        raise_error(stage, location, "keep_fraction invalido para pre-filtro", impact="1", examples=[str(keep_fraction)])
+    keep_count = max(int(min_keep), int(math.ceil(len(candidates) * keep_fraction_value)))
     ranked = sorted(candidates, key=lambda item: float(item.adjusted_score), reverse=True)
     if len(ranked) < int(min_keep):
         raise_error(
@@ -311,20 +329,21 @@ def select_cluster_medoids(
     stage: str,
     location: str,
 ) -> tuple[list[str], int]:
-    if int(n_select) <= 0:
-        raise_error(stage, location, "n_select invalido para clustering", impact="1", examples=[str(n_select)])
+    requested_select = int(n_select)
+    if requested_select <= 0:
+        raise_error(stage, location, "n_select invalido para clustering", impact="1", examples=[str(requested_select)])
     if float(lambda_diversity) < 0.0:
         raise_error(stage, location, "lambda_diversity invalido para clustering", impact="1", examples=[str(lambda_diversity)])
     if not sample_scores:
         raise_error(stage, location, "sample_scores vazio para clustering", impact="1", examples=[])
 
     sample_ids = [str(sample_id) for sample_id, _score in sample_scores]
-    if len(sample_ids) < int(n_select):
+    if len(sample_ids) < requested_select:
         raise_error(
             stage,
             location,
             "samples insuficientes para selecionar medoides",
-            impact=str(int(n_select) - len(sample_ids)),
+            impact=str(requested_select - len(sample_ids)),
             examples=sample_ids[:5],
         )
     for sample_id in sample_ids:
@@ -334,7 +353,7 @@ def select_cluster_medoids(
     score_map = {str(sample_id): float(score) for sample_id, score in sample_scores}
     dist = _pairwise_distance_matrix(sample_ids=sample_ids, vectors=vectors)
     n_items = int(len(sample_ids))
-    n_clusters = min(int(n_select), n_items)
+    n_clusters = min(requested_select, n_items)
 
     first_seed = max(range(n_items), key=lambda idx: score_map[sample_ids[idx]])
     seeds: list[int] = [int(first_seed)]
@@ -386,9 +405,11 @@ def select_cluster_medoids(
         selected_ids.append(str(best_member))
 
     selected_set = set(selected_ids)
-    if len(selected_ids) < int(n_select):
+    if len(selected_ids) < requested_select:
         remaining = [sid for sid in sample_ids if sid not in selected_set]
-        while len(selected_ids) < int(n_select) and remaining:
+        while len(selected_ids) < requested_select:
+            if not remaining:
+                break
             best_sid = None
             best_value = -math.inf
             for sid in remaining:
@@ -404,15 +425,15 @@ def select_cluster_medoids(
             selected_set.add(str(best_sid))
             remaining = [sid for sid in remaining if sid != best_sid]
 
-    if len(selected_ids) < int(n_select):
+    if len(selected_ids) < requested_select:
         raise_error(
             stage,
             location,
             "falha ao completar selecao de medoides",
-            impact=str(int(n_select) - len(selected_ids)),
+            impact=str(requested_select - len(selected_ids)),
             examples=selected_ids[:5],
         )
-    return selected_ids[: int(n_select)], int(n_clusters)
+    return selected_ids[:requested_select], int(n_clusters)
 
 
 def greedy_diverse_selection(
@@ -422,8 +443,14 @@ def greedy_diverse_selection(
     n_select: int,
     lambda_diversity: float,
 ) -> list[str]:
-    if int(n_select) <= 0:
-        _raise_diversity_contract("greedy_diverse_selection", "n_select invalido para selecao greedy", impact="1", examples=[str(n_select)])
+    requested_select = int(n_select)
+    if requested_select <= 0:
+        _raise_diversity_contract(
+            "greedy_diverse_selection",
+            "n_select invalido para selecao greedy",
+            impact="1",
+            examples=[str(requested_select)],
+        )
     if float(lambda_diversity) < 0.0:
         _raise_diversity_contract(
             "greedy_diverse_selection",
@@ -444,7 +471,9 @@ def greedy_diverse_selection(
                 impact="1",
                 examples=[sample_id],
             )
-    while len(selected) < int(n_select) and available:
+    while len(selected) < requested_select:
+        if not available:
+            break
         best_id = None
         best_value = -math.inf
         for sample_id, score in available.items():

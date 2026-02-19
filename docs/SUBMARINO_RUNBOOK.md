@@ -158,10 +158,11 @@ python -m rna3d_local predict-tbm \
   --out "$RUNS/tbm_predictions.parquet" \
   --n-models 5
 
-# 3) Foundation models offline (Chai/Boltz/RNAPro)
-python -m rna3d_local predict-rnapro-offline --model-dir "$ASSETS/models/rnapro" --targets "$INPUT/test_sequences.csv" --out "$RUNS/rnapro_predictions.parquet" --n-models 5
-python -m rna3d_local predict-chai1-offline  --model-dir "$ASSETS/models/chai1"  --targets "$INPUT/test_sequences.csv" --out "$RUNS/chai1_predictions.parquet"  --n-models 5
-python -m rna3d_local predict-boltz1-offline --model-dir "$ASSETS/models/boltz1" --targets "$INPUT/test_sequences.csv" --out "$RUNS/boltz1_predictions.parquet" --n-models 5
+# 3) Foundation models offline (somente bucket curto; evita OOM)
+# Gere previamente $RUNS/targets_short.csv com alvos de L <= 350.
+python -m rna3d_local predict-rnapro-offline --model-dir "$ASSETS/models/rnapro" --targets "$RUNS/targets_short.csv" --out "$RUNS/rnapro_predictions.parquet" --n-models 5
+python -m rna3d_local predict-chai1-offline  --model-dir "$ASSETS/models/chai1"  --targets "$RUNS/targets_short.csv" --out "$RUNS/chai1_predictions.parquet"  --n-models 5
+python -m rna3d_local predict-boltz1-offline --model-dir "$ASSETS/models/boltz1" --targets "$RUNS/targets_short.csv" --out "$RUNS/boltz1_predictions.parquet" --n-models 5
 
 # 4) Router + Top-5 + export + gate estrito
 python -m rna3d_local build-hybrid-candidates \
@@ -171,10 +172,13 @@ python -m rna3d_local build-hybrid-candidates \
   --rnapro "$RUNS/rnapro_predictions.parquet" \
   --chai1 "$RUNS/chai1_predictions.parquet" \
   --boltz1 "$RUNS/boltz1_predictions.parquet" \
+  --se3-flash "$RUNS/se3_flash_top5.parquet" \
+  --se3-mamba "$RUNS/se3_mamba_top5.parquet" \
   --out "$RUNS/hybrid_candidates.parquet" \
   --routing-out "$RUNS/routing.parquet" \
   --template-score-threshold 0.65 \
-  --ultra-long-seq-threshold 1500
+  --short-max-len 350 \
+  --medium-max-len 600
 
 python -m rna3d_local select-top5-hybrid --candidates "$RUNS/hybrid_candidates.parquet" --out "$RUNS/hybrid_top5.parquet" --n-models 5
 python -m rna3d_local export-submission --sample "$INPUT/sample_submission.csv" --predictions "$RUNS/hybrid_top5.parquet" --out /kaggle/working/submission.csv
@@ -184,6 +188,7 @@ python -m rna3d_local check-submission --sample "$INPUT/sample_submission.csv" -
 Observações importantes:
 - `prepare-chemical-features` **não** aceita `test_sequences.csv`; ele exige o arquivo QUICK_START (por resíduo) no schema suportado por `src/rna3d_local/chemical_features.py`.
 - Minimização (`minimize-ensemble --backend openmm`) é opcional; `--max-iterations 0` faz bypass explícito e, quando habilitada, exige `openmm` disponível no ambiente offline (não faz parte do wheelhouse `phase2` por padrão).
+- O roteador híbrido aplica funil rígido por comprimento com prioridade máxima: `L<=350` foundation trio, `351..600` SE(3)-Flash, `>600` SE(3)-Mamba com fallback explícito para TBM.
 
 Checklist fail-fast sugerido (antes de rodar o pipeline pesado):
 - `python --version` (deve ser compatível com o wheelhouse e com `requires-python>=3.11`)

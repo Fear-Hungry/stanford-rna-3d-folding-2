@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from .assets_fetch import fetch_pretrained_assets
@@ -475,6 +476,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "build-hybrid-candidates":
+            if args.se3 is not None and (args.se3_flash is None or args.se3_mamba is None):
+                print(
+                    "[HYBRID_ROUTER] [src/rna3d_local/cli.py:main] uso de --se3 legado detectado; prefira --se3-flash e --se3-mamba",
+                    file=sys.stderr,
+                )
             out = build_hybrid_candidates(
                 repo_root=repo,
                 targets_path=(repo / args.targets).resolve(),
@@ -483,11 +489,15 @@ def main(argv: list[str] | None = None) -> int:
                 out_path=(repo / args.out).resolve(),
                 routing_path=(repo / args.routing_out).resolve(),
                 template_score_threshold=float(args.template_score_threshold),
-                ultra_long_seq_threshold=int(args.ultra_long_seq_threshold),
+                short_max_len=int(args.short_max_len),
+                medium_max_len=int(args.medium_max_len),
+                ultra_long_seq_threshold=(None if args.ultra_long_seq_threshold is None else int(args.ultra_long_seq_threshold)),
                 rnapro_path=None if args.rnapro is None else (repo / args.rnapro).resolve(),
                 chai1_path=None if args.chai1 is None else (repo / args.chai1).resolve(),
                 boltz1_path=None if args.boltz1 is None else (repo / args.boltz1).resolve(),
                 se3_path=None if args.se3 is None else (repo / args.se3).resolve(),
+                se3_flash_path=None if args.se3_flash is None else (repo / args.se3_flash).resolve(),
+                se3_mamba_path=None if args.se3_mamba is None else (repo / args.se3_mamba).resolve(),
             )
             _print_json(
                 {
