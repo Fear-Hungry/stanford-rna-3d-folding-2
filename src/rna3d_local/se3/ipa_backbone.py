@@ -5,6 +5,7 @@ import math
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from .geometry import build_rna_local_frames
 from .geometry import rotation_matrix_from_6d
@@ -282,10 +283,12 @@ class IpaBackbone(nn.Module):
         graph_pair_max_per_node: int,
         stage: str,
         location: str,
+        use_gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.stage = str(stage)
         self.location = str(location)
+        self.use_gradient_checkpointing = bool(use_gradient_checkpointing)
         self.graph_backend = str(graph_backend)
         self.radius_angstrom = float(radius_angstrom)
         self.max_neighbors = int(max_neighbors)
@@ -383,17 +386,48 @@ class IpaBackbone(nn.Module):
                 chain_break_offset=int(chain_break_offset),
             )
             frames, _p_proxy, _c4_proxy, _n_proxy = build_rna_local_frames(c1_coords=x, base_features=base_features_layer)
-            h, x = layer(
-                h,
-                x,
-                src=graph.src,
-                dst=graph.dst,
-                distances=graph.distances,
-                bpp_edge_bias=bpp_edge_bias,
-                msa_edge_bias=msa_edge_bias,
-                chem_edge_bias=chem_edge_bias,
-                relative_offset=relative_offset,
-                chain_break_mask=chain_break_mask,
-                frames=frames,
-            )
+            if self.use_gradient_checkpointing and self.training:
+                def _layer_forward(
+                    h_in: torch.Tensor,
+                    x_in: torch.Tensor,
+                    _layer: IpaBlock = layer,
+                    _src: torch.Tensor = graph.src,
+                    _dst: torch.Tensor = graph.dst,
+                    _distances: torch.Tensor = graph.distances,
+                    _bpp_edge_bias: torch.Tensor = bpp_edge_bias,
+                    _msa_edge_bias: torch.Tensor = msa_edge_bias,
+                    _chem_edge_bias: torch.Tensor = chem_edge_bias,
+                    _relative_offset: torch.Tensor = relative_offset,
+                    _chain_break_mask: torch.Tensor = chain_break_mask,
+                    _frames: torch.Tensor = frames,
+                ) -> tuple[torch.Tensor, torch.Tensor]:
+                    return _layer(
+                        h_in,
+                        x_in,
+                        src=_src,
+                        dst=_dst,
+                        distances=_distances,
+                        bpp_edge_bias=_bpp_edge_bias,
+                        msa_edge_bias=_msa_edge_bias,
+                        chem_edge_bias=_chem_edge_bias,
+                        relative_offset=_relative_offset,
+                        chain_break_mask=_chain_break_mask,
+                        frames=_frames,
+                    )
+
+                h, x = checkpoint(_layer_forward, h, x, use_reentrant=False)
+            else:
+                h, x = layer(
+                    h,
+                    x,
+                    src=graph.src,
+                    dst=graph.dst,
+                    distances=graph.distances,
+                    bpp_edge_bias=bpp_edge_bias,
+                    msa_edge_bias=msa_edge_bias,
+                    chem_edge_bias=chem_edge_bias,
+                    relative_offset=relative_offset,
+                    chain_break_mask=chain_break_mask,
+                    frames=frames,
+                )
         return self.norm(h), x

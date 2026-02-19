@@ -19,9 +19,14 @@ class SubmissionExportResult:
     submission_path: Path
 
 
+_DUMMY_RESID_MOD = 300
+_DUMMY_COORD_SPACING = 3.0
+
+
 def _dummy_coords_for_resid(resid_key: int) -> tuple[float, float, float]:
     # Deterministic "linha reta" fallback keeps CSV valid when a target/model is missing.
-    return (float(int(resid_key)) * 3.0, 0.0, 0.0)
+    resid_bucket = int(abs(int(resid_key))) % int(_DUMMY_RESID_MOD)
+    return (float(resid_bucket) * float(_DUMMY_COORD_SPACING), 0.0, 0.0)
 
 
 def _warn_submission_survival(*, stage: str, location: str, cause: str, impact: str, examples: list[str]) -> None:
@@ -454,7 +459,9 @@ def export_submission(
     aggs: list[pl.Expr] = [pl.first("ID").alias("ID"), pl.first("resname").alias("resname"), pl.first("resid").alias("resid")]
     for mid in model_ids:
         k = int(mid)
-        resid_dummy_x = pl.first("resid_key").cast(pl.Float64) * pl.lit(3.0)
+        resid_dummy_x = (
+            (pl.first("resid_key").cast(pl.Int64).abs() % pl.lit(int(_DUMMY_RESID_MOD))).cast(pl.Float64) * pl.lit(float(_DUMMY_COORD_SPACING))
+        )
         aggs.extend(
             [
                 pl.when(pl.col("model_id") == k).then(pl.col("x")).max().fill_null(resid_dummy_x).alias(f"x_{k}"),

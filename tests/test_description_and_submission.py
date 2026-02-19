@@ -168,3 +168,36 @@ def test_export_submission_survives_target_level_exception_with_dummy(tmp_path: 
     assert float(row2["x_1"]) == pytest.approx(6.0)
     assert float(row2["x_2"]) == pytest.approx(6.0)
     check_submission(sample_path=sample, submission_path=submission)
+
+
+def test_export_submission_dummy_wraps_high_resid_under_contract_limit(tmp_path: Path) -> None:
+    sample = tmp_path / "sample_high_resid.csv"
+    pl.DataFrame(
+        [
+            {
+                "ID": "QH_4000",
+                "resname": "A",
+                "resid": 4000,
+                "x_1": 0.0,
+                "y_1": 0.0,
+                "z_1": 0.0,
+                "x_2": 0.0,
+                "y_2": 0.0,
+                "z_2": 0.0,
+            }
+        ]
+    ).write_csv(sample)
+    long = tmp_path / "predictions_empty.parquet"
+    pl.DataFrame(
+        [
+            {"target_id": "QX", "model_id": 1, "resid": 1, "resname": "A", "x": 1.0, "y": 2.0, "z": 3.0},
+        ]
+    ).write_parquet(long)
+    submission = tmp_path / "submission_high_resid_dummy.csv"
+    export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
+    out = pl.read_csv(submission)
+    row = out.row(0, named=True)
+    assert float(row["x_1"]) == pytest.approx(300.0)
+    assert float(row["x_2"]) == pytest.approx(300.0)
+    assert abs(float(row["x_1"])) <= 1000.0
+    check_submission(sample_path=sample, submission_path=submission)

@@ -34,6 +34,27 @@ def _validate_coords(*, x_pred: torch.Tensor, x_true: torch.Tensor, stage: str, 
         raise_error(stage, location, "loss estrutural requer ao menos 2 residuos", impact="1", examples=[str(int(x_pred.shape[0]))])
 
 
+def _validate_node_features(*, node_features: torch.Tensor, n_res: int, stage: str, location: str) -> None:
+    if node_features.ndim != 2:
+        raise_error(stage, location, "node_features com shape invalido para loss estrutural", impact="1", examples=[str(tuple(node_features.shape))])
+    if int(node_features.shape[0]) != int(n_res):
+        raise_error(
+            stage,
+            location,
+            "node_features com tamanho divergente das coordenadas",
+            impact="1",
+            examples=[f"coords={int(n_res)}", f"node_features={int(node_features.shape[0])}"],
+        )
+    if int(node_features.shape[1]) < 4:
+        raise_error(
+            stage,
+            location,
+            "node_features requer ao menos 4 canais de base para FAPE",
+            impact="1",
+            examples=[f"node_features_dim={int(node_features.shape[1])}"],
+        )
+
+
 def _kabsch_align(*, mobile: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     autocast_context = (
         torch.autocast(device_type=mobile.device.type, enabled=False)
@@ -65,12 +86,14 @@ def _fape_chunked(
     *,
     x_pred: torch.Tensor,
     x_true: torch.Tensor,
+    node_features: torch.Tensor,
     chunk_size: int,
     clamp_distance: float,
     length_scale: float,
 ) -> torch.Tensor:
-    frame_pred = build_ribose_like_frames(x_pred).to(dtype=x_pred.dtype)
-    frame_true = build_ribose_like_frames(x_true).to(dtype=x_true.dtype)
+    base_features = node_features[:, :4].to(device=x_pred.device, dtype=x_pred.dtype)
+    frame_pred = build_ribose_like_frames(x_pred, base_features=base_features).to(dtype=x_pred.dtype)
+    frame_true = build_ribose_like_frames(x_true, base_features=base_features).to(dtype=x_true.dtype)
     count = int(x_pred.shape[0])
     total = x_pred.new_tensor(0.0)
     denom = x_pred.new_tensor(0.0)
@@ -145,6 +168,7 @@ def compute_structural_loss_terms(
     *,
     x_pred: torch.Tensor,
     x_true: torch.Tensor,
+    node_features: torch.Tensor,
     chain_index: torch.Tensor,
     residue_index: torch.Tensor,
     fape_clamp_distance: float,
@@ -156,6 +180,7 @@ def compute_structural_loss_terms(
     location: str,
 ) -> StructuralLossTerms:
     _validate_coords(x_pred=x_pred, x_true=x_true, stage=stage, location=location)
+    _validate_node_features(node_features=node_features, n_res=int(x_pred.shape[0]), stage=stage, location=location)
     if chain_index.ndim != 1 or residue_index.ndim != 1:
         raise_error(stage, location, "chain_index/residue_index invalidos para loss estrutural", impact="1", examples=[str(tuple(chain_index.shape)), str(tuple(residue_index.shape))])
     if int(chain_index.shape[0]) != int(x_pred.shape[0]) or int(residue_index.shape[0]) != int(x_pred.shape[0]):
@@ -181,6 +206,7 @@ def compute_structural_loss_terms(
     fape = _fape_chunked(
         x_pred=x_pred,
         x_true=x_true,
+        node_features=node_features,
         chunk_size=int(loss_chunk_size),
         clamp_distance=float(fape_clamp_distance),
         length_scale=float(fape_length_scale),

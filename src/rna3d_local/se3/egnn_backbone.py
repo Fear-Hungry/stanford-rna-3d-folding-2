@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from .sparse_graph import build_sparse_radius_graph, compute_chain_relative_features, lookup_sparse_pair_bias
+
 
 class EgnnLayer(nn.Module):
     def __init__(self, hidden_dim: int) -> None:
@@ -90,10 +92,12 @@ class EgnnBackbone(nn.Module):
         graph_pair_max_per_node: int,
         stage: str,
         location: str,
+        use_gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.stage = str(stage)
         self.location = str(location)
+        self.use_gradient_checkpointing = bool(use_gradient_checkpointing)
         self.graph_backend = str(graph_backend)
         self.radius_angstrom = float(radius_angstrom)
         self.max_neighbors = int(max_neighbors)
@@ -180,16 +184,45 @@ class EgnnBackbone(nn.Module):
                 chain_index=chain_index.to(device=graph.src.device),
                 chain_break_offset=int(chain_break_offset),
             )
-            h, x = layer(
-                h,
-                x,
-                src=graph.src,
-                dst=graph.dst,
-                distances=graph.distances,
-                bpp_bias=bpp_bias,
-                msa_bias=msa_bias,
-                chem_bias=chem_bias,
-                relative_offset=relative_offset,
-                chain_break_mask=chain_break_mask,
-            )
+            if self.use_gradient_checkpointing and self.training:
+                def _layer_forward(
+                    h_in: torch.Tensor,
+                    x_in: torch.Tensor,
+                    _layer: EgnnLayer = layer,
+                    _src: torch.Tensor = graph.src,
+                    _dst: torch.Tensor = graph.dst,
+                    _distances: torch.Tensor = graph.distances,
+                    _bpp_bias: torch.Tensor = bpp_bias,
+                    _msa_bias: torch.Tensor = msa_bias,
+                    _chem_bias: torch.Tensor = chem_bias,
+                    _relative_offset: torch.Tensor = relative_offset,
+                    _chain_break_mask: torch.Tensor = chain_break_mask,
+                ) -> tuple[torch.Tensor, torch.Tensor]:
+                    return _layer(
+                        h_in,
+                        x_in,
+                        src=_src,
+                        dst=_dst,
+                        distances=_distances,
+                        bpp_bias=_bpp_bias,
+                        msa_bias=_msa_bias,
+                        chem_bias=_chem_bias,
+                        relative_offset=_relative_offset,
+                        chain_break_mask=_chain_break_mask,
+                    )
+
+                h, x = checkpoint(_layer_forward, h, x, use_reentrant=False)
+            else:
+                h, x = layer(
+                    h,
+                    x,
+                    src=graph.src,
+                    dst=graph.dst,
+                    distances=graph.distances,
+                    bpp_bias=bpp_bias,
+                    msa_bias=msa_bias,
+                    chem_bias=chem_bias,
+                    relative_offset=relative_offset,
+                    chain_break_mask=chain_break_mask,
+                )
         return self.norm(h), x

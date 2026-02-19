@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import polars as pl
 import pytest
 
 from rna3d_local.errors import PipelineError
+from rna3d_local.se3.graph_builder import _sequence_rows
 from rna3d_local.se3.sequence_parser import parse_sequence_with_chains
 
 
@@ -29,6 +31,35 @@ def test_parse_sequence_with_chains_single_chain_index_is_contiguous() -> None:
         target_id="T2",
     )
     assert parsed.residue_position_index_1d == [0, 1, 2, 3]
+
+
+def test_parse_sequence_with_chains_accepts_ambiguous_n() -> None:
+    parsed = parse_sequence_with_chains(
+        sequence="AN|GN",
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_sequence_parser.py:test_parse_sequence_with_chains_accepts_ambiguous_n",
+        target_id="T2N",
+    )
+    assert parsed.residues == ["A", "N", "G", "N"]
+    assert parsed.chain_index == [0, 0, 1, 1]
+    assert parsed.chain_lengths == [2, 2]
+    assert parsed.residue_position_index_1d == [0, 1, 1002, 1003]
+
+
+def test_sequence_rows_maps_ambiguous_n_to_uniform_base_vector() -> None:
+    rows = _sequence_rows(
+        pl.DataFrame([{"target_id": "TN", "sequence": "AN"}]),
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_sequence_parser.py:test_sequence_rows_maps_ambiguous_n_to_uniform_base_vector",
+    )
+    n_row = rows.filter(pl.col("resid") == 2).to_dicts()[0]
+    assert n_row["resname"] == "N"
+    assert n_row["base_a"] == pytest.approx(0.25)
+    assert n_row["base_c"] == pytest.approx(0.25)
+    assert n_row["base_g"] == pytest.approx(0.25)
+    assert n_row["base_u"] == pytest.approx(0.25)
 
 
 def test_parse_sequence_with_chains_fails_for_invalid_chain_break_offset() -> None:

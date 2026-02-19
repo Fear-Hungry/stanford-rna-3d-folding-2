@@ -152,9 +152,12 @@ class Se3Diffusion(nn.Module):
         return noise_global.to(dtype=delta_noisy.dtype)
 
     def forward_loss(self, h: torch.Tensor, x_cond: torch.Tensor, x_true: torch.Tensor) -> torch.Tensor:
+        from ..training.losses_se3 import _kabsch_align
+
         device = x_true.device
         t = torch.randint(0, self.num_steps, (1,), device=device)
-        delta_true = x_true - x_cond
+        x_true_aligned = _kabsch_align(mobile=x_true, target=x_cond).detach()
+        delta_true = x_true_aligned - x_cond
         noise = torch.randn_like(delta_true)
         ah = self.alpha_hat[t].view(1, 1)
         delta_noisy = torch.sqrt(ah) * delta_true + torch.sqrt(1.0 - ah) * noise

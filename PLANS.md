@@ -2634,3 +2634,113 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Criterios de aceite:
   - `pytest -q tests/test_trainer_se3_shuffle.py` passa.
   - `pytest -q tests/test_best_of5_strategy.py` passa sem regressao.
+
+## PLAN-158 - Alinhamento rigido no loss generativo (anti-efeito panqueca)
+
+- Objetivo:
+  - Remover o erro de interpolacao entre frames globais diferentes no treino generativo, alinhando `x_true` a `x_cond` antes de construir trajetoria de difusao/flow.
+- Hipotese:
+  - Aplicar Kabsch (`_kabsch_align`) no alvo experimental antes de `delta`, `x_t` e `vel_true` evita colapso no centro e direciona capacidade do modelo para geometria local em vez de rotacao/translacao global.
+- Mudancas:
+  - `src/rna3d_local/generative/diffusion_se3.py`:
+    - alinhar `x_true` para `x_cond` no `forward_loss` antes de calcular `delta_true`.
+  - `src/rna3d_local/generative/flow_matching_se3.py`:
+    - alinhar `x_true` para `x_cond` no `forward_loss` antes de calcular `x_t` e `vel_true`.
+  - `tests/test_se3_generative_symmetry.py`:
+    - adicionar teste de invariancia de `forward_loss` sob transformacao rigida aplicada apenas em `x_true`.
+- Criterios de aceite:
+  - `pytest -q tests/test_se3_generative_symmetry.py` passa.
+  - `pytest -q tests/test_best_of5_strategy.py` passa sem regressao.
+
+## PLAN-159 - FAPE com base real (purina/pirimidina) via node_features
+
+- Objetivo:
+  - Corrigir o frame local usado no FAPE para respeitar a base real do residuo (purina vs pirimidina), removendo a suposicao incorreta de adenina fixa.
+- Hipotese:
+  - Propagar `node_features` reais (primeiras 4 dimensoes de base) para `build_ribose_like_frames` elimina inversao indevida de normal em pirimidinas e reduz penalizacao espuria no FAPE.
+- Mudancas:
+  - `src/rna3d_local/se3/geometry.py`:
+    - atualizar `build_ribose_like_frames` para receber `base_features` reais e validar shape/consistencia.
+  - `src/rna3d_local/training/losses_se3.py`:
+    - propagar `node_features` em `_fape_chunked` e `compute_structural_loss_terms`;
+    - validar contrato de `node_features` (N x >=4) alinhado com `x_pred/x_true`.
+  - `src/rna3d_local/training/trainer_se3.py`:
+    - passar `node_features` reais ao chamar `compute_structural_loss_terms`.
+  - `tests/test_se3_losses.py`:
+    - adaptar chamadas para novo argumento `node_features`;
+    - adicionar cobertura de falha de contrato para shape invalido de `node_features`.
+- Criterios de aceite:
+  - `pytest -q tests/test_se3_losses.py` passa.
+  - `pytest -q tests/test_ipa_geometry.py` passa sem regressao.
+
+## PLAN-160 - Dummy coords com limite seguro para contrato Kaggle
+
+- Objetivo:
+  - Evitar que fallback dummy gere coordenadas fora do limite de validacao (`coord_abs_max`) em residuos muito altos do hidden set.
+- Hipotese:
+  - Aplicar modulo deterministico no `resid_key` antes de escalar (`(resid % 300) * 3.0`) preserva fallback reprodutivel e garante coordenadas dentro do contrato padrao (`<=1000`).
+- Mudancas:
+  - `src/rna3d_local/submission.py`:
+    - ajustar `_dummy_coords_for_resid` para usar bucket modulo seguro;
+    - aplicar mesma regra no caminho nao-streaming (`fill_null` vetorizado em Polars).
+  - `tests/test_description_and_submission.py`:
+    - adicionar caso com `resid=4000` validando dummy limitado e `check_submission` aprovado.
+- Criterios de aceite:
+  - `pytest -q tests/test_description_and_submission.py` passa.
+  - fallback dummy nao ultrapassa `coord_abs_max` no caso de residuo alto.
+
+## PLAN-161 - Aceitar base ambigua N no parser SE3 sem quebrar grafo
+
+- Objetivo:
+  - Evitar falha de contrato na etapa SE3 quando o hidden set contiver nucleotideos ambiguos `N`.
+- Hipotese:
+  - Permitir `N` no parser multicadeia e mapear para vetor de base uniforme no grafo (`[0.25, 0.25, 0.25, 0.25]`) preserva robustez sem mascarar erros de chaves/shape.
+- Mudancas:
+  - `src/rna3d_local/se3/sequence_parser.py`:
+    - aceitar `N` no alfabeto valido da sequencia (`A,C,G,U,N`).
+  - `src/rna3d_local/se3/graph_builder.py`:
+    - adicionar entrada `N` em `_BASE_VEC` com distribuicao uniforme entre bases canonicas.
+  - `tests/test_sequence_parser.py`:
+    - adicionar cobertura de parser aceitando `N` e preservando indices.
+- Criterios de aceite:
+  - `pytest -q tests/test_sequence_parser.py` passa.
+  - `N` nao dispara `raise_error` em `parse_sequence_with_chains`.
+
+## PLAN-162 - Gradient checkpointing por camada nos backbones SE3
+
+- Objetivo:
+  - Corrigir o uso de checkpointing no treino SE3 para reduzir pico de VRAM de forma efetiva, aplicando checkpoint por camada no EGNN e IPA.
+- Hipotese:
+  - Remover checkpoint monolitico do `trainer_se3.py` e mover para o loop interno de camadas dos backbones evita recomputacao com retencao ampla de ativacoes e melhora o comportamento de memoria em sequencias longas.
+- Mudancas:
+  - `src/rna3d_local/se3/egnn_backbone.py`:
+    - adicionar suporte a `use_gradient_checkpointing`;
+    - aplicar `checkpoint(..., use_reentrant=False)` por camada no loop de `self.layers`.
+  - `src/rna3d_local/se3/ipa_backbone.py`:
+    - adicionar suporte a `use_gradient_checkpointing`;
+    - aplicar `checkpoint(..., use_reentrant=False)` por camada no loop de `self.layers`.
+  - `src/rna3d_local/training/trainer_se3.py`:
+    - remover checkpointing do backbone inteiro em `_forward_backbone`;
+    - propagar flag de checkpoint para os construtores dos backbones em treino/runtime.
+  - `tests/test_backbone_checkpointing.py`:
+    - adicionar cobertura para garantir que o checkpoint e chamado uma vez por camada quando habilitado.
+- Criterios de aceite:
+  - `pytest -q tests/test_backbone_checkpointing.py` passa.
+  - `pytest -q tests/test_se3_memory.py::test_train_and_sample_se3_with_linear_memory_config` passa.
+
+## PLAN-163 - TBM multicadeia exportando chain_index para minimizacao segura
+
+- Objetivo:
+  - Evitar que saida TBM sem `chain_index` force o OpenMM a tratar complexos multicadeia como cadeia unica na minimizacao.
+- Hipotese:
+  - Construir residuos do alvo com `parse_sequence_with_chains` e exportar `chain_index` (alem de `residue_index_1d`) no parquet TBM preserva fronteiras de cadeia e impede ligacoes covalentes indevidas entre cadeias.
+- Mudancas:
+  - `src/rna3d_local/tbm.py`:
+    - substituir `explode` ingenuo por varredura via `parse_sequence_with_chains`;
+    - derivar `target_len` a partir do parse (em vez de `str.len_chars`) para suportar `|` corretamente;
+    - incluir `chain_index` e `residue_index_1d` na saida final.
+  - `tests/test_tbm.py`:
+    - adicionar teste multicadeia verificando `chain_index`/`residue_index_1d` no parquet TBM.
+- Criterios de aceite:
+  - `pytest -q tests/test_tbm.py` passa.
+  - saida TBM multicadeia contem `chain_index` consistente com a sequencia parseada.

@@ -10,6 +10,13 @@ from rna3d_local.training.config_se3 import load_se3_train_config
 from rna3d_local.training.losses_se3 import compute_structural_loss_terms
 
 
+def _node_features(n_res: int) -> torch.Tensor:
+    out = torch.zeros((int(n_res), 4), dtype=torch.float32)
+    for idx in range(int(n_res)):
+        out[idx, idx % 4] = 1.0
+    return out
+
+
 def test_structural_loss_terms_near_zero_when_prediction_matches_truth() -> None:
     coords = torch.tensor(
         [
@@ -25,6 +32,7 @@ def test_structural_loss_terms_near_zero_when_prediction_matches_truth() -> None
     terms = compute_structural_loss_terms(
         x_pred=coords,
         x_true=coords.clone(),
+        node_features=_node_features(int(coords.shape[0])),
         chain_index=chain_index,
         residue_index=residue_index,
         fape_clamp_distance=10.0,
@@ -58,6 +66,7 @@ def test_structural_loss_terms_clash_penalizes_overlap() -> None:
     terms = compute_structural_loss_terms(
         x_pred=x_pred,
         x_true=x_true,
+        node_features=_node_features(int(x_true.shape[0])),
         chain_index=chain_index,
         residue_index=residue_index,
         fape_clamp_distance=10.0,
@@ -91,6 +100,7 @@ def test_structural_loss_terms_clash_exponential_is_stronger_below_2a() -> None:
     mild = compute_structural_loss_terms(
         x_pred=x_pred_mild,
         x_true=x_true,
+        node_features=_node_features(int(x_true.shape[0])),
         chain_index=chain_index,
         residue_index=residue_index,
         fape_clamp_distance=10.0,
@@ -104,6 +114,7 @@ def test_structural_loss_terms_clash_exponential_is_stronger_below_2a() -> None:
     severe = compute_structural_loss_terms(
         x_pred=x_pred_severe,
         x_true=x_true,
+        node_features=_node_features(int(x_true.shape[0])),
         chain_index=chain_index,
         residue_index=residue_index,
         fape_clamp_distance=10.0,
@@ -132,6 +143,7 @@ def test_structural_loss_terms_fail_for_invalid_chunk_size() -> None:
         compute_structural_loss_terms(
             x_pred=coords,
             x_true=coords.clone(),
+            node_features=_node_features(int(coords.shape[0])),
             chain_index=chain_index,
             residue_index=residue_index,
             fape_clamp_distance=10.0,
@@ -141,6 +153,34 @@ def test_structural_loss_terms_fail_for_invalid_chunk_size() -> None:
             loss_chunk_size=0,
             stage="TEST",
             location="tests/test_se3_losses.py:test_structural_loss_terms_fail_for_invalid_chunk_size",
+        )
+
+
+def test_structural_loss_terms_fail_for_invalid_node_features_shape() -> None:
+    coords = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    chain_index = torch.tensor([0, 0, 0], dtype=torch.long)
+    residue_index = torch.tensor([0, 1, 2], dtype=torch.long)
+    with pytest.raises(PipelineError, match="node_features"):
+        compute_structural_loss_terms(
+            x_pred=coords,
+            x_true=coords.clone(),
+            node_features=torch.zeros((3, 3), dtype=torch.float32),
+            chain_index=chain_index,
+            residue_index=residue_index,
+            fape_clamp_distance=10.0,
+            fape_length_scale=10.0,
+            vdw_min_distance=2.1,
+            vdw_repulsion_power=4,
+            loss_chunk_size=2,
+            stage="TEST",
+            location="tests/test_se3_losses.py:test_structural_loss_terms_fail_for_invalid_node_features_shape",
         )
 
 

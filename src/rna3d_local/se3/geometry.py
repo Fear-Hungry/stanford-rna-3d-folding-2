@@ -98,14 +98,17 @@ def build_rna_local_frames(
     return frames, p_proxy, c4_proxy, n_proxy
 
 
-def build_ribose_like_frames(x: torch.Tensor) -> torch.Tensor:
+def build_ribose_like_frames(x: torch.Tensor, base_features: torch.Tensor) -> torch.Tensor:
     if x.ndim != 2 or int(x.shape[-1]) != 3:
         raise ValueError(f"x com shape invalido para build_ribose_like_frames: {tuple(x.shape)}")
     if int(x.shape[0]) == 0:
         raise ValueError("x vazio para build_ribose_like_frames")
-    base_features = torch.zeros((int(x.shape[0]), 4), dtype=x.dtype, device=x.device)
-    base_features[:, 0] = 1.0
-    frames, _p_proxy, _c4_proxy, _n_proxy = build_rna_local_frames(c1_coords=x, base_features=base_features)
+    if base_features.ndim != 2 or int(base_features.shape[0]) != int(x.shape[0]) or int(base_features.shape[-1]) < 4:
+        raise ValueError(f"base_features com shape invalido para build_ribose_like_frames: {tuple(base_features.shape)}")
+    frames, _p_proxy, _c4_proxy, _n_proxy = build_rna_local_frames(
+        c1_coords=x,
+        base_features=base_features.to(device=x.device, dtype=x.dtype),
+    )
     return frames
 
 

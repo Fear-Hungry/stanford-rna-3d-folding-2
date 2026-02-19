@@ -7,7 +7,6 @@ from pathlib import Path
 
 import torch
 from torch import nn
-from torch.utils.checkpoint import checkpoint
 
 from ..errors import raise_error
 from ..generative.diffusion_se3 import Se3Diffusion
@@ -78,78 +77,40 @@ def _forward_backbone(
     chain_index: torch.Tensor,
     chem_exposure: torch.Tensor,
     chain_break_offset: int,
-    use_backbone_checkpointing: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if node_features.ndim != 2 or int(node_features.shape[1]) < 4:
         raise ValueError(f"node_features com shape invalido para backbone SE(3): {tuple(node_features.shape)}")
     base_features = node_features[:, :4]
     h_seq = sequence_tower(node_features)
-    if bool(use_backbone_checkpointing and sequence_tower.training and h_seq.requires_grad):
-        def _egnn_checkpoint(h_in: torch.Tensor, x_in: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-            return egnn(
-                node_features=h_in,
-                coords=x_in,
-                bpp_pair_src=bpp_pair_src,
-                bpp_pair_dst=bpp_pair_dst,
-                bpp_pair_prob=bpp_pair_prob,
-                msa_pair_src=msa_pair_src,
-                msa_pair_dst=msa_pair_dst,
-                msa_pair_prob=msa_pair_prob,
-                residue_index=residue_index,
-                chain_index=chain_index,
-                chem_exposure=chem_exposure,
-                chain_break_offset=chain_break_offset,
-            )
-
-        def _ipa_checkpoint(h_in: torch.Tensor, x_in: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-            return ipa(
-                node_features=h_in,
-                coords=x_in,
-                bpp_pair_src=bpp_pair_src,
-                bpp_pair_dst=bpp_pair_dst,
-                bpp_pair_prob=bpp_pair_prob,
-                msa_pair_src=msa_pair_src,
-                msa_pair_dst=msa_pair_dst,
-                msa_pair_prob=msa_pair_prob,
-                base_features=base_features,
-                residue_index=residue_index,
-                chain_index=chain_index,
-                chem_exposure=chem_exposure,
-                chain_break_offset=chain_break_offset,
-            )
-
-        h_egnn, x_egnn = checkpoint(_egnn_checkpoint, h_seq, coords_init, use_reentrant=False)
-        h_ipa, x_ipa = checkpoint(_ipa_checkpoint, h_seq, coords_init, use_reentrant=False)
-    else:
-        h_egnn, x_egnn = egnn(
-            node_features=h_seq,
-            coords=coords_init,
-            bpp_pair_src=bpp_pair_src,
-            bpp_pair_dst=bpp_pair_dst,
-            bpp_pair_prob=bpp_pair_prob,
-            msa_pair_src=msa_pair_src,
-            msa_pair_dst=msa_pair_dst,
-            msa_pair_prob=msa_pair_prob,
-            residue_index=residue_index,
-            chain_index=chain_index,
-            chem_exposure=chem_exposure,
-            chain_break_offset=chain_break_offset,
-        )
-        h_ipa, x_ipa = ipa(
-            node_features=h_seq,
-            coords=coords_init,
-            bpp_pair_src=bpp_pair_src,
-            bpp_pair_dst=bpp_pair_dst,
-            bpp_pair_prob=bpp_pair_prob,
-            msa_pair_src=msa_pair_src,
-            msa_pair_dst=msa_pair_dst,
-            msa_pair_prob=msa_pair_prob,
-            base_features=base_features,
-            residue_index=residue_index,
-            chain_index=chain_index,
-            chem_exposure=chem_exposure,
-            chain_break_offset=chain_break_offset,
-        )
+    h_egnn, x_egnn = egnn(
+        node_features=h_seq,
+        coords=coords_init,
+        bpp_pair_src=bpp_pair_src,
+        bpp_pair_dst=bpp_pair_dst,
+        bpp_pair_prob=bpp_pair_prob,
+        msa_pair_src=msa_pair_src,
+        msa_pair_dst=msa_pair_dst,
+        msa_pair_prob=msa_pair_prob,
+        residue_index=residue_index,
+        chain_index=chain_index,
+        chem_exposure=chem_exposure,
+        chain_break_offset=chain_break_offset,
+    )
+    h_ipa, x_ipa = ipa(
+        node_features=h_seq,
+        coords=coords_init,
+        bpp_pair_src=bpp_pair_src,
+        bpp_pair_dst=bpp_pair_dst,
+        bpp_pair_prob=bpp_pair_prob,
+        msa_pair_src=msa_pair_src,
+        msa_pair_dst=msa_pair_dst,
+        msa_pair_prob=msa_pair_prob,
+        base_features=base_features,
+        residue_index=residue_index,
+        chain_index=chain_index,
+        chem_exposure=chem_exposure,
+        chain_break_offset=chain_break_offset,
+    )
     h_fused, x_fused = fusion(h_egnn=h_egnn, x_egnn=x_egnn, h_ipa=h_ipa, x_ipa=x_ipa)
     x_coarse = x_fused + coarse_head(h_fused)
     return h_fused, x_coarse
@@ -390,6 +351,7 @@ def train_se3_generator(
         graph_pair_max_per_node=cfg.graph_pair_max_per_node,
         stage=stage,
         location=location,
+        use_gradient_checkpointing=cfg.use_gradient_checkpointing,
     )
     ipa = IpaBackbone(
         input_dim=cfg.hidden_dim,
@@ -406,6 +368,7 @@ def train_se3_generator(
         graph_pair_max_per_node=cfg.graph_pair_max_per_node,
         stage=stage,
         location=location,
+        use_gradient_checkpointing=cfg.use_gradient_checkpointing,
     )
     fusion = Se3Fusion(hidden_dim=cfg.hidden_dim)
     coarse_head = nn.Linear(cfg.hidden_dim, 3)
@@ -528,11 +491,11 @@ def train_se3_generator(
                     chain_index=chain_index,
                     chem_exposure=chem_exposure,
                     chain_break_offset=cfg.chain_break_offset,
-                    use_backbone_checkpointing=bool(cfg.use_gradient_checkpointing),
                 )
                 structural_terms = compute_structural_loss_terms(
                     x_pred=x_coarse.to(dtype=torch.float32),
                     x_true=coords_true.to(dtype=torch.float32),
+                    node_features=node_features.to(dtype=torch.float32),
                     chain_index=chain_index,
                     residue_index=residue_index,
                     fape_clamp_distance=cfg.fape_clamp_distance,
@@ -747,6 +710,7 @@ def load_se3_runtime_models(*, model_dir: Path, stage: str, location: str) -> Se
         graph_pair_max_per_node=cfg.graph_pair_max_per_node,
         stage=stage,
         location=location,
+        use_gradient_checkpointing=False,
     )
     ipa = IpaBackbone(
         input_dim=cfg.hidden_dim,
@@ -763,6 +727,7 @@ def load_se3_runtime_models(*, model_dir: Path, stage: str, location: str) -> Se
         graph_pair_max_per_node=cfg.graph_pair_max_per_node,
         stage=stage,
         location=location,
+        use_gradient_checkpointing=False,
     )
     fusion = Se3Fusion(hidden_dim=cfg.hidden_dim)
     coarse_head = nn.Linear(cfg.hidden_dim, 3)
@@ -837,5 +802,4 @@ def run_backbone_for_graph(
         chain_index=chain_index,
         chem_exposure=chem_exposure,
         chain_break_offset=chain_break_offset,
-        use_backbone_checkpointing=False,
     )

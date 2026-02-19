@@ -2237,3 +2237,134 @@ Log append-only de mudancas implementadas.
 - Riscos conhecidos / follow-ups:
   - O embaralhamento aumenta variancia entre execucoes com seeds diferentes (esperado); manter seed fixo continua obrigatorio para comparacoes reprodutiveis.
   - Se for necessario replay exato de ordem por epoca em diagnostico, considerar registrar no manifest o hash da ordem de indices por epoca.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-158 (alinhamento rigido no loss generativo)
+
+- Data UTC: `2026-02-19T20:11:44Z`
+- Plano: `PLAN-158`
+- Resumo:
+  - Corrigido o treinamento generativo para alinhar `x_true` em `x_cond` antes de construir os alvos de difusao/flow.
+  - Em `Se3Diffusion.forward_loss`, `delta_true` passou a ser calculado com `x_true_aligned = _kabsch_align(mobile=x_true, target=x_cond)`.
+  - Em `Se3FlowMatching.forward_loss`, a interpolacao `x_t` e `vel_true` passaram a usar `x_true_aligned`, evitando colapso de trajetoria por mismatch global de rotacao/translacao.
+  - Import de `_kabsch_align` foi mantido como import tardio dentro de `forward_loss` para evitar ciclo de import entre `generative` e `training`.
+  - Adicionados testes de invariancia do `forward_loss` sob transformacao rigida aplicada somente em `x_true`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/generative/diffusion_se3.py`
+  - `src/rna3d_local/generative/flow_matching_se3.py`
+  - `tests/test_se3_generative_symmetry.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_se3_generative_symmetry.py` -> `8 passed`
+  - `python -m pytest -q tests/test_best_of5_strategy.py` -> `4 passed`
+- Riscos conhecidos / follow-ups:
+  - O alinhamento atual remove componentes globais no loss generativo por design; se houver cenário futuro que exija aprender pose absoluta, isso deve ser controlado por flag explícita de treinamento.
+  - Import tardio evita ciclo e mantém estabilidade, porém adiciona custo mínimo de import na primeira chamada de `forward_loss`.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-159 (FAPE com base real via node_features)
+
+- Data UTC: `2026-02-19T20:14:14Z`
+- Plano: `PLAN-159`
+- Resumo:
+  - Corrigido o frame local do FAPE para usar base real (purina/pirimidina) derivada de `node_features`, removendo suposição fixa de adenina em `build_ribose_like_frames`.
+  - `build_ribose_like_frames` passou a receber `base_features` explícito e validar contrato de shape.
+  - `_fape_chunked` e `compute_structural_loss_terms` agora recebem `node_features` e usam os 4 canais de base para construir frames locais consistentes com a sequência.
+  - `trainer_se3` passou a propagar `node_features` reais ao cálculo de loss estrutural.
+  - Testes de loss estrutural foram atualizados para novo contrato e ganharam caso de falha com `node_features` inválido.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/geometry.py`
+  - `src/rna3d_local/training/losses_se3.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `tests/test_se3_losses.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_se3_losses.py` -> `11 passed`
+  - `python -m pytest -q tests/test_ipa_geometry.py` -> `5 passed`
+- Riscos conhecidos / follow-ups:
+  - O contrato agora exige `node_features` com pelo menos 4 canais; qualquer consumidor futuro de `compute_structural_loss_terms` sem esse campo falhará cedo (comportamento esperado).
+  - Em cenários com features não one-hot nos 4 canais de base, a máscara purina/pirimidina seguirá `argmax`; se necessário, validar distribuição desses canais no dataset.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-160 (dummy coords com limite seguro)
+
+- Data UTC: `2026-02-19T20:15:59Z`
+- Plano: `PLAN-160`
+- Resumo:
+  - Corrigido fallback dummy para não violar o limite de coordenadas da validação estrita (`coord_abs_max`) em resíduos altos.
+  - `_dummy_coords_for_resid` passou a usar bucket determinístico por módulo seguro (`abs(resid_key) % 300`) antes da escala em X.
+  - Aplicada a mesma regra no caminho não-streaming (`fill_null` vetorizado em Polars), mantendo consistência entre os dois exports.
+  - Adicionado teste com `resid=4000` validando X dummy limitado (`300.0`) e passagem no `check_submission`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/submission.py`
+  - `tests/test_description_and_submission.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_description_and_submission.py` -> `6 passed`
+  - `python -m pytest -q tests/test_phase2_hybrid.py` -> `10 passed` (1 warning de CUDA indisponivel no ambiente)
+- Riscos conhecidos / follow-ups:
+  - O módulo fixo (`300`) foi escolhido para o limite padrão (`coord_abs_max=1000`); se esse limite for alterado por ambiente, avaliar tornar o bucket configurável por variável dedicada.
+  - O fallback continua priorizando sobrevivência da submissão (não qualidade estrutural), como esperado por desenho.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-161 (aceitar base ambigua N no parser SE3)
+
+- Data UTC: `2026-02-19T20:18:03Z`
+- Plano: `PLAN-161`
+- Resumo:
+  - Ajustado `parse_sequence_with_chains` para aceitar `N` como base valida em sequencias multicadeia, evitando crash por nucleotideo ambiguo no hidden set.
+  - Atualizado `_BASE_VEC` no `graph_builder` com mapeamento de `N` para distribuicao uniforme entre A/C/G/U (`0.25` em cada canal).
+  - Adicionados testes para cobrir parse com `N` e para validar o vetor de base uniforme no caminho de construcao de linhas de sequencia.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sequence_parser.py`
+  - `src/rna3d_local/se3/graph_builder.py`
+  - `tests/test_sequence_parser.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_sequence_parser.py` -> `5 passed`
+- Riscos conhecidos / follow-ups:
+  - Outros normalizadores fora da trilha SE3 (ex.: wrappers de runners externos) ainda podem manter alfabeto estrito; se esses caminhos forem usados para targets com `N`, sera necessario harmonizar a politica nesses pontos tambem.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-162 (gradient checkpointing por camada nos backbones)
+
+- Data UTC: `2026-02-19T20:21:47Z`
+- Plano: `PLAN-162`
+- Resumo:
+  - Removido o checkpointing monolitico de backbone no `trainer_se3.py` (`checkpoint` envolvendo EGNN/IPA completos).
+  - Implementado gradient checkpointing por camada dentro de `EgnnBackbone.forward` e `IpaBackbone.forward`, com `checkpoint(..., use_reentrant=False)` aplicado em cada iteracao do loop de layers quando `use_gradient_checkpointing=true` e modo treino.
+  - Corrigido late-binding de closure no checkpoint por camada, congelando `layer` e tensores de aresta/frame por iteracao para garantir recomputacao correta no backward.
+  - Adicionada flag `use_gradient_checkpointing` nos construtores dos backbones para controle explicito do comportamento em treino/runtime.
+  - Atualizadas instanciacoes dos backbones no treino e no carregamento de runtime para propagar a flag corretamente (`True` no treino conforme config; `False` no runtime de inferencia).
+  - Adicionado teste dedicado garantindo que o checkpoint e invocado uma vez por camada em EGNN e IPA quando habilitado, com paridade de gradiente (checkpoint on/off).
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/egnn_backbone.py`
+  - `src/rna3d_local/se3/ipa_backbone.py`
+  - `src/rna3d_local/training/trainer_se3.py`
+  - `tests/test_backbone_checkpointing.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_backbone_checkpointing.py tests/test_ipa_geometry.py` -> `8 passed` (1 warning de CUDA indisponivel no ambiente)
+  - `python -m pytest -q tests/test_se3_memory.py::test_train_and_sample_se3_with_linear_memory_config` -> `1 failed` (ambiente sem CUDA; contrato do projeto bloqueia treino com `autocast_bfloat16=true` em CPU)
+- Riscos conhecidos / follow-ups:
+  - Para validar ganho real de pico de VRAM, ainda e necessario rodar benchmark de treino em GPU (config com `use_gradient_checkpointing=true`) e comparar uso maximo de memoria contra baseline anterior.
+
+## 2026-02-19 - marcusvinicius/Codex - PLAN-163 (TBM multicadeia com chain_index)
+
+- Data UTC: `2026-02-19T20:26:11Z`
+- Plano: `PLAN-163`
+- Resumo:
+  - Corrigida a geracao de residuos no TBM para usar `parse_sequence_with_chains` em vez de `explode` por `str.len_chars`.
+  - `target_len` do TBM passou a ser derivado do parse multicadeia (ignorando separador), evitando contagem incorreta quando ha `|` na sequencia.
+  - A saida final do TBM agora exporta `chain_index` e `residue_index_1d`, permitindo que a minimizacao preserve fronteiras de cadeia e nao conecte cadeias distintas por engano.
+  - Adicionado teste multicadeia validando os valores exportados de `chain_index` e `residue_index_1d`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/tbm.py`
+  - `tests/test_tbm.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_tbm.py` -> `4 passed`
+  - `python -m pytest -q tests/test_minimization.py::test_build_covalent_pairs_respects_chain_boundaries` -> `1 passed`
+- Riscos conhecidos / follow-ups:
+  - O parser multicadeia no TBM usa `chain_separator="|"` por padrao (parametrizavel na funcao); se algum fluxo futuro usar separador diferente, precisa propagar o valor explicitamente na chamada.

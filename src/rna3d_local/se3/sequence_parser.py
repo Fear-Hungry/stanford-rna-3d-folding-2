@@ -46,7 +46,7 @@ def parse_sequence_with_chains(
     position_cursor = 0
     for cidx, chunk in enumerate(chunks):
         normalized = chunk.replace("T", "U")
-        bad = sorted({base for base in normalized if base not in {"A", "C", "G", "U"}})
+        bad = sorted({base for base in normalized if base not in {"A", "C", "G", "U", "N"}})
         if bad:
             raise_error(
                 stage,

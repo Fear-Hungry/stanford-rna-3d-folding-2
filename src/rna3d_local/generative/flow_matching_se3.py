@@ -143,11 +143,14 @@ class Se3FlowMatching(nn.Module):
         return vel_global.to(dtype=x_t.dtype)
 
     def forward_loss(self, h: torch.Tensor, x_cond: torch.Tensor, x_true: torch.Tensor) -> torch.Tensor:
+        from ..training.losses_se3 import _kabsch_align
+
         device = x_true.device
+        x_true_aligned = _kabsch_align(mobile=x_true, target=x_cond).detach()
         tau = torch.rand((1,), device=device)
-        noise = torch.randn_like(x_true) * 0.01
-        x_t = ((1.0 - tau.view(1, 1)) * x_cond) + (tau.view(1, 1) * x_true) + noise
-        vel_true = x_true - x_cond
+        noise = torch.randn_like(x_true_aligned) * 0.01
+        x_t = ((1.0 - tau.view(1, 1)) * x_cond) + (tau.view(1, 1) * x_true_aligned) + noise
+        vel_true = x_true_aligned - x_cond
         vel_pred = self._predict_velocity(h, x_t, x_cond, tau)
         return torch.mean((vel_pred - vel_true) ** 2)
 

@@ -120,6 +120,46 @@ def test_flow_predict_velocity_uses_neighbor_context() -> None:
     assert delta_norm > 1e-5
 
 
+def test_diffusion_forward_loss_is_rigid_invariant_in_x_true() -> None:
+    torch.manual_seed(0)
+    n = 7
+    hidden = 8
+    model = Se3Diffusion(hidden_dim=hidden, num_steps=8).eval()
+
+    x_cond = _make_non_degenerate_chain(n)
+    x_true = x_cond + (0.35 * torch.randn(n, 3))
+    h = torch.randn(n, hidden)
+    r = _rotation_z(0.7)
+    shift = torch.tensor([[3.0, -2.0, 1.0]], dtype=torch.float32)
+    x_true_rt = (x_true @ r.transpose(0, 1)) + shift
+
+    torch.manual_seed(1234)
+    loss_a = model.forward_loss(h, x_cond, x_true)
+    torch.manual_seed(1234)
+    loss_b = model.forward_loss(h, x_cond, x_true_rt)
+    assert torch.allclose(loss_a, loss_b, atol=1e-5, rtol=1e-5)
+
+
+def test_flow_forward_loss_is_rigid_invariant_in_x_true() -> None:
+    torch.manual_seed(0)
+    n = 7
+    hidden = 8
+    model = Se3FlowMatching(hidden_dim=hidden, num_steps=8).eval()
+
+    x_cond = _make_non_degenerate_chain(n)
+    x_true = x_cond + (0.35 * torch.randn(n, 3))
+    h = torch.randn(n, hidden)
+    r = _rotation_z(0.7)
+    shift = torch.tensor([[3.0, -2.0, 1.0]], dtype=torch.float32)
+    x_true_rt = (x_true @ r.transpose(0, 1)) + shift
+
+    torch.manual_seed(1234)
+    loss_a = model.forward_loss(h, x_cond, x_true)
+    torch.manual_seed(1234)
+    loss_b = model.forward_loss(h, x_cond, x_true_rt)
+    assert torch.allclose(loss_a, loss_b, atol=1e-5, rtol=1e-5)
+
+
 def test_diffusion_sample_is_se3_equivariant_for_fixed_seed() -> None:
     torch.manual_seed(0)
     n = 7

@@ -6,6 +6,7 @@ from pathlib import Path
 import polars as pl
 
 from .errors import raise_error
+from .se3.sequence_parser import parse_sequence_with_chains
 from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 
 
@@ -47,6 +48,61 @@ def _rank_column(schema_names: list[str], *, stage: str, location: str) -> tuple
     raise AssertionError("unreachable")
 
 
+def _build_target_parse_frames(
+    *,
+    targets: pl.DataFrame,
+    chain_separator: str,
+    stage: str,
+    location: str,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    target_rows: list[dict[str, object]] = []
+    residue_rows: list[dict[str, object]] = []
+    for row in targets.select("target_id", "sequence").iter_rows(named=True):
+        target_id = str(row["target_id"])
+        parsed = parse_sequence_with_chains(
+            sequence=str(row["sequence"]),
+            chain_separator=chain_separator,
+            stage=stage,
+            location=location,
+            target_id=target_id,
+        )
+        target_rows.append({"target_id": target_id, "target_len": int(len(parsed.residues))})
+        for resid, base in enumerate(parsed.residues, start=1):
+            target_rows_idx = int(resid - 1)
+            residue_rows.append(
+                {
+                    "target_id": target_id,
+                    "resid": int(resid),
+                    "resname": str(base),
+                    "chain_index": int(parsed.chain_index[target_rows_idx]),
+                    "residue_index_1d": int(parsed.residue_position_index_1d[target_rows_idx]),
+                }
+            )
+    if not target_rows:
+        return (
+            pl.DataFrame(schema={"target_id": pl.Utf8, "target_len": pl.Int32}),
+            pl.DataFrame(
+                schema={
+                    "target_id": pl.Utf8,
+                    "resid": pl.Int32,
+                    "resname": pl.Utf8,
+                    "chain_index": pl.Int32,
+                    "residue_index_1d": pl.Int32,
+                }
+            ),
+        )
+    return (
+        pl.DataFrame(target_rows).with_columns(pl.col("target_id").cast(pl.Utf8), pl.col("target_len").cast(pl.Int32)),
+        pl.DataFrame(residue_rows).with_columns(
+            pl.col("target_id").cast(pl.Utf8),
+            pl.col("resid").cast(pl.Int32),
+            pl.col("resname").cast(pl.Utf8),
+            pl.col("chain_index").cast(pl.Int32),
+            pl.col("residue_index_1d").cast(pl.Int32),
+        ),
+    )
+
+
 def predict_tbm(
     *,
     repo_root: Path,
@@ -55,11 +111,14 @@ def predict_tbm(
     targets_path: Path,
     out_path: Path,
     n_models: int,
+    chain_separator: str = "|",
 ) -> TbmResult:
     stage = "PREDICT_TBM"
     location = "src/rna3d_local/tbm.py:predict_tbm"
     if int(n_models) <= 0:
         raise_error(stage, location, "n_models deve ser > 0", impact="1", examples=[str(n_models)])
+    if len(str(chain_separator)) != 1:
+        raise_error(stage, location, "chain_separator deve ter 1 caractere", impact="1", examples=[str(chain_separator)])
 
     retrieval_lf = _scan_table(retrieval_path, stage=stage, location=location, label="retrieval")
     _require_columns_lazy(retrieval_lf, ["target_id", "template_uid"], stage=stage, location=location, label="retrieval")
@@ -119,7 +178,14 @@ def predict_tbm(
         examples = bad_dates_lf.head(8).collect().get_column("target_id").to_list()
         raise_error(stage, location, "targets com data invalida", impact=str(int(bad_dates_n)), examples=[str(x) for x in examples])
 
-    targets_len = targets_lf.with_columns(pl.col("sequence").str.len_chars().cast(pl.Int32).alias("target_len"))
+    targets_collected = targets_lf.select("target_id", "sequence").collect()
+    targets_len_df, resids_df = _build_target_parse_frames(
+        targets=targets_collected,
+        chain_separator=str(chain_separator),
+        stage=stage,
+        location=location,
+    )
+    targets_len = targets_len_df.lazy()
 
     ranked_with_len = ranked.join(targets_len.select("target_id", "target_len"), on="target_id", how="inner")
     prefix_rows = (
@@ -175,13 +241,7 @@ def predict_tbm(
         .select("target_id", "model_id", "template_uid")
     )
 
-    resids = (
-        targets_len.select("target_id", "sequence", "target_len")
-        .with_columns(pl.int_ranges(1, (pl.col("target_len") + 1).cast(pl.Int32)).alias("resid"))
-        .explode("resid")
-        .with_columns(pl.col("sequence").str.slice((pl.col("resid") - 1).cast(pl.Int32), 1).alias("resname"))
-        .select("target_id", "resid", "resname")
-    )
+    resids = resids_df.lazy()
 
     expanded = resids.join(chosen, on="target_id", how="inner")
     templates_norm_lf = (
@@ -201,6 +261,8 @@ def predict_tbm(
             pl.col("model_id").cast(pl.Int32),
             pl.col("resid").cast(pl.Int32),
             pl.col("resname").cast(pl.Utf8),
+            pl.col("chain_index").cast(pl.Int32),
+            pl.col("residue_index_1d").cast(pl.Int32),
             pl.col("x"),
             pl.col("y"),
             pl.col("z"),
