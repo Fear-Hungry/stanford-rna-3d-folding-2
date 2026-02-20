@@ -120,3 +120,42 @@ def test_retrieval_latent_uses_family_prior_weight(tmp_path: Path) -> None:
     )
     ranked = pl.read_parquet(out).sort("rank")
     assert ranked.row(0, named=True)["template_uid"] == "ext:T2"
+
+
+def test_retrieval_latent_accepts_targets_without_temporal_cutoff(tmp_path: Path) -> None:
+    template_index = tmp_path / "template_index.parquet"
+    pl.DataFrame(
+        [
+            {"template_uid": "ext:T_OLD", "template_id": "T_OLD", "source": "ext", "sequence": "AAAA", "release_date": "2020-01-01", "n_residues": 4},
+            {"template_uid": "ext:T_NEW", "template_id": "T_NEW", "source": "ext", "sequence": "AAAA", "release_date": "2030-01-01", "n_residues": 4},
+        ]
+    ).write_parquet(template_index)
+    emb = build_embedding_index(
+        repo_root=tmp_path,
+        template_index_path=template_index,
+        out_dir=tmp_path / "emb",
+        embedding_dim=16,
+        encoder="mock",
+        model_path=None,
+        ann_engine="none",
+    )
+    targets = tmp_path / "targets.csv"
+    _write_csv(targets, [{"target_id": "Q1", "sequence": "AAAA"}])
+    out = tmp_path / "retrieval.parquet"
+    retrieve_templates_latent(
+        repo_root=tmp_path,
+        template_index_path=template_index,
+        template_embeddings_path=emb.embeddings_path,
+        targets_path=targets,
+        out_path=out,
+        top_k=2,
+        encoder="mock",
+        embedding_dim=16,
+        model_path=None,
+        ann_engine="numpy_bruteforce",
+        faiss_index_path=None,
+        family_prior_path=None,
+    )
+    ranked = pl.read_parquet(out).sort("rank")
+    assert ranked.height == 2
+    assert set(ranked.get_column("template_uid").to_list()) == {"ext:T_OLD", "ext:T_NEW"}

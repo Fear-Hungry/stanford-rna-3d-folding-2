@@ -2207,3 +2207,49 @@ Log append-only de experimentos executados.
 - Conclusao + proximos passos:
   - Recovery tecnico concluido: notebook voltou a executar ate o fim e submeter.
   - Proximo passo: monitorar score efetivo da submissao v119 e, se necessario, comparar com v113 format-safe para decidir trilha produtiva.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-181 (hidden-rerun robustness v120)
+
+- Data UTC: `2026-02-20T15:11:04Z`
+- Plano: `PLAN-181`
+- Objetivo/hipotese:
+  - Eliminar `unhandled error` no hidden rerun do Kaggle com mudanças de robustez para cobertura parcial de TBM e schema variável de `targets`.
+- Comparacao (baseline vs novo):
+  - Baseline: submissão `v119` com `errorDescription="Your notebook hit an unhandled error while rerunning your code"`.
+  - Novo candidato: notebook `v120` com TBM warp + retrieval tolerant a `temporal_cutoff` opcional.
+- Comandos executados + configuracao efetiva:
+  - Testes unitários focados:
+    - `python -m pytest -q tests/test_tbm.py tests/test_retrieval_latent.py`
+  - Validação local do pipeline:
+    - `python -m rna3d_local build-embedding-index ... --encoder mock --embedding-dim 256 --ann-engine none`
+    - `python -m rna3d_local retrieve-templates-latent ... --top-k 2000 --encoder mock --embedding-dim 256 --ann-engine numpy_bruteforce`
+    - `python -m rna3d_local predict-tbm ... --n-models 5 --min-template-coverage 0.001`
+    - `python -m rna3d_local export-submission --sample ... --predictions ... --out /tmp/tbm_check_v4/submission.csv`
+    - `python -m rna3d_local check-submission --sample ... --submission /tmp/tbm_check_v4/submission.csv`
+  - Publicação de assets/kernel e submit:
+    - `kaggle datasets version -p external/kaggle/rebuild_submit_assets_v179 -m "PLAN-181: add src/runs bundles for notebook recovery" -r skip`
+    - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` (v120)
+    - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2` (até `COMPLETE`)
+    - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 120 -m "submit notebook v120 hidden-rerun robustness tbm warp"`
+- Parametros e hiperparametros efetivos:
+  - Retrieval: `top_k=2000`, `encoder=mock`, `embedding_dim=256`, `ann_engine=numpy_bruteforce`
+  - TBM: `n_models=5`, `min_template_coverage=0.001`
+  - DRfold2: `USE_DRFOLD2=False`
+- Seeds usadas:
+  - N/A (inferência determinística nesta trilha).
+- Versao do codigo e dados:
+  - Código base durante execução: `git cd37733` (com mudanças locais adicionais do PLAN-181)
+  - Kernel: `marcux777/stanford-rna3d-submit-prod-v2` v`120`
+  - Dataset assets: `marcux777/stanford-rna3d-submit-assets-v179` (versão com `src_bundle` e `runs_bundle`)
+- Artefatos gerados em `runs/` + logs:
+  - Local: `/tmp/tbm_check_v4/submission.csv`
+  - Kaggle kernel output: `/tmp/kaggle_kernel_output_v120/submission.csv`
+  - Kaggle log: `/tmp/kaggle_kernel_output_v120/stanford-rna3d-submit-prod-v2.log`
+- Metricas/resultado e custo:
+  - Testes: `9 passed`
+  - `check-submission` local: `ok=true`
+  - Kernel v120: `KernelWorkerStatus.COMPLETE`
+  - Submissão criada: `ref=50482258`, status atual no fechamento deste registro: `SubmissionStatus.PENDING`
+- Conclusao + proximos passos:
+  - Correções de robustez aplicadas com validação local e execução completa no Kaggle.
+  - Aguardar o resultado final da submissão `v120`; se necessário, coletar `errorDescription`/score e iterar.

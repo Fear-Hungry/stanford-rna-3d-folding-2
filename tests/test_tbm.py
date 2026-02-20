@@ -185,7 +185,7 @@ def test_predict_tbm_allow_missing_targets_writes_empty_valid_parquet(tmp_path: 
     assert set(["target_id", "model_id", "resid", "resname", "x", "y", "z"]).issubset(set(pred.columns))
 
 
-def test_predict_tbm_fails_for_partial_template_without_dummy_fill(tmp_path: Path) -> None:
+def test_predict_tbm_warp_maps_partial_template_without_null_coords(tmp_path: Path) -> None:
     retrieval = tmp_path / "retrieval.parquet"
     templates = tmp_path / "templates.parquet"
     targets = tmp_path / "targets.parquet"
@@ -199,14 +199,18 @@ def test_predict_tbm_fails_for_partial_template_without_dummy_fill(tmp_path: Pat
         ]
     ).write_parquet(templates)
 
-    with pytest.raises(PipelineError, match="TBM gerou coordenadas faltantes apos join"):
-        predict_tbm(
-            repo_root=tmp_path,
-            retrieval_path=retrieval,
-            templates_path=templates,
-            targets_path=targets,
-            out_path=out,
-            n_models=1,
-            allow_missing_targets=True,
-            min_template_coverage=0.60,
-        )
+    result = predict_tbm(
+        repo_root=tmp_path,
+        retrieval_path=retrieval,
+        templates_path=templates,
+        targets_path=targets,
+        out_path=out,
+        n_models=1,
+        allow_missing_targets=True,
+        min_template_coverage=0.60,
+    )
+    pred = pl.read_parquet(result.predictions_path).sort(["target_id", "model_id", "resid"])
+    assert pred.height == 3
+    assert pred.select(pl.col("x").is_null().sum(), pl.col("y").is_null().sum(), pl.col("z").is_null().sum()).row(0) == (0, 0, 0)
+    # Warp for target_len=3 and template_len=2 maps residues [1,2,3] -> template residues [1,1,2].
+    assert pred.get_column("x").to_list() == [10.0, 10.0, 11.0]

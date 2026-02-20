@@ -3058,3 +3058,29 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `kaggle kernels push` bem-sucedido e execucao `KernelWorkerStatus.COMPLETE`;
   - `submission.csv` presente no output do notebook;
   - submit notebook-only criado em `stanford-rna-3d-folding-2` sem erro de formato.
+
+## PLAN-181 - Robustez ao hidden rerun (TBM parcial + targets sem temporal_cutoff)
+
+- Objetivo:
+  - Evitar `unhandled error` no rerun oculto do Kaggle quando o hidden dataset vier com distribuição diferente (templates parciais, comprimentos extremos, schema de targets reduzido).
+- Hipotese:
+  - Tornar o TBM robusto a cobertura parcial com mapeamento por comprimento (warp) e aceitar `targets` sem `temporal_cutoff` reduz falhas de execução sem quebrar o contrato estrito de submissão.
+- Mudancas:
+  - `src/rna3d_local/tbm.py`:
+    - `targets` passa a exigir apenas `target_id` e `sequence`;
+    - seleção de candidatos por cobertura continua estrita, mas projeção de coordenadas usa `join_asof` por resíduo mapeado (`resid_template`) para suportar templates parciais;
+    - geração de `model_id` por alvo em caminho eager para evitar incompatibilidades de planner/window entre versões do Polars.
+  - `src/rna3d_local/retrieval_latent.py`:
+    - `temporal_cutoff` em `targets` passa a ser opcional;
+    - quando ausente/inválido, aplica cutoff padrão explícito (`2100-01-01`) com log.
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`:
+    - retrieval `top-k` elevado para `2000`;
+    - TBM `--min-template-coverage` reduzido para `0.001`;
+    - descoberta de assets passa a aceitar estruturas `src_bundle/` e `runs_bundle/` além de `src/` e `runs/`;
+    - fallback explícito por extração de bundles `.zip` em `/kaggle/working/assets_unpack`.
+  - Dataset Kaggle `marcux777/stanford-rna3d-submit-assets-v179`:
+    - republicado com bundles de código/ativos (`src_bundle`, `runs_bundle`) compatíveis com notebook offline.
+- Criterios de aceite:
+  - `python -m pytest -q tests/test_tbm.py tests/test_retrieval_latent.py` passa;
+  - pipeline local (`build-embedding-index` -> `retrieve-templates-latent` -> `predict-tbm` -> `export-submission` -> `check-submission`) passa;
+  - notebook Kaggle v120+ executa `KernelWorkerStatus.COMPLETE` com `submission.csv` gerado.

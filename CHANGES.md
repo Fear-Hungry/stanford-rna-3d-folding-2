@@ -2721,3 +2721,37 @@ Log append-only de mudancas implementadas.
   - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 119 -m "submit notebook v119 strict export fix"` -> `ok`
 - Riscos conhecidos / follow-ups:
   - O submit criado em `2026-02-20 14:42:05 UTC` completou processamento, mas ainda sem `publicScore` exibido no momento do registro; manter monitoramento da leaderboard para confirmar score efetivo.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-181 (robustez hidden rerun no notebook-only)
+
+- Data UTC: `2026-02-20T15:11:04Z`
+- Plano: `PLAN-181`
+- Resumo:
+  - `tbm.py` passou a suportar projeção por comprimento para templates parciais usando `join_asof` por `resid_template`, evitando quebra por buracos de cobertura no hidden rerun.
+  - `retrieval_latent.py` passou a aceitar `targets` sem `temporal_cutoff` (ou com cutoff inválido), aplicando cutoff explícito padrão com log.
+  - Notebook de submissão ajustado para cenários de hidden dataset:
+    - `top-k` de retrieval aumentado (`2000`);
+    - `--min-template-coverage` reduzido (`0.001`);
+    - descoberta de assets compatível com `src_bundle/` e `runs_bundle/` no dataset.
+  - Dataset de assets republicado no Kaggle com estrutura em bundles (`src_bundle`, `runs_bundle`) e notebook atualizado para resolver essa estrutura em runtime.
+  - Kernel Kaggle `marcux777/stanford-rna3d-submit-prod-v2` publicado em `v120` e executado com `KernelWorkerStatus.COMPLETE`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/tbm.py`
+  - `src/rna3d_local/retrieval_latent.py`
+  - `tests/test_tbm.py`
+  - `tests/test_retrieval_latent.py`
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_tbm.py tests/test_retrieval_latent.py` -> `9 passed`
+  - `python -m rna3d_local build-embedding-index ...` -> `ok`
+  - `python -m rna3d_local retrieve-templates-latent ... --top-k 2000 ...` -> `ok`
+  - `python -m rna3d_local predict-tbm ... --min-template-coverage 0.001` -> `ok`
+  - `python -m rna3d_local export-submission ...` -> `ok`
+  - `python -m rna3d_local check-submission ...` -> `ok=true`
+  - `python - <<'PY' ... compile(ipynb cell source) ... PY` -> `ok compile`
+  - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` -> `Kernel version 120 successfully pushed`
+  - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2` -> `KernelWorkerStatus.COMPLETE`
+- Riscos conhecidos / follow-ups:
+  - `join_asof` no TBM gera warning de sortedness no Polars em tempo de execução; comportamento estável nos testes atuais, mas convém revisar otimização/suppress controlado em revisão posterior.

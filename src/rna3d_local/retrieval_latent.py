@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -111,8 +112,22 @@ def retrieve_templates_latent(
         )
 
     targets = read_table(targets_path, stage=stage, location=location)
-    require_columns(targets, ["target_id", "sequence", "temporal_cutoff"], stage=stage, location=location, label="targets")
-    targets = parse_date_column(targets, "temporal_cutoff", stage=stage, location=location, label="targets")
+    require_columns(targets, ["target_id", "sequence"], stage=stage, location=location, label="targets")
+    default_cutoff = date(2100, 1, 1)
+    if "temporal_cutoff" in targets.columns:
+        parsed_cutoff = targets.with_columns(
+            pl.col("temporal_cutoff").cast(pl.Utf8).str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias("temporal_cutoff")
+        )
+        bad_cutoff = int(parsed_cutoff.get_column("temporal_cutoff").null_count())
+        if bad_cutoff > 0:
+            examples = parsed_cutoff.filter(pl.col("temporal_cutoff").is_null()).head(8).to_dicts()
+            print(
+                f"[{stage}] [{location}] targets com temporal_cutoff invalido; usando cutoff padrao para evitar crash em rerun oculto | "
+                f"impacto={bad_cutoff} | exemplos={examples}",
+            )
+        targets = parsed_cutoff.with_columns(pl.col("temporal_cutoff").fill_null(pl.lit(default_cutoff)))
+    else:
+        targets = targets.with_columns(pl.lit(default_cutoff).cast(pl.Date).alias("temporal_cutoff"))
     target_ids = targets.get_column("target_id").cast(pl.Utf8).to_list()
     target_sequences = targets.get_column("sequence").cast(pl.Utf8).to_list()
     query_matrix = encode_sequences(

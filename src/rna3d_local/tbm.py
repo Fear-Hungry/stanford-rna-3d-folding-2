@@ -169,19 +169,16 @@ def predict_tbm(
     templates_with_norm = templates_lf.join(template_min, on="template_uid", how="left").with_columns(
         (pl.col("resid") - pl.col("min_resid") + 1).cast(pl.Int32).alias("resid_norm")
     )
+    template_span = templates_with_norm.group_by("template_uid").agg(pl.col("resid_norm").max().alias("template_len")).with_columns(
+        pl.col("template_len").cast(pl.Int32)
+    )
 
     targets_lf = _scan_table(targets_path, stage=stage, location=location, label="targets")
-    _require_columns_lazy(targets_lf, ["target_id", "sequence", "temporal_cutoff"], stage=stage, location=location, label="targets")
+    _require_columns_lazy(targets_lf, ["target_id", "sequence"], stage=stage, location=location, label="targets")
     targets_lf = targets_lf.select(
         pl.col("target_id").cast(pl.Utf8),
         pl.col("sequence").cast(pl.Utf8),
-        pl.col("temporal_cutoff").cast(pl.Utf8),
-    ).with_columns(pl.col("temporal_cutoff").str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias("temporal_cutoff"))
-    bad_dates_lf = targets_lf.filter(pl.col("temporal_cutoff").is_null()).select("target_id")
-    bad_dates_n = int(bad_dates_lf.select(pl.len()).collect().item())
-    if bad_dates_n > 0:
-        examples = bad_dates_lf.head(8).collect().get_column("target_id").to_list()
-        raise_error(stage, location, "targets com data invalida", impact=str(int(bad_dates_n)), examples=[str(x) for x in examples])
+    )
 
     targets_collected = targets_lf.select("target_id", "sequence").collect()
     targets_len_df, resids_df = _build_target_parse_frames(
@@ -211,13 +208,38 @@ def predict_tbm(
     )
 
     # Filter templates by configurable minimal coverage ratio.
-    valid_candidates = (
-        prefix_counts.filter(pl.col("coverage_ratio") >= float(min_template_coverage))
-        .sort(sort_by, descending=sort_desc)
-        .with_columns(pl.cum_count("template_uid").over("target_id").alias("model_id"))
-        .filter(pl.col("model_id") <= int(n_models))
-        .select("target_id", "template_uid", "model_id")
-    )
+    # Build model_id eagerly to avoid window-in-aggregation planner issues across Polars versions.
+    prefix_valid_df = prefix_counts.filter(pl.col("coverage_ratio") >= float(min_template_coverage)).sort(
+        sort_by,
+        descending=sort_desc,
+    ).collect()
+    valid_rows: list[dict[str, object]] = []
+    if prefix_valid_df.height > 0:
+        for part in prefix_valid_df.partition_by("target_id", maintain_order=True):
+            target_id = str(part.item(0, "target_id"))
+            template_uids = part.get_column("template_uid").cast(pl.Utf8).to_list()
+            for model_idx, template_uid in enumerate(template_uids[: int(n_models)], start=1):
+                valid_rows.append(
+                    {
+                        "target_id": target_id,
+                        "template_uid": str(template_uid),
+                        "model_id": int(model_idx),
+                    }
+                )
+    if valid_rows:
+        valid_candidates = pl.DataFrame(valid_rows).with_columns(
+            pl.col("target_id").cast(pl.Utf8),
+            pl.col("template_uid").cast(pl.Utf8),
+            pl.col("model_id").cast(pl.Int32),
+        ).lazy()
+    else:
+        valid_candidates = pl.LazyFrame(
+            schema={
+                "target_id": pl.Utf8,
+                "template_uid": pl.Utf8,
+                "model_id": pl.Int32,
+            }
+        )
 
     target_ids = targets_len.select("target_id").unique()
     valid_counts = valid_candidates.group_by("target_id").agg(pl.len().alias("n_valid"))
@@ -262,19 +284,74 @@ def predict_tbm(
 
     resids = resids_df.lazy()
 
-    expanded = resids.join(chosen, on="target_id", how="inner")
-    templates_norm_lf = (
-        templates_with_norm.select(
-            pl.col("template_uid"),
-            pl.col("resid_norm").alias("resid"),
-            pl.col("template_resname"),
-            pl.col("x"),
-            pl.col("y"),
-            pl.col("z"),
+    chosen_with_meta = (
+        chosen.join(targets_len.select("target_id", "target_len"), on="target_id", how="left")
+        .join(template_span.select("template_uid", "template_len"), on="template_uid", how="left")
+        .with_columns(pl.col("target_len").cast(pl.Int32), pl.col("template_len").cast(pl.Int32))
+    )
+    missing_meta = chosen_with_meta.filter(
+        pl.col("template_uid").is_not_null() & (pl.col("target_len").is_null() | pl.col("template_len").is_null())
+    )
+    missing_meta_n = int(missing_meta.select(pl.len()).collect().item())
+    if missing_meta_n > 0:
+        examples = (
+            missing_meta.select(
+                (pl.col("target_id") + pl.lit(":") + pl.col("model_id").cast(pl.Utf8) + pl.lit(":") + pl.col("template_uid").cast(pl.Utf8)).alias("k")
+            )
+            .head(8)
+            .collect()
+            .get_column("k")
+            .to_list()
+        )
+        raise_error(
+            stage,
+            location,
+            "metadados ausentes para mapeamento TBM (target_len/template_len)",
+            impact=str(missing_meta_n),
+            examples=[str(x) for x in examples],
+        )
+
+    resid_template_raw = (
+        pl.when((pl.col("target_len") <= 1) | (pl.col("template_len") <= 1))
+        .then(pl.lit(1).cast(pl.Int32))
+        .otherwise(
+            (
+                ((pl.col("resid") - 1).cast(pl.Float64) * (pl.col("template_len") - 1).cast(pl.Float64))
+                / (pl.col("target_len") - 1).cast(pl.Float64)
+            )
+            .floor()
+            .cast(pl.Int32)
+            + 1
         )
     )
+    expanded = (
+        resids.join(chosen_with_meta, on="target_id", how="inner")
+        .with_columns(
+            pl.min_horizontal(
+                pl.max_horizontal(resid_template_raw, pl.lit(1).cast(pl.Int32)),
+                pl.col("template_len"),
+            )
+            .cast(pl.Int32)
+            .alias("resid_template"),
+        )
+    )
+
+    template_lookup = templates_with_norm.select(
+        pl.col("template_uid"),
+        pl.col("resid_norm"),
+        pl.col("template_resname"),
+        pl.col("x"),
+        pl.col("y"),
+        pl.col("z"),
+    ).sort(["template_uid", "resid_norm"])
     out_lf_raw = (
-        expanded.join(templates_norm_lf, on=["template_uid", "resid"], how="left")
+        expanded.sort(["template_uid", "resid_template"]).join_asof(
+            template_lookup,
+            left_on="resid_template",
+            right_on="resid_norm",
+            by="template_uid",
+            strategy="nearest",
+        )
         .select(
             pl.col("target_id"),
             pl.col("model_id").cast(pl.Int32),
