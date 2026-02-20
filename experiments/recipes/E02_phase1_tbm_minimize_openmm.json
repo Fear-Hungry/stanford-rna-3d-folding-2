@@ -19,7 +19,6 @@
     "weight_seq": "0.2",
     "n_models": "5",
     "min_backend": "openmm",
-    "min_max_iter": "80",
     "bond_length_angstrom": "5.9",
     "bond_force_k": "60.0",
     "angle_force_k": "8.0",
@@ -114,7 +113,10 @@
         "--out",
         "{run_dir}/tbm_predictions.parquet",
         "--n-models",
-        "{n_models}"
+        "{n_models}",
+        "--allow-missing-targets",
+        "--min-template-coverage",
+        "0.60"
       ]
     },
     {
@@ -130,8 +132,6 @@
         "{run_dir}/tbm_predictions_minimized.parquet",
         "--backend",
         "{min_backend}",
-        "--max-iterations",
-        "{min_max_iter}",
         "--bond-length-angstrom",
         "{bond_length_angstrom}",
         "--bond-force-k",
@@ -205,4 +205,3 @@
     "{run_dir}/score.json"
   ]
 }
-

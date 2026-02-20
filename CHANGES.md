@@ -2368,3 +2368,261 @@ Log append-only de mudancas implementadas.
   - `python -m pytest -q tests/test_minimization.py::test_build_covalent_pairs_respects_chain_boundaries` -> `1 passed`
 - Riscos conhecidos / follow-ups:
   - O parser multicadeia no TBM usa `chain_separator="|"` por padrao (parametrizavel na funcao); se algum fluxo futuro usar separador diferente, precisa propagar o valor explicitamente na chamada.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-164 (sampler de difusao retorna coordenada absoluta)
+
+- Data UTC: `2026-02-20T09:41:00Z`
+- Plano: `PLAN-164`
+- Resumo:
+  - Corrigido `_sample_diffusion_dpm_like` para retornar coordenadas absolutas (`x_cond + x`) em vez de retornar apenas o delta de ruido.
+  - Adicionado teste deterministico que compara duas amostragens com mesmo seed e `x_cond` deslocado; o deslocamento da saida precisa coincidir com o shift de `x_cond`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/generative/sampler.py`
+  - `tests/test_best_of5_strategy.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_best_of5_strategy.py` -> `5 passed`
+- Riscos conhecidos / follow-ups:
+  - O teste novo valida o contrato de coordenada absoluta no sampler rapido; ainda e recomendado monitorar impacto de qualidade/score em experimento completo para confirmar ganho esperado no pipeline de ponta a ponta.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-165 (TBM permissivo explicito para alvos orfaos)
+
+- Data UTC: `2026-02-20T09:43:07Z`
+- Plano: `PLAN-165`
+- Resumo:
+  - Adicionado modo explicito `allow_missing_targets` no `predict_tbm` para permitir targets sem template sem abortar o pipeline.
+  - Modo estrito permanece padrao (`allow_missing_targets=False`) e continua falhando cedo para cobertura ausente.
+  - No modo permissivo, o TBM emite warning estruturado, gera saida parcial/vazia valida e deixa o hybrid router aplicar fallback.
+  - Incluida flag de CLI `--allow-missing-targets` no comando `predict-tbm`.
+  - Manifest do TBM agora registra contagem/exemplos de targets sem template e a politica ativa.
+- Arquivos principais tocados:
+  - `src/rna3d_local/tbm.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_tbm.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_tbm.py` -> `5 passed`
+- Riscos conhecidos / follow-ups:
+  - O modo permissivo deve ser habilitado explicitamente no fluxo de submissao (`predict-tbm --allow-missing-targets`); caso contrario o comportamento estrito permanece.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-166 (TBM com cobertura parcial configuravel)
+
+- Data UTC: `2026-02-20T09:45:28Z`
+- Plano: `PLAN-166`
+- Resumo:
+  - Adicionado `min_template_coverage` no `predict_tbm` (default `1.0`) para controlar cobertura minima de template.
+  - Substituido filtro estrito de cobertura total (`n_prefix == target_len`) por `coverage_ratio >= min_template_coverage`.
+  - Em modo permissivo (`allow_missing_targets=True`), lacunas de coordenadas de templates parciais agora sao preenchidas com dummy deterministico para evitar nulos e manter pipeline numericamente valido.
+  - CLI do `predict-tbm` ganhou `--min-template-coverage` e propagacao no `cli.py`.
+  - Incluido teste com template parcial (2/3) aceito com limiar `0.60`, validando preenchimento sem nulos.
+- Arquivos principais tocados:
+  - `src/rna3d_local/tbm.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_tbm.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_tbm.py` -> `6 passed`
+- Riscos conhecidos / follow-ups:
+  - A cobertura parcial deve ser usada com intencao explicita no fluxo de submissao; manter `min_template_coverage=1.0` preserva o comportamento estrito padrao.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-167 (prioridade TBM para template forte no roteador)
+
+- Data UTC: `2026-02-20T09:48:12Z`
+- Plano: `PLAN-167`
+- Resumo:
+  - Ajustado `build_hybrid_candidates` para priorizar TBM em qualquer bucket (`short`, `medium`, `long`) quando `template_strong=True` e houver cobertura TBM para o target.
+  - A decisao passou a ser feita no inicio do loop por alvo, com `route_rule` explicita (`template_strong->tbm(len_bucket=...)`) e sem fallback quando TBM forte esta disponivel.
+  - Mantido comportamento de recovery existente para casos em que `template_strong=True` mas o target nao possui cobertura TBM.
+  - Atualizados testes de fase 2 para o novo contrato de roteamento, incluindo cenarios curto, medio e longo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/hybrid_router.py`
+  - `tests/test_phase2_hybrid.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_phase2_hybrid.py` -> `10 passed` (`1 warning` de CUDA indisponivel no ambiente)
+- Riscos conhecidos / follow-ups:
+  - Para targets com template forte mas TBM sem cobertura no parquet, o roteador ainda entra no recovery por outras fontes; se desejado, podemos endurecer para falha explicita nesses casos.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-168 (QA ranker com consistencia de Rg para evitar colapso)
+
+- Data UTC: `2026-02-20T09:50:08Z`
+- Plano: `PLAN-168`
+- Resumo:
+  - Substituida a metrica de compactness do ranker SE3 (antes baseada em raio medio ao centro) por uma consistencia fisica com `Rg` esperado do RNA.
+  - `qa_compactness` agora usa erro relativo entre `Rg` previsto e `Rg_esperado ~= 5.5 * N^0.33`, com penalizacao suave por desvio.
+  - Mantidas compatibilidades de interface (`compactness` no `qa_config` e coluna `qa_compactness` no output).
+  - Adicionado teste cobrindo caso de colapso geometrico vs geometria plausivel para garantir que a amostra colapsada perca no ranking.
+- Arquivos principais tocados:
+  - `src/rna3d_local/ensemble/qa_ranker_se3.py`
+  - `tests/test_qa_ranker_se3.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_qa_ranker_se3.py` -> `3 passed`
+- Riscos conhecidos / follow-ups:
+  - O modelo de `Rg` esperado e uma aproximacao global; pode valer testar ajuste de coeficiente/expoente por faixa de comprimento em experimento dedicado.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-169 (reranker com feicao quimico-geometrica por candidato)
+
+- Data UTC: `2026-02-20T09:54:32Z`
+- Plano: `PLAN-169`
+- Resumo:
+  - Corrigido o reranker para eliminar a feicao quimica constante por target (`group_by(target_id).mean`) e substitui-la por um score quimico-geometrico por par (`target_id`, `template_uid`).
+  - O pipeline agora calcula exposicao geometrica por residuo de cada template a partir de coordenadas 3D (`templates.parquet`), normaliza por template e cruza com `p_open/p_paired` do target por residuo.
+  - As features `chem_p_open_mean` e `chem_p_paired_mean` passaram a representar compatibilidade (1-MAE, ponderada por cobertura) entre reatividade do target e exposicao do template candidato.
+  - Adicionadas validacoes estritas (duplicatas, range [0,1], sobreposicao target-template) sem fallback silencioso.
+  - CLI de reranker passou a exigir `--templates` em treino e score.
+- Arquivos principais tocados:
+  - `src/rna3d_local/reranker.py`
+  - `src/rna3d_local/cli_parser.py`
+  - `src/rna3d_local/cli.py`
+  - `tests/test_reranker.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_reranker.py` -> `1 passed` (`1 warning` de CUDA indisponivel no ambiente)
+- Riscos conhecidos / follow-ups:
+  - O comando de reranker agora exige `--templates`; scripts antigos sem esse argumento precisam ser atualizados antes de executar.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-170 (msa covariance sem penalizacao canonica)
+
+- Data UTC: `2026-02-20T09:56:15Z`
+- Plano: `PLAN-170`
+- Resumo:
+  - Removido o fator de `canonical_mass` no cálculo de covariância MSA, que antes penalizava fortemente pares não-canônicos.
+  - O score de coevolução passou a usar MI direta (`score = mi`) com a normalização já existente (`score/(1+score)`), preservando sinal terciário.
+  - Adicionado teste de regressão com acoplamento não-canônico conservado para garantir que o par recebe score positivo.
+- Arquivos principais tocados:
+  - `src/rna3d_local/training/msa_covariance.py`
+  - `tests/test_msa_covariance.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_msa_covariance.py` -> `7 passed`
+- Riscos conhecidos / follow-ups:
+  - Sem o viés canônico, pares espúrios de MI em alinhamentos rasos podem subir no ranking; vale monitorar impacto em score final e, se necessário, calibrar com regularização separada (sem zerar pares não-canônicos).
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-171 (minimizacao OpenMM desligada por padrao)
+
+- Data UTC: `2026-02-20T09:57:51Z`
+- Plano: `PLAN-171`
+- Resumo:
+  - Alterado default de `minimize-ensemble` para bypass explicito (`--max-iterations=0`), desativando minimizacao por padrao.
+  - Receitas principais de pipeline que executavam OpenMM com 80 iteracoes (`E02` e `E31`) foram atualizadas para `min_max_iter=0`.
+  - Exemplos de comando no `README.md` foram ajustados para refletir `--max-iterations 0`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/cli_parser.py`
+  - `experiments/recipes/E02_phase1_tbm_minimize_openmm.json`
+  - `experiments/recipes/E31_hybrid_select_minimize_openmm.json`
+  - `README.md`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_minimization.py` -> `9 passed`
+- Riscos conhecidos / follow-ups:
+  - Se houver necessidade de relaxacao local em casos específicos, ela continua disponível apenas por opt-in explícito (`--max-iterations > 0`).
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-172 (escudos explicitos no notebook/pipeline)
+
+- Data UTC: `2026-02-20T10:16:46Z`
+- Plano: `PLAN-172`
+- Resumo:
+  - Atualizados comandos de referência para evitar armadilhas de defaults em cópia/cola de bash/notebook.
+  - `predict-tbm` passou a aparecer explicitamente com `--allow-missing-targets --min-template-coverage 0.60` no `README` e no `SUBMARINO_RUNBOOK`.
+  - Passos de minimização em receitas e exemplos foram alterados para não passar `--max-iterations`, respeitando o default seguro (`0`) já definido no CLI.
+  - Receitas `E01` e `E02` receberam escudos explícitos de TBM; receitas `E02` e `E31` removeram `--max-iterations` do passo `minimize`.
+- Arquivos principais tocados:
+  - `README.md`
+  - `docs/SUBMARINO_RUNBOOK.md`
+  - `experiments/recipes/E01_phase1_tbm_baseline.json`
+  - `experiments/recipes/E02_phase1_tbm_minimize_openmm.json`
+  - `experiments/recipes/E31_hybrid_select_minimize_openmm.json`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m json.tool experiments/recipes/E01_phase1_tbm_baseline.json` -> `ok`
+  - `python -m json.tool experiments/recipes/E02_phase1_tbm_minimize_openmm.json` -> `ok`
+  - `python -m json.tool experiments/recipes/E31_hybrid_select_minimize_openmm.json` -> `ok`
+  - `python -m rna3d_local predict-tbm --help` -> flags esperadas presentes
+  - `python -m rna3d_local minimize-ensemble --help` -> default seguro mantido
+  - `python -m pytest -q tests/test_minimization.py tests/test_tbm.py` -> `15 passed`
+- Riscos conhecidos / follow-ups:
+  - Scripts externos fora do repositório ainda podem forçar `--max-iterations`/defaults estritos; manter checklist de comandos recomendado no runbook antes de rodar no Kaggle.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-173 (sanitizacao de bases OOV para N)
+
+- Data UTC: `2026-02-20T10:18:45Z`
+- Plano: `PLAN-173`
+- Resumo:
+  - Ajustado o parser multicadeia para não abortar quando encontrar bases fora de `ACGUN`.
+  - Bases OOV agora são sanitizadas deterministicamente para `N` após normalização `T -> U`, mantendo compatibilidade com o restante da pipeline.
+  - Adicionado teste de regressão cobrindo sequência com caracteres alienígenas (`I`, `P`, `R`) e validando índices de cadeia/posição.
+- Arquivos principais tocados:
+  - `src/rna3d_local/se3/sequence_parser.py`
+  - `tests/test_sequence_parser.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_sequence_parser.py` -> `6 passed`
+  - `python -m pytest -q tests/test_sparse_graph_edge_direction.py` -> `2 passed`
+- Riscos conhecidos / follow-ups:
+  - Sanitização pode reduzir sinal específico de bases modificadas para alvos raros; se necessário, evoluir para mapeamento IUPAC explícito em plano futuro.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-174 (blindagem OpenMM para fonte TBM)
+
+- Data UTC: `2026-02-20T10:19:56Z`
+- Plano: `PLAN-174`
+- Resumo:
+  - Incluído `tbm` em `_FOUNDATION_SOURCE_TOKENS` da minimização para que predições de TBM pulem refinamento OpenMM automaticamente.
+  - Reforçado teste de regressão de skip por fonte para validar dois cenários: `chai1` e `tbm_template`.
+  - Mantido contrato estrito de saída: estruturas puladas preservam coordenadas originais e registram `refinement_skip_reason=foundation_source`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/minimization.py`
+  - `tests/test_minimization.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_minimization.py` -> `10 passed`
+- Riscos conhecidos / follow-ups:
+  - A detecção por token de `source` depende de nomenclatura consistente; manter convenção contendo `tbm` no campo `source`.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-175 (registro de backlog para alinhamento local no TBM)
+
+- Data UTC: `2026-02-20T10:20:51Z`
+- Plano: `PLAN-175`
+- Resumo:
+  - Registrada limitação arquitetural de alinhamento global implícito por `resid_norm` no TBM/reranker.
+  - Catalogada evolução futura para alinhamento local (`qaln/taln`) com mapa explícito `target_resid -> template_resid`.
+  - Sem alteração funcional de pipeline nesta etapa (backlog apenas), conforme prioridade de estabilização da submissão atual.
+- Arquivos principais tocados:
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - revisão de consistência documental (sem execução de testes, pois não houve mudança de código funcional).
+- Riscos conhecidos / follow-ups:
+  - Enquanto `PLAN-175` não for implementado, templates parciais recuperados por embedding podem manter risco de deslocamento de mapeamento em cenários específicos.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-176 (check-submission reforcado contra formato invalido)
+
+- Data UTC: `2026-02-20T10:49:13Z`
+- Plano: `PLAN-176`
+- Resumo:
+  - Reforçada validação de submissão para comparar, além do `ID`, todos os campos fixos não-coordenadas (`resname`, `resid`, etc.) linha a linha contra o `sample_submission`.
+  - Com isso, `check-submission` agora falha cedo quando há "invalid submission values" em colunas fixas, mesmo que coordenadas estejam válidas.
+  - Adicionado teste de regressão cobrindo divergência em `resname`.
+- Arquivos principais tocados:
+  - `src/rna3d_local/contracts.py`
+  - `tests/test_description_and_submission.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_description_and_submission.py` -> `6 passed`
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv` -> `ok=true`
+- Riscos conhecidos / follow-ups:
+  - A validação continua local; para cobertura máxima, manter auditoria de logs/datasets do notebook antes de submits críticos.

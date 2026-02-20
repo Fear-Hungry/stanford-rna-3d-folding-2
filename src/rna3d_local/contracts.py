@@ -85,9 +85,12 @@ def validate_submission_against_sample(*, sample_path: Path, submission_path: Pa
             id_idx = sample_header.index("ID")
 
             coord_idxs = [idx for idx, name in enumerate(sample_header) if name.startswith(("x_", "y_", "z_"))]
+            fixed_idxs = [idx for idx, _name in enumerate(sample_header) if idx not in coord_idxs]
 
             mismatches: list[str] = []
             mismatch_count = 0
+            fixed_mismatches: list[str] = []
+            fixed_mismatch_count = 0
             bad_values: list[str] = []
             sample_rows = 0
             sub_rows = 0
@@ -111,6 +114,15 @@ def validate_submission_against_sample(*, sample_path: Path, submission_path: Pa
                     mismatch_count += 1
                     if len(mismatches) < 8:
                         mismatches.append(f"{row_index}:{expected_id}!={got_id}")
+                for cidx in fixed_idxs:
+                    if cidx == id_idx:
+                        continue
+                    if srow[cidx] != prow[cidx]:
+                        fixed_mismatch_count += 1
+                        if len(fixed_mismatches) < 8:
+                            fixed_mismatches.append(
+                                f"{sample_header[cidx]}@{row_index}:{srow[cidx]}!={prow[cidx]}"
+                            )
 
                 for cidx in coord_idxs:
                     value = prow[cidx]
@@ -157,6 +169,14 @@ def validate_submission_against_sample(*, sample_path: Path, submission_path: Pa
                     "chaves/ordem da submissao nao batem com sample",
                     impact=str(mismatch_count),
                     examples=mismatches,
+                )
+            if fixed_mismatch_count > 0:
+                raise_error(
+                    stage,
+                    location,
+                    "valores fixos da submissao nao batem com sample",
+                    impact=str(fixed_mismatch_count),
+                    examples=fixed_mismatches,
                 )
     except OSError as exc:
         raise_error(stage, location, "falha ao ler CSV para validacao streaming", impact="1", examples=[f"{type(exc).__name__}:{exc}"])

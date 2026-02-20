@@ -20,6 +20,24 @@ class RankSe3Result:
     manifest_path: Path
 
 
+_RNA_RG_COEFF = 5.5
+_RNA_RG_EXPONENT = 0.33
+_RG_REL_TOL = 0.35
+_RG_EPS = 1e-6
+
+
+def _expected_rg_for_rna(length: int) -> float:
+    if int(length) <= 0:
+        raise_error(
+            "RANK_SE3",
+            "src/rna3d_local/ensemble/qa_ranker_se3.py:_expected_rg_for_rna",
+            "comprimento invalido para estimar Rg",
+            impact="1",
+            examples=[str(length)],
+        )
+    return float(_RNA_RG_COEFF * (float(length) ** float(_RNA_RG_EXPONENT)))
+
+
 def _load_qa_config(path: Path | None, *, stage: str, location: str) -> dict[str, float]:
     if path is None:
         return {"compactness": 0.6, "smoothness": 0.4, "chem_exposure_consistency": 0.0}
@@ -49,9 +67,23 @@ def _sample_quality(
     expected_exposure: np.ndarray | None,
 ) -> tuple[float, float, float, float]:
     coords = sample_df.select("x", "y", "z").to_numpy().astype(np.float64)
+    n_res = int(coords.shape[0])
+    if n_res <= 0:
+        raise_error(
+            "RANK_SE3",
+            "src/rna3d_local/ensemble/qa_ranker_se3.py:_sample_quality",
+            "sample sem coordenadas para QA",
+            impact="1",
+            examples=[],
+        )
     center = coords.mean(axis=0, keepdims=True)
-    radius = np.sqrt(((coords - center) ** 2).sum(axis=1))
-    compactness = float(1.0 / (1.0 + float(radius.mean())))
+    squared_radius = ((coords - center) ** 2).sum(axis=1)
+    radius = np.sqrt(squared_radius)
+    rg_pred = float(np.sqrt(float(np.mean(squared_radius))))
+    rg_expected = _expected_rg_for_rna(n_res)
+    rg_rel_error = float(abs(rg_pred - rg_expected) / max(rg_expected, float(_RG_EPS)))
+    compactness = float(1.0 / (1.0 + ((rg_rel_error / float(_RG_REL_TOL)) ** 2)))
+    compactness = float(np.clip(compactness, 0.0, 1.0))
     if coords.shape[0] > 1:
         steps = np.sqrt(((coords[1:] - coords[:-1]) ** 2).sum(axis=1))
         smoothness = float(1.0 / (1.0 + float(np.std(steps))))

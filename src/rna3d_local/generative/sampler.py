@@ -48,7 +48,7 @@ def _sample_diffusion_dpm_like(
         if idx_next > 0:
             noise = torch.randn(x.shape, generator=generator, device=x_cond.device, dtype=x_cond.dtype)
             x = x + (0.01 * noise)
-    return x
+    return x_cond + x
 
 
 @torch.no_grad()

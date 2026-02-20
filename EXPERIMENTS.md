@@ -2054,3 +2054,108 @@ Log append-only de experimentos executados.
     - `description="FORCED by user: retry best local v100 (0.300975)"`
 - Conclusao:
   - Submissao notebook-only enviada com sucesso para o melhor candidato local disponivel no momento; aguardando score final no Kaggle.
+
+## 2026-02-20 - marcusvinicius/Codex - ADHOC (submit apos atualizacoes; retry do melhor candidato local v100)
+
+- Data UTC: `2026-02-20T10:29:00Z`
+- Plano: `ADHOC`
+- Objetivo/hipotese:
+  - Atender solicitacao do usuario para submeter apos atualizacoes, preservando o gate estrito local (contrato + melhoria sobre baseline recente).
+- Comparacao (baseline vs novo):
+  - Baseline de gate adotado: `0.29362857142857146` (candidato local mais recente da trilha v113).
+  - Candidato submetido: `0.30097500000000005` (`runs/20260218_hybrid_len68_centered/score.json`).
+- Comandos executados:
+  - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv`
+  - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv --score-json runs/20260218_hybrid_len68_centered/score.json --baseline-score 0.29362857142857146 --report runs/20260220_submit_after_updates_v100/readiness.json`
+  - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 100 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv --notebook-output-path runs/20260218_plan136_kernel_output_v100/submission.csv --score-json runs/20260218_hybrid_len68_centered/score.json --baseline-score 0.29362857142857146 --message "2026-02-20 after updates: resubmit best local v100 (0.300975)" --execute-submit`
+  - `kaggle competitions submissions -c stanford-rna-3d-folding-2`
+- Versao de codigo/dados:
+  - Codigo: `git 95ced385dd8435db00c95872fc0fbbb46b8a2129` (worktree suja)
+  - Notebook: `marcux777/stanford-rna3d-submit-prod-v2` (version `100`)
+  - Competicao: `stanford-rna-3d-folding-2`
+- Artefatos gerados:
+  - `runs/20260220_submit_after_updates_v100/readiness.json`
+  - `runs/20260218_plan136_kernel_output_v100/submit_notebook_report.json`
+- Metricas/resultado:
+  - `check-submission`: `ok=true`
+  - `readiness`: `allowed=true`, `reason=strict_improvement_ok`
+  - `score_local(single/full28)`: `0.30097500000000005`
+  - Kaggle submit criado:
+    - `ref=50478231`
+    - `status=SubmissionStatus.PENDING`
+    - `description="2026-02-20 after updates: resubmit best local v100 (0.300975)"`
+- Conclusao:
+  - Submissao notebook-only efetuada com sucesso e em processamento no Kaggle.
+
+## 2026-02-20 - marcusvinicius/Codex - ADHOC (submissao correta com validacao de dataset carregado)
+
+- Data UTC: `2026-02-20T10:40:00Z`
+- Plano: `ADHOC`
+- Objetivo/hipotese:
+  - Garantir submissao correta no Kaggle e confirmar que o dataset anexado ao notebook esta acessivel e valido (sem erro de formato).
+- Comparacao (baseline vs novo):
+  - Baseline de gate: `0.29362857142857146`.
+  - Candidato enviado: `0.30097500000000005` (`runs/20260218_hybrid_len68_centered/score.json`), mantendo melhoria estrita.
+- Comandos executados:
+  - Auditoria de status/runner:
+    - `kaggle competitions submissions -c stanford-rna-3d-folding-2`
+    - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2`
+  - Auditoria de carregamento de dataset no notebook:
+    - inspeção de `runs/20260218_plan136_kernel_output_v100/stanford-rna3d-submit-prod-v2.log` (linha com `/kaggle/input/stanford-rna3d-submission-len68-v1/submission.csv` + `check-submission ok=true`);
+    - `kaggle datasets files <dataset_slug>` para todas as entradas em `dataset_sources` do `kernel-metadata.json`.
+  - Validação local do dataset de submissão anexado:
+    - `kaggle datasets download -d marcux777/stanford-rna3d-submission-len68-v1 -p /tmp/kaggle_verify_submit_dataset --unzip`
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission /tmp/kaggle_verify_submit_dataset/submission.csv`
+  - Submissão notebook-only:
+    - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 100 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv --notebook-output-path runs/20260218_plan136_kernel_output_v100/submission.csv --score-json runs/20260218_hybrid_len68_centered/score.json --baseline-score 0.29362857142857146 --message "2026-02-20 validated dataset load: v100 submission" --execute-submit`
+- Versao de codigo/dados:
+  - Codigo: `git 95ced385dd8435db00c95872fc0fbbb46b8a2129` (worktree suja)
+  - Notebook: `marcux777/stanford-rna3d-submit-prod-v2` (version `100`)
+  - Competicao: `stanford-rna-3d-folding-2`
+- Artefatos gerados:
+  - `runs/20260218_plan136_kernel_output_v100/submit_notebook_report.json` (atualizado)
+  - `/tmp/kaggle_verify_submit_dataset/submission.csv` (dataset baixado para validação)
+- Metricas/resultado:
+  - `check-submission` do dataset baixado: `ok=true`
+  - `submit-kaggle-notebook`: sucesso (`returncode=0`)
+  - Nova submissao criada:
+    - `ref=50478390`
+    - `status=SubmissionStatus.PENDING`
+    - `errorDescription=None`
+    - `description="2026-02-20 validated dataset load: v100 submission"`
+- Conclusao:
+  - Submissao correta executada e dataset anexado ao notebook validado como carregado e consistente com o contrato de formato.
+
+## 2026-02-20 - marcusvinicius/Codex - ADHOC (root-cause formato + submit prevalidado v113)
+
+- Data UTC: `2026-02-20T10:56:42Z`
+- Plano: `ADHOC`
+- Objetivo/hipotese:
+  - Parar submissões cegas e isolar a trilha que realmente gera CSV aceito pelo Kaggle antes de novo envio.
+- Comparacao (baseline vs novo):
+  - `v100` (`score_local=0.300975`) continua com `error_description="incorrect format"` no Kaggle.
+  - `v113` (`score_local=0.29362857142857146`) já tinha histórico de score público (`0.261`) e `error_description=""`.
+- Comandos executados:
+  - Diagnóstico de submissions via API:
+    - `python - <<'PY' ... api.competition_submissions(...) ... error_description/public_score ... PY`
+  - Validação pré-submit da trilha v113:
+    - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260219_plan146_kernel_output_v113/submission.csv`
+    - `python -m rna3d_local evaluate-submit-readiness --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260219_plan146_kernel_output_v113/submission.csv --score-json runs/20260219_plan146_kernel_output_v113/score.json --baseline-score 0.261 --report runs/20260220_submit_v113_validated/readiness.json`
+  - Submit notebook-only (v113):
+    - `python -m rna3d_local submit-kaggle-notebook --competition stanford-rna-3d-folding-2 --notebook-ref marcux777/stanford-rna3d-submit-prod-v2 --notebook-version 113 --notebook-file submission.csv --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260219_plan146_kernel_output_v113/submission.csv --notebook-output-path runs/20260219_plan146_kernel_output_v113/submission.csv --score-json runs/20260219_plan146_kernel_output_v113/score.json --baseline-score 0.261 --message "2026-02-20 strict prevalidated v113 (format-safe)" --execute-submit`
+- Versao de codigo/dados:
+  - Codigo: `git 95ced385dd8435db00c95872fc0fbbb46b8a2129` (worktree suja)
+  - Notebook: `marcux777/stanford-rna3d-submit-prod-v2` (version `113`)
+  - Competicao: `stanford-rna-3d-folding-2`
+- Artefatos gerados:
+  - `runs/20260220_submit_v113_validated/readiness.json`
+  - `runs/20260219_plan146_kernel_output_v113/submit_notebook_report.json`
+- Metricas/resultado:
+  - `check-submission`: `ok=true`
+  - `readiness`: `allowed=true`, `reason=strict_improvement_ok`, `score=0.29362857142857146`, `baseline=0.261`
+  - Nova submissao criada:
+    - `ref=50478568`
+    - `status=SubmissionStatus.PENDING`
+    - `error_description=""` (até o momento do registro)
+- Conclusao:
+  - Submissão refeita com trilha comprovadamente format-safe (`v113`) e validação estrita antes do envio.

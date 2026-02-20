@@ -209,12 +209,14 @@ def test_phase2_router_and_top5_selection(tmp_path: Path) -> None:
     )
     routing = pl.read_parquet(routed.routing_path).sort("target_id")
     rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["T1"] == "len<=350->foundation_trio"
+    assert rules["T1"] == "template_strong->tbm(len_bucket=short)"
     assert rules["T2"] == "len<=350->foundation_trio"
     assert rules["T3"] == "len<=350->foundation_trio"
 
     candidates = pl.read_parquet(routed.candidates_path)
-    for tid in ("T1", "T2", "T3"):
+    t1_sources = set(candidates.filter(pl.col("target_id") == "T1").select("source").unique().get_column("source").to_list())
+    assert t1_sources == {"tbm"}
+    for tid in ("T2", "T3"):
         tid_sources = set(candidates.filter(pl.col("target_id") == tid).select("source").unique().get_column("source").to_list())
         assert "chai1" in tid_sources
         assert "boltz1" in tid_sources
@@ -265,10 +267,10 @@ def test_hybrid_router_injects_tbm_confidence_from_template_score(tmp_path: Path
         se3_path=None,
     )
     routing = pl.read_parquet(out.routing_path)
-    assert routing.item(0, "route_rule") == "len>600->tbm+se3_mamba_fallback->tbm"
+    assert routing.item(0, "route_rule") == "template_strong->tbm(len_bucket=long)"
     assert routing.item(0, "primary_source") == "tbm"
-    assert routing.item(0, "fallback_used") is True
-    assert routing.item(0, "fallback_source") == "tbm"
+    assert routing.item(0, "fallback_used") is False
+    assert routing.item(0, "fallback_source") is None
 
     candidates = pl.read_parquet(out.candidates_path)
     tbm_rows = candidates.filter(pl.col("source") == "tbm")
@@ -337,8 +339,8 @@ def test_phase2_router_falls_back_when_template_strong_without_tbm_coverage(tmp_
     )
     routing = pl.read_parquet(routed.routing_path).sort("target_id")
     rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["TMED"] == "350<len<=600->se3_flash"
-    assert routing.item(0, "primary_source") == "se3_flash"
+    assert rules["TMED"] == "template_strong->tbm(len_bucket=medium)"
+    assert routing.item(0, "primary_source") == "tbm"
 
 
 def test_phase2_router_prefers_foundation_over_se3_when_available(tmp_path: Path) -> None:
@@ -384,9 +386,12 @@ def test_phase2_router_prefers_foundation_over_se3_when_available(tmp_path: Path
     )
     routing = pl.read_parquet(routed.routing_path).sort("target_id")
     rules = {row["target_id"]: row["route_rule"] for row in routing.iter_rows(named=True)}
-    assert rules["T1"] == "len<=350->foundation_trio"
+    assert rules["T1"] == "template_strong->tbm(len_bucket=short)"
     assert rules["T2"] == "len<=350->foundation_trio"
-    assert routing.filter(pl.col("primary_source") != "foundation_trio").height == 0
+    row_t1 = routing.filter(pl.col("target_id") == "T1").row(0, named=True)
+    row_t2 = routing.filter(pl.col("target_id") == "T2").row(0, named=True)
+    assert str(row_t1["primary_source"]) == "tbm"
+    assert str(row_t2["primary_source"]) == "foundation_trio"
 
 
 def test_phase2_router_short_bucket_recovers_with_tbm_when_foundation_missing_for_target(tmp_path: Path) -> None:
@@ -562,12 +567,12 @@ def test_phase2_router_ultralong_forces_se3_fallback(tmp_path: Path) -> None:
         se3_path=se3,
     )
     routing = pl.read_parquet(out.routing_path)
-    assert routing.item(0, "route_rule") == "len>1500->tbm+se3_mamba"
-    assert routing.item(0, "primary_source") == "tbm+se3_mamba"
+    assert routing.item(0, "route_rule") == "template_strong->tbm(len_bucket=long)"
+    assert routing.item(0, "primary_source") == "tbm"
     assert routing.item(0, "fallback_used") is False
     candidates = pl.read_parquet(out.candidates_path)
-    assert candidates.filter(pl.col("source") == "generative_se3").height > 0
     assert candidates.filter(pl.col("source") == "tbm").height > 0
+    assert candidates.filter(pl.col("source") == "generative_se3").height == 0
 
 
 def test_phase2_router_ultralong_falls_back_to_tbm_without_se3(tmp_path: Path) -> None:
@@ -601,9 +606,9 @@ def test_phase2_router_ultralong_falls_back_to_tbm_without_se3(tmp_path: Path) -
         se3_path=None,
     )
     routing = pl.read_parquet(out.routing_path)
-    assert routing.item(0, "route_rule") == "len>1500->tbm+se3_mamba_fallback->tbm"
+    assert routing.item(0, "route_rule") == "template_strong->tbm(len_bucket=long)"
     assert routing.item(0, "primary_source") == "tbm"
-    assert routing.item(0, "fallback_used") is True
+    assert routing.item(0, "fallback_used") is False
 
 
 def test_phase2_router_long_survives_when_mamba_and_tbm_missing(tmp_path: Path) -> None:

@@ -19,16 +19,6 @@ from ..errors import raise_error
 from ..se3.sequence_parser import parse_sequence_with_chains
 
 _NUC_TO_INT = {"A": 0, "C": 1, "G": 2, "U": 3}
-_CANONICAL_PAIR_INDEX = {
-    (0, 3),  # AU
-    (3, 0),  # UA
-    (1, 2),  # CG
-    (2, 1),  # GC
-    (2, 3),  # GU
-    (3, 2),  # UG
-    (0, 2),  # AG Hoogsteen proxy
-    (2, 0),  # GA Hoogsteen proxy
-}
 _SHORT_MAX_LEN = 350
 _MEDIUM_MAX_LEN = 600
 _MSA_CAP_MEDIUM = 64
@@ -234,7 +224,6 @@ def _covariance_pairs_from_alignment(
     order = np.argsort(-entropy[candidate])
     keep = candidate[order][: int(max_cov_positions)]
     pair_scores: list[tuple[int, int, float]] = []
-    canonical_indices = np.array([a * 4 + b for a, b in sorted(_CANONICAL_PAIR_INDEX)], dtype=np.int16)
     for idx_i in range(len(keep)):
         i = int(keep[idx_i])
         vi = aligned[:, i]
@@ -253,8 +242,8 @@ def _covariance_pairs_from_alignment(
             denom = np.clip(px * py, a_min=1e-12, a_max=None)
             ratio = np.where(pxy.reshape(4, 4) > 0, pxy.reshape(4, 4) / denom, 1.0)
             mi = float(np.sum(np.where(pxy.reshape(4, 4) > 0, pxy.reshape(4, 4) * np.log(ratio), 0.0)))
-            canonical_mass = float(hist[canonical_indices].sum() / float(valid_count))
-            score = mi * canonical_mass
+            # Keep tertiary/non-canonical couplings by using MI directly.
+            score = mi
             score_norm = float(score / (1.0 + score))
             if score_norm > 0.0:
                 pair_scores.append((i + 1, j + 1, score_norm))

@@ -95,6 +95,13 @@ def test_export_and_check_submission_strict(tmp_path: Path) -> None:
     with pytest.raises(PipelineError, match="coordenadas invalidas"):
         check_submission(sample_path=sample, submission_path=bad2_path)
 
+    bad3 = pl.read_csv(submission)
+    bad3 = bad3.with_columns(pl.lit("X").alias("resname"))
+    bad3_path = tmp_path / "bad_submission_fixed_value.csv"
+    bad3.write_csv(bad3_path)
+    with pytest.raises(PipelineError, match="valores fixos da submissao nao batem com sample"):
+        check_submission(sample_path=sample, submission_path=bad3_path)
+
 
 def test_export_submission_fills_dummy_for_missing_keys_non_streaming(tmp_path: Path) -> None:
     sample = tmp_path / "sample.csv"

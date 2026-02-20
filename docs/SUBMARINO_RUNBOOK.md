@@ -156,7 +156,9 @@ python -m rna3d_local predict-tbm \
   --templates "$CUSTOM/template_db/templates.parquet" \
   --targets "$INPUT/test_sequences.csv" \
   --out "$RUNS/tbm_predictions.parquet" \
-  --n-models 5
+  --n-models 5 \
+  --allow-missing-targets \
+  --min-template-coverage 0.60
 
 # 3) Foundation models offline (somente bucket curto; evita OOM)
 # Gere previamente $RUNS/targets_short.csv com alvos de L <= 350.
@@ -187,7 +189,7 @@ python -m rna3d_local check-submission --sample "$INPUT/sample_submission.csv" -
 
 Observações importantes:
 - `prepare-chemical-features` **não** aceita `test_sequences.csv`; ele exige o arquivo QUICK_START (por resíduo) no schema suportado por `src/rna3d_local/chemical_features.py`.
-- Minimização (`minimize-ensemble --backend openmm`) é opcional; `--max-iterations 0` faz bypass explícito e, quando habilitada, exige `openmm` disponível no ambiente offline (não faz parte do wheelhouse `phase2` por padrão).
+- Minimização (`minimize-ensemble --backend openmm`) é opcional; por padrão ela já fica em bypass (`max_iterations=0`). No notebook de submissão, prefira chamar sem `--max-iterations` para não sobrescrever esse default de segurança.
 - O roteador híbrido aplica funil rígido por comprimento com prioridade máxima: `L<=350` foundation trio, `351..600` SE(3)-Flash, `>600` SE(3)-Mamba com fallback explícito para TBM.
 
 Checklist fail-fast sugerido (antes de rodar o pipeline pesado):

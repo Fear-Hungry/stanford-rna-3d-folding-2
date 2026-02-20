@@ -52,6 +52,33 @@ def _write_chemical(path: Path) -> None:
     ).write_parquet(path)
 
 
+def _write_candidates_rg(path: Path) -> None:
+    rows: list[dict[str, object]] = []
+    n_res = 120
+    expected_rg = 5.5 * (float(n_res) ** 0.33)
+    span = expected_rg * (3.0**0.5)
+    half = float((n_res - 1) / 2.0)
+    for sample_id in ["s_physical", "s_collapsed"]:
+        for resid in range(1, n_res + 1):
+            t = (float(resid - 1) - half) / max(half, 1.0)
+            if sample_id == "s_physical":
+                x = t * span
+            else:
+                x = t * 0.05
+            rows.append(
+                {
+                    "target_id": "TRG",
+                    "sample_id": sample_id,
+                    "resid": resid,
+                    "resname": "A",
+                    "x": float(x),
+                    "y": 0.0,
+                    "z": 0.0,
+                }
+            )
+    pl.DataFrame(rows).write_parquet(path)
+
+
 def test_rank_se3_ensemble_uses_chemical_exposure_consistency(tmp_path: Path) -> None:
     candidates = tmp_path / "candidates.parquet"
     chemical = tmp_path / "chemical.parquet"
@@ -111,3 +138,38 @@ def test_rank_se3_ensemble_fails_when_chem_weight_without_chemical_features(tmp_
             chemical_features_path=None,
             diversity_lambda=0.0,
         )
+
+
+def test_rank_se3_ensemble_penalizes_collapsed_geometry_with_rg_consistency(tmp_path: Path) -> None:
+    candidates = tmp_path / "candidates_rg.parquet"
+    qa_config = tmp_path / "qa_config_rg.json"
+    out = tmp_path / "ranked_rg.parquet"
+    _write_candidates_rg(candidates)
+    qa_config.write_text(
+        json.dumps(
+            {
+                "compactness": 1.0,
+                "smoothness": 0.0,
+                "chem_exposure_consistency": 0.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    ranked = rank_se3_ensemble(
+        repo_root=tmp_path,
+        candidates_path=candidates,
+        out_path=out,
+        qa_config_path=qa_config,
+        chemical_features_path=None,
+        diversity_lambda=0.0,
+    )
+    unique_scores = (
+        pl.read_parquet(ranked.ranked_path)
+        .select("sample_id", "rank", "qa_compactness")
+        .unique()
+        .sort("rank")
+    )
+    first = unique_scores.row(0, named=True)
+    collapsed = unique_scores.filter(pl.col("sample_id") == "s_collapsed").row(0, named=True)
+    assert str(first["sample_id"]) == "s_physical"
+    assert float(first["qa_compactness"]) > float(collapsed["qa_compactness"])

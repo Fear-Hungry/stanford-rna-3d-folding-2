@@ -155,3 +155,66 @@ def test_predict_tbm_exports_chain_index_for_multichain_target(tmp_path: Path) -
     assert "residue_index_1d" in pred.columns
     assert pred.get_column("chain_index").to_list() == [0, 0, 1, 1]
     assert pred.get_column("residue_index_1d").to_list() == [0, 1, 1002, 1003]
+
+
+def test_predict_tbm_allow_missing_targets_writes_empty_valid_parquet(tmp_path: Path) -> None:
+    retrieval = tmp_path / "retrieval.parquet"
+    templates = tmp_path / "templates.parquet"
+    targets = tmp_path / "targets.parquet"
+    out = tmp_path / "tbm.parquet"
+    _write_retrieval(retrieval)
+    _write_targets(targets)
+    pl.DataFrame(
+        [
+            {"template_uid": "bad", "resid": 1, "resname": "A", "x": 0.0, "y": 0.0, "z": 0.0},
+            {"template_uid": "bad", "resid": 2, "resname": "C", "x": 1.0, "y": 0.0, "z": 0.0},
+        ]
+    ).write_parquet(templates)
+
+    result = predict_tbm(
+        repo_root=tmp_path,
+        retrieval_path=retrieval,
+        templates_path=templates,
+        targets_path=targets,
+        out_path=out,
+        n_models=2,
+        allow_missing_targets=True,
+    )
+    pred = pl.read_parquet(result.predictions_path)
+    assert pred.height == 0
+    assert set(["target_id", "model_id", "resid", "resname", "x", "y", "z"]).issubset(set(pred.columns))
+
+
+def test_predict_tbm_accepts_partial_template_with_min_coverage_in_permissive_mode(tmp_path: Path) -> None:
+    retrieval = tmp_path / "retrieval.parquet"
+    templates = tmp_path / "templates.parquet"
+    targets = tmp_path / "targets.parquet"
+    out = tmp_path / "tbm.parquet"
+    pl.DataFrame([{"target_id": "T1", "template_uid": "partial", "rerank_rank": 1}]).write_parquet(retrieval)
+    _write_targets(targets)
+    pl.DataFrame(
+        [
+            {"template_uid": "partial", "resid": 1, "resname": "A", "x": 10.0, "y": 0.0, "z": 0.0},
+            {"template_uid": "partial", "resid": 2, "resname": "C", "x": 11.0, "y": 0.0, "z": 0.0},
+        ]
+    ).write_parquet(templates)
+
+    result = predict_tbm(
+        repo_root=tmp_path,
+        retrieval_path=retrieval,
+        templates_path=templates,
+        targets_path=targets,
+        out_path=out,
+        n_models=1,
+        allow_missing_targets=True,
+        min_template_coverage=0.60,
+    )
+    pred = pl.read_parquet(result.predictions_path).sort(["target_id", "model_id", "resid"])
+    assert pred.height == 3
+    assert int(pred.get_column("x").null_count()) == 0
+    assert int(pred.get_column("y").null_count()) == 0
+    assert int(pred.get_column("z").null_count()) == 0
+    row3 = pred.filter(pl.col("resid") == 3).row(0, named=True)
+    assert float(row3["x"]) == pytest.approx(6.0)
+    assert float(row3["y"]) == pytest.approx(0.0)
+    assert float(row3["z"]) == pytest.approx(0.0)

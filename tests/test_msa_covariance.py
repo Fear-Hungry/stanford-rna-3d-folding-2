@@ -258,3 +258,24 @@ def test_compute_msa_covariance_applies_dynamic_cap_for_long_targets(monkeypatch
     )
     assert "TLONG" in out
     assert captured_depths == [32]
+
+
+def test_covariance_pairs_keeps_noncanonical_signal() -> None:
+    # Non-canonical states (A,C) and (C,A) are perfectly coupled across rows.
+    aligned = np.array(
+        [
+            [0, 1],
+            [0, 1],
+            [1, 0],
+            [1, 0],
+        ],
+        dtype=np.int16,
+    )
+    pairs = msa_covariance._covariance_pairs_from_alignment(
+        aligned=aligned,
+        max_cov_positions=16,
+        max_cov_pairs=64,
+    )
+    by_pair = {(int(i), int(j)): float(p) for i, j, p in pairs}
+    assert (1, 2) in by_pair
+    assert float(by_pair[(1, 2)]) > 0.0

@@ -2744,3 +2744,237 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Criterios de aceite:
   - `pytest -q tests/test_tbm.py` passa.
   - saida TBM multicadeia contem `chain_index` consistente com a sequencia parseada.
+
+## PLAN-164 - Sampler de difusao retorna coordenada absoluta (x_cond + delta)
+
+- Objetivo:
+  - Corrigir o amostrador rapido de difusao para retornar coordenadas absolutas no espaco global em vez de apenas deslocamento.
+- Hipotese:
+  - Ajustar o retorno de `_sample_diffusion_dpm_like` para `x_cond + x` elimina colapso no centro e alinha o comportamento com o sampler de flow matching.
+- Mudancas:
+  - `src/rna3d_local/generative/sampler.py`:
+    - trocar retorno final de `_sample_diffusion_dpm_like` para coordenada absoluta.
+  - `tests/test_best_of5_strategy.py`:
+    - adicionar teste deterministico confirmando que um shift em `x_cond` desloca a amostra de difusao na mesma magnitude.
+- Criterios de aceite:
+  - `pytest -q tests/test_best_of5_strategy.py` passa.
+  - teste novo falha se o retorno voltar a ser apenas delta.
+
+## PLAN-165 - TBM permissivo explicito para alvos orfaos na submissao
+
+- Objetivo:
+  - Evitar abortar pipeline de submissao quando TBM nao encontra template para parte dos targets, preservando modo estrito por padrao.
+- Hipotese:
+  - Um modo explicito `allow_missing_targets` no TBM permite produzir parquet parcial/vazio com warnings acionaveis, deixando o hybrid router executar fallback sem quebrar contrato de export/submission.
+- Mudancas:
+  - `src/rna3d_local/tbm.py`:
+    - adicionar parametro `allow_missing_targets` (default `False`);
+    - quando habilitado, nao levantar erro para targets sem template, emitir warning estruturado e filtrar `template_uid` nulo antes do join final;
+    - registrar no manifest contagem e exemplos de targets sem cobertura.
+  - `src/rna3d_local/cli_parser.py`:
+    - adicionar flag `--allow-missing-targets` no comando `predict-tbm`.
+  - `src/rna3d_local/cli.py`:
+    - propagar flag para `predict_tbm(...)`.
+  - `tests/test_tbm.py`:
+    - adicionar teste cobrindo modo permissivo com target sem template e parquet de saida vazio/valido.
+- Criterios de aceite:
+  - `pytest -q tests/test_tbm.py` passa.
+  - modo estrito continua falhando para alvos sem template.
+
+## PLAN-166 - TBM com cobertura parcial configuravel (>=60% em modo permissivo)
+
+- Objetivo:
+  - Evitar descarte de templates bons com pequenas lacunas experimentais, mantendo `strict` por padrao.
+- Hipotese:
+  - Permitir `min_template_coverage` configuravel (ex.: `0.60`) em conjunto com modo permissivo aumenta cobertura efetiva do TBM sem quebrar o pipeline.
+- Mudancas:
+  - `src/rna3d_local/tbm.py`:
+    - adicionar parametro `min_template_coverage` (default `1.0`);
+    - trocar filtro de `n_prefix == target_len` por `coverage_ratio >= min_template_coverage`;
+    - em modo permissivo, preencher lacunas de coordenadas do template com dummy deterministico para manter saida numericamente valida.
+  - `src/rna3d_local/cli_parser.py`:
+    - adicionar `--min-template-coverage` ao comando `predict-tbm`.
+  - `src/rna3d_local/cli.py`:
+    - propagar `min_template_coverage` para `predict_tbm`.
+  - `tests/test_tbm.py`:
+    - adicionar teste com template parcial (2/3) aceito com limiar `0.60` e coordenadas sem nulos na saida.
+- Criterios de aceite:
+  - `pytest -q tests/test_tbm.py` passa.
+  - modo estrito continua equivalente ao atual quando `min_template_coverage=1.0`.
+
+## PLAN-167 - Priorizar TBM quando template_strong em todos os buckets do roteador
+
+- Objetivo:
+  - Evitar ignorar templates de alta confianca no `hybrid_router`, priorizando TBM para targets com homologia forte independentemente do bucket de tamanho.
+- Hipotese:
+  - Se `template_score >= template_score_threshold` e houver cobertura TBM para o alvo, selecionar TBM como fonte primaria reduz risco de alucinacao dos modelos generativos/foundation.
+- Mudancas:
+  - `src/rna3d_local/hybrid_router.py`:
+    - inserir checagem inicial de `template_strong` no loop por target;
+    - quando `template_strong` e TBM disponivel, definir `primary_df = tbm_t` e registrar regra explicita de roteamento;
+    - manter fallback existente para casos sem cobertura TBM.
+  - `tests/test_phase2_hybrid.py`:
+    - atualizar asserts de roteamento para refletir prioridade de TBM em targets `short/medium/long` com template forte;
+    - validar ausencia de fallback quando TBM forte esta presente.
+- Criterios de aceite:
+  - `pytest -q tests/test_phase2_hybrid.py` passa.
+  - targets com `template_strong=True` e TBM presente recebem `primary_source="tbm"` em qualquer bucket.
+
+## PLAN-168 - QA ranker SE3 com consistencia fisica de raio de giracao
+
+- Objetivo:
+  - Evitar que o ranker recompense colapso estrutural no centro, trocando a metrica de compactness por consistencia com `Rg` esperado para RNA.
+- Hipotese:
+  - Usar um score baseado no erro relativo entre `Rg` previsto e `Rg_esperado ~= 5.5 * N^0.33` penaliza modelos colapsados e melhora priorizacao de candidatos fisicamente plausiveis.
+- Mudancas:
+  - `src/rna3d_local/ensemble/qa_ranker_se3.py`:
+    - substituir compactness atual (baseada em `radius.mean`) por consistencia de `Rg` esperado;
+    - manter chave de configuracao `compactness` e coluna `qa_compactness` para compatibilidade de interface.
+  - `tests/test_qa_ranker_se3.py`:
+    - adicionar teste com duas amostras (fisicamente plausivel vs colapsada) validando ranking com peso de compactness.
+- Criterios de aceite:
+  - `pytest -q tests/test_qa_ranker_se3.py` passa.
+  - amostra colapsada nao pode ficar na frente da amostra com `Rg` plausivel quando `compactness=1.0`.
+
+## PLAN-169 - Reranker com feicao quimico-geometrica por candidato (target+template)
+
+- Objetivo:
+  - Remover a feicao quimica constante por alvo no reranker e passar a usar compatibilidade entre reatividade do target e exposicao geometrica do template candidato.
+- Hipotese:
+  - Computar exposicao por residuo a partir das coordenadas do template e cruzar com `p_open/p_paired` do target gera sinal discriminativo real entre templates do mesmo alvo.
+- Mudancas:
+  - `src/rna3d_local/reranker.py`:
+    - `_prepare_features` passa a receber `templates` e calcular perfil de exposicao por template (`geom_p_open/geom_p_paired`) por residuo normalizado;
+    - para cada par (`target_id`, `template_uid`), calcular compatibilidade quimico-geometrica por MAE em `p_open/p_paired`, ponderada por cobertura;
+    - preencher `chem_p_open_mean` e `chem_p_paired_mean` com esse score por candidato (nao mais media global por target);
+    - adicionar validacoes estritas de chaves duplicadas/range/cobertura para `chemical_features` e `templates` (fail-fast).
+  - `src/rna3d_local/cli_parser.py` e `src/rna3d_local/cli.py`:
+    - `train-template-reranker` e `score-template-reranker` passam a exigir `--templates`.
+  - `tests/test_reranker.py`:
+    - adicionar fixture de `templates.parquet` e validar que as features quimicas variam entre templates do mesmo alvo no rerank completo.
+- Criterios de aceite:
+  - `pytest -q tests/test_reranker.py` passa.
+  - `chem_p_open_mean`/`chem_p_paired_mean` deixam de ser constantes entre templates de um mesmo target quando geometrias diferem.
+
+## PLAN-170 - MSA covariance sem penalizacao por canonicidade para preservar contatos terciarios
+
+- Objetivo:
+  - Remover o viés que derruba score de pares não canônicos na covariância, preservando sinal coevolutivo útil para contatos terciários 3D.
+- Hipotese:
+  - Usar MI direta (normalizada) sem multiplicar por massa de pares canônicos evita suprimir pares não-canônicos conservados e aumenta sensibilidade a topologia terciária.
+- Mudancas:
+  - `src/rna3d_local/training/msa_covariance.py`:
+    - remover fator `canonical_mass` do score;
+    - pontuar pares com `score = mi` seguido de normalização existente (`score/(1+score)`).
+  - `tests/test_msa_covariance.py`:
+    - adicionar teste de regressão com acoplamento não-canônico conservado garantindo score positivo.
+- Criterios de aceite:
+  - `pytest -q tests/test_msa_covariance.py` passa.
+  - par não-canônico acoplado aparece no output com probabilidade > 0.
+
+## PLAN-171 - Minimização OpenMM desligada por padrão na pipeline (max_iterations=0)
+
+- Objetivo:
+  - Evitar distorção geométrica global por minimização C1' coarse-grained, adotando bypass explícito por padrão.
+- Hipotese:
+  - Definir `max_iterations=0` como padrão no CLI e nas receitas principais mantém geometria prevista pelos modelos e reduz risco de degradação de TM-score.
+- Mudancas:
+  - `src/rna3d_local/cli_parser.py`:
+    - alterar default de `--max-iterations` de `80` para `0`.
+  - `experiments/recipes/E02_phase1_tbm_minimize_openmm.json`:
+    - alterar `min_max_iter` para `"0"`.
+  - `experiments/recipes/E31_hybrid_select_minimize_openmm.json`:
+    - alterar `min_max_iter` para `"0"`.
+  - `README.md`:
+    - atualizar exemplos de `minimize-ensemble` para `--max-iterations 0`.
+- Criterios de aceite:
+  - `pytest -q tests/test_minimization.py` passa.
+  - comandos/receitas principais executam minimização em bypass explícito por padrão.
+
+## PLAN-172 - Escudos explícitos no notebook/pipeline para TBM e minimização
+
+- Objetivo:
+  - Evitar execução acidental com defaults estritos/perigosos quando comandos forem copiados em bash/notebook.
+- Hipotese:
+  - Tornar explícito `--allow-missing-targets --min-template-coverage 0.60` no `predict-tbm` e remover `--max-iterations` dos comandos de minimização reduz risco de quebra/OOM por script legado.
+- Mudancas:
+  - `README.md`:
+    - atualizar comandos `predict-tbm` com escudos explícitos;
+    - remover `--max-iterations` dos exemplos de `minimize-ensemble` para usar default seguro.
+  - `docs/SUBMARINO_RUNBOOK.md`:
+    - atualizar célula de notebook com flags explícitas de TBM;
+    - reforçar instrução de não passar `--max-iterations` no notebook de submissão.
+  - `experiments/recipes/E01_phase1_tbm_baseline.json`:
+    - adicionar `--allow-missing-targets --min-template-coverage 0.60` no passo `predict-tbm`.
+  - `experiments/recipes/E02_phase1_tbm_minimize_openmm.json`:
+    - adicionar escudos no passo `predict-tbm`;
+    - remover `--max-iterations` do passo `minimize`.
+  - `experiments/recipes/E31_hybrid_select_minimize_openmm.json`:
+    - remover `--max-iterations` do passo `minimize`.
+- Criterios de aceite:
+  - receitas JSON validam sem erro de sintaxe;
+  - `python -m rna3d_local predict-tbm --help` expõe as flags usadas no runbook;
+  - `python -m rna3d_local minimize-ensemble --help` mantém bypass por default (`max_iterations=0`).
+
+## PLAN-173 - Sanitização de bases OOV para `N` no parser multicadeia
+
+- Objetivo:
+  - Evitar falha de execução na inferência quando a sequência contiver bases fora de `ACGUN` (ex.: `I`, `P`, `R`, `Y`, `S`) no private test.
+- Hipotese:
+  - Mapear tokens OOV para `N` preserva robustez operacional da pipeline sem quebrar o grafo (já suporta `N` com embedding uniforme).
+- Mudancas:
+  - `src/rna3d_local/se3/sequence_parser.py`:
+    - substituir validação que disparava `raise_error` para bases inválidas por sanitização determinística `OOV -> N`.
+  - `tests/test_sequence_parser.py`:
+    - adicionar teste cobrindo sanitização de sequência multicadeia com bases alienígenas.
+- Criterios de aceite:
+  - `python -m pytest -q tests/test_sequence_parser.py` passa.
+  - parser retorna resíduos apenas no alfabeto `ACGUN` para entrada com OOV.
+
+## PLAN-174 - Blindagem OpenMM para fontes TBM na minimização
+
+- Objetivo:
+  - Evitar que predições provenientes de TBM passem por minimização OpenMM e sofram instabilidade numérica por resíduos dummy/lacunas.
+- Hipotese:
+  - Tratar `tbm` como fonte de exclusão de refinamento (junto de foundation models) elimina risco de NaN sem perder qualidade estrutural global.
+- Mudancas:
+  - `src/rna3d_local/minimization.py`:
+    - incluir token `tbm` em `_FOUNDATION_SOURCE_TOKENS`.
+  - `tests/test_minimization.py`:
+    - ampliar teste de skip de fonte foundation para cobrir também `source="tbm_template"`.
+- Criterios de aceite:
+  - `python -m pytest -q tests/test_minimization.py` passa.
+  - predições com `source` contendo `tbm` ficam com `refinement_skipped=true` e `refinement_skip_reason=foundation_source`.
+
+## PLAN-175 - TBM com mapeamento por alinhamento local (sem assumir offset global)
+
+- Objetivo:
+  - Remover a suposição de alinhamento global por `resid_norm` no TBM/reranker e mapear resíduos com correspondência real target-template.
+- Hipotese:
+  - Usar alinhamento local (ex.: Smith-Waterman) para gerar `qaln/taln` e construir dicionário explícito de mapeamento de resíduos melhora a robustez quando o template cobre apenas subsegmentos (N-terminal/C-terminal parcial).
+- Mudancas propostas:
+  - `src/rna3d_local/tbm.py`:
+    - substituir join direto por `resid_norm` por projeção via mapa de alinhamento local (`target_resid -> template_resid`).
+  - `src/rna3d_local/reranker.py`:
+    - ajustar features dependentes de cobertura para considerar cobertura alinhada real (não apenas prefixo normalizado).
+  - `src/rna3d_local/retrieval_latent.py` (ou módulo novo):
+    - integrar etapa de alinhamento local após recuperação por embedding para refinar candidatos.
+  - `tests/`:
+    - adicionar caso com template que cobre apenas metade final do target validando ausência de deslocamento indevido de coordenadas.
+- Prioridade:
+  - Backlog pós-estabilização de submissão Kaggle (não implementar na fase atual).
+
+## PLAN-176 - Validação pré-submit mais rígida para evitar "incorrect format"
+
+- Objetivo:
+  - Fortalecer `check-submission` para capturar erros de formato que possam passar pela checagem atual e causar `Submission Scoring Error` no Kaggle.
+- Hipotese:
+  - Validar também os campos fixos (não coordenadas) linha a linha contra o `sample_submission` elimina uma classe de erro de "invalid submission values".
+- Mudancas:
+  - `src/rna3d_local/contracts.py`:
+    - `validate_submission_against_sample` passa a verificar igualdade exata dos campos fixos (`resname`, `resid`, etc.) além de `ID` + coordenadas.
+  - `tests/test_description_and_submission.py`:
+    - adicionar regressão para falhar quando `resname` diverge do sample.
+- Criterios de aceite:
+  - `python -m pytest -q tests/test_description_and_submission.py` passa.
+  - `python -m rna3d_local check-submission --sample ... --submission ...` bloqueia submissão com campo fixo alterado.

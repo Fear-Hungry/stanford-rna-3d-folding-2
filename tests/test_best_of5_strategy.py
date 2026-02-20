@@ -11,7 +11,7 @@ from rna3d_local.ensemble.select_top5 import select_top5_se3
 from rna3d_local.errors import PipelineError
 from rna3d_local.generative.diffusion_se3 import Se3Diffusion
 from rna3d_local.generative.flow_matching_se3 import Se3FlowMatching
-from rna3d_local.generative.sampler import sample_methods_for_target
+from rna3d_local.generative.sampler import _sample_diffusion_dpm_like, sample_methods_for_target
 
 
 def _build_ranked_rows() -> list[dict[str, object]]:
@@ -124,3 +124,35 @@ def test_sampler_generates_24_fast_candidates_with_finite_coords() -> None:
     for _name, _rank, coords in outputs:
         assert coords.shape == x_cond.shape
         assert torch.isfinite(coords).all()
+
+
+def test_diffusion_sampler_returns_absolute_coords_not_pure_delta() -> None:
+    class _StubDiffusion:
+        def __init__(self) -> None:
+            self.num_steps = 2
+            self.alpha_hat = torch.ones(2, dtype=torch.float32)
+
+        def _predict_noise(self, h, delta_noisy, x_cond, t_scalar):  # noqa: ANN001
+            return torch.zeros_like(delta_noisy)
+
+    model = _StubDiffusion()
+    h = torch.zeros((4, 8), dtype=torch.float32)
+    x_cond_zero = torch.zeros((4, 3), dtype=torch.float32)
+    x_cond_shift = torch.full((4, 3), 5.0, dtype=torch.float32)
+
+    out_zero = _sample_diffusion_dpm_like(
+        model=model,  # type: ignore[arg-type]
+        h=h,
+        x_cond=x_cond_zero,
+        seed=123,
+        fast_steps=2,
+    )
+    out_shift = _sample_diffusion_dpm_like(
+        model=model,  # type: ignore[arg-type]
+        h=h,
+        x_cond=x_cond_shift,
+        seed=123,
+        fast_steps=2,
+    )
+    delta = out_shift - out_zero
+    assert torch.allclose(delta, x_cond_shift, atol=1e-6, rtol=1e-6)

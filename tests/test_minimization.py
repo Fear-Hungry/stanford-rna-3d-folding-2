@@ -253,7 +253,12 @@ def test_build_covalent_pairs_respects_chain_boundaries() -> None:
     assert pairs == [(0, 1), (2, 3)]
 
 
-def test_minimize_ensemble_skips_foundation_source_to_preserve_geometry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("source_name", ["chai1", "tbm_template"])
+def test_minimize_ensemble_skips_foundation_source_to_preserve_geometry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_name: str,
+) -> None:
     def _forbidden_minimize_openmm(**kwargs: object) -> np.ndarray:
         raise AssertionError("openmm backend nao deve ser chamado para fonte foundation")
 
@@ -269,7 +274,7 @@ def test_minimize_ensemble_skips_foundation_source_to_preserve_geometry(tmp_path
                 "x": float(resid),
                 "y": float(resid + 1),
                 "z": float(resid + 2),
-                "source": "chai1",
+                "source": source_name,
             }
         )
     pred = tmp_path / "pred_foundation.parquet"

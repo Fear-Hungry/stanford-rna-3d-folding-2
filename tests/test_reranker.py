@@ -27,17 +27,40 @@ def test_train_and_score_reranker(tmp_path: Path) -> None:
     chem = tmp_path / "chemical.parquet"
     pl.DataFrame(
         [
-            {"target_id": "Q1", "resid": 1, "p_open": 0.8, "p_paired": 0.2},
-            {"target_id": "Q1", "resid": 2, "p_open": 0.7, "p_paired": 0.3},
-            {"target_id": "Q2", "resid": 1, "p_open": 0.4, "p_paired": 0.6},
-            {"target_id": "Q2", "resid": 2, "p_open": 0.5, "p_paired": 0.5},
+            {"target_id": "Q1", "resid": 1, "p_open": 0.0, "p_paired": 1.0},
+            {"target_id": "Q1", "resid": 2, "p_open": 1.0, "p_paired": 0.0},
+            {"target_id": "Q1", "resid": 3, "p_open": 0.0, "p_paired": 1.0},
+            {"target_id": "Q2", "resid": 1, "p_open": 1.0, "p_paired": 0.0},
+            {"target_id": "Q2", "resid": 2, "p_open": 0.0, "p_paired": 1.0},
+            {"target_id": "Q2", "resid": 3, "p_open": 1.0, "p_paired": 0.0},
         ]
     ).write_parquet(chem)
+    templates = tmp_path / "templates.parquet"
+    rows_tpl = []
+    template_coords = {
+        "ext:A": [(-2.0, 0.0, 0.0), (0.0, 5.0, 0.0), (2.0, 0.0, 0.0)],
+        "ext:B": [(-2.0, 0.0, 0.0), (0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        "ext:C": [(-2.0, 0.0, 0.0), (0.0, 5.0, 0.0), (2.0, 0.0, 0.0)],
+        "ext:D": [(-2.0, 0.0, 0.0), (0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+    }
+    for template_uid, coords in template_coords.items():
+        for resid, (x, y, z) in enumerate(coords, start=1):
+            rows_tpl.append(
+                {
+                    "template_uid": template_uid,
+                    "resid": resid,
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                }
+            )
+    pl.DataFrame(rows_tpl).write_parquet(templates)
 
     trained = train_template_reranker(
         repo_root=tmp_path,
         candidates_path=candidates,
         chemical_features_path=chem,
+        templates_path=templates,
         out_dir=tmp_path / "model",
         labels_path=None,
         epochs=20,
@@ -49,6 +72,7 @@ def test_train_and_score_reranker(tmp_path: Path) -> None:
         repo_root=tmp_path,
         candidates_path=candidates,
         chemical_features_path=chem,
+        templates_path=templates,
         model_path=trained.model_path,
         config_path=trained.config_path,
         out_path=scored_path,
@@ -58,3 +82,18 @@ def test_train_and_score_reranker(tmp_path: Path) -> None:
     out = pl.read_parquet(scored.scored_path)
     assert out.height == 4
     assert out.filter(pl.col("rerank_rank") <= 2).height == 4
+
+    scored_full = score_template_reranker(
+        repo_root=tmp_path,
+        candidates_path=candidates,
+        chemical_features_path=chem,
+        templates_path=templates,
+        model_path=trained.model_path,
+        config_path=trained.config_path,
+        out_path=tmp_path / "scored_full.parquet",
+        top_k=None,
+    )
+    out_full = pl.read_parquet(scored_full.scored_path)
+    q1 = out_full.filter(pl.col("target_id") == "Q1")
+    assert int(q1.get_column("chem_p_open_mean").n_unique()) > 1
+    assert int(q1.get_column("chem_p_paired_mean").n_unique()) > 1

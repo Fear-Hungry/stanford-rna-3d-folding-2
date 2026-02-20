@@ -47,6 +47,20 @@ def test_parse_sequence_with_chains_accepts_ambiguous_n() -> None:
     assert parsed.residue_position_index_1d == [0, 1, 1002, 1003]
 
 
+def test_parse_sequence_with_chains_sanitizes_oov_to_n() -> None:
+    parsed = parse_sequence_with_chains(
+        sequence="AI|GRP",
+        chain_separator="|",
+        stage="TEST",
+        location="tests/test_sequence_parser.py:test_parse_sequence_with_chains_sanitizes_oov_to_n",
+        target_id="T2OOV",
+    )
+    assert parsed.residues == ["A", "N", "G", "N", "N"]
+    assert parsed.chain_index == [0, 0, 1, 1, 1]
+    assert parsed.chain_lengths == [2, 3]
+    assert parsed.residue_position_index_1d == [0, 1, 1002, 1003, 1004]
+
+
 def test_sequence_rows_maps_ambiguous_n_to_uniform_base_vector() -> None:
     rows = _sequence_rows(
         pl.DataFrame([{"target_id": "TN", "sequence": "AN"}]),

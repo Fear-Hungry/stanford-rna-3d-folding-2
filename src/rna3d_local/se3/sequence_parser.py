@@ -46,15 +46,7 @@ def parse_sequence_with_chains(
     position_cursor = 0
     for cidx, chunk in enumerate(chunks):
         normalized = chunk.replace("T", "U")
-        bad = sorted({base for base in normalized if base not in {"A", "C", "G", "U", "N"}})
-        if bad:
-            raise_error(
-                stage,
-                location,
-                "base invalida na sequencia multicadeia",
-                impact=str(len(bad)),
-                examples=[f"{target_id}:{item}" for item in bad[:8]],
-            )
+        normalized = "".join(base if base in {"A", "C", "G", "U", "N"} else "N" for base in normalized)
         chain_lengths.append(len(normalized))
         if cidx > 0:
             position_cursor += int(chain_break_offset_1d)

@@ -20,7 +20,7 @@ class MinimizeEnsembleResult:
 
 
 _OPENMM_LONG_SKIP_LEN = 350
-_FOUNDATION_SOURCE_TOKENS = ("chai", "boltz", "rnapro", "foundation")
+_FOUNDATION_SOURCE_TOKENS = ("chai", "boltz", "rnapro", "foundation", "tbm")
 
 
 def _is_foundation_source(source_name: str) -> bool:

@@ -105,7 +105,10 @@
         "--out",
         "{run_dir}/tbm_predictions.parquet",
         "--n-models",
-        "{n_models}"
+        "{n_models}",
+        "--allow-missing-targets",
+        "--min-template-coverage",
+        "0.60"
       ]
     },
     {

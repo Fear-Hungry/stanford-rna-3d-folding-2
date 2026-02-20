@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,10 @@ from .utils import rel_or_abs, sha256_file, utc_now_iso, write_json
 class TbmResult:
     predictions_path: Path
     manifest_path: Path
+
+
+_TBM_DUMMY_RESID_MOD = 300
+_TBM_DUMMY_COORD_SPACING = 3.0
 
 
 def _scan_table(path: Path, *, stage: str, location: str, label: str) -> pl.LazyFrame:
@@ -112,6 +117,8 @@ def predict_tbm(
     out_path: Path,
     n_models: int,
     chain_separator: str = "|",
+    allow_missing_targets: bool = False,
+    min_template_coverage: float = 1.0,
 ) -> TbmResult:
     stage = "PREDICT_TBM"
     location = "src/rna3d_local/tbm.py:predict_tbm"
@@ -119,6 +126,8 @@ def predict_tbm(
         raise_error(stage, location, "n_models deve ser > 0", impact="1", examples=[str(n_models)])
     if len(str(chain_separator)) != 1:
         raise_error(stage, location, "chain_separator deve ter 1 caractere", impact="1", examples=[str(chain_separator)])
+    if (not (0.0 < float(min_template_coverage) <= 1.0)):
+        raise_error(stage, location, "min_template_coverage deve estar em (0,1]", impact="1", examples=[str(min_template_coverage)])
 
     retrieval_lf = _scan_table(retrieval_path, stage=stage, location=location, label="retrieval")
     _require_columns_lazy(retrieval_lf, ["target_id", "template_uid"], stage=stage, location=location, label="retrieval")
@@ -193,15 +202,21 @@ def predict_tbm(
         .filter(pl.col("resid_norm") <= pl.col("target_len"))
         .select("target_id", "template_uid", pl.col("resid_norm"), pl.col(rank_col), pl.col("target_len"))
     )
-    prefix_counts = prefix_rows.group_by(["target_id", "template_uid"]).agg(
-        pl.col("resid_norm").n_unique().alias("n_prefix"),
-        pl.first(rank_col).alias(rank_col),
-        pl.first("target_len").alias("target_len"),
+    prefix_counts = (
+        prefix_rows.group_by(["target_id", "template_uid"]).agg(
+            pl.col("resid_norm").n_unique().alias("n_prefix"),
+            pl.first(rank_col).alias(rank_col),
+            pl.first("target_len").alias("target_len"),
+        )
+    ).with_columns(
+        (
+            pl.col("n_prefix").cast(pl.Float64) / pl.col("target_len").cast(pl.Float64)
+        ).alias("coverage_ratio")
     )
 
-    # Filter templates that can cover the target length (skip incomplete templates).
+    # Filter templates by configurable minimal coverage ratio.
     valid_candidates = (
-        prefix_counts.filter(pl.col("n_prefix") == pl.col("target_len"))
+        prefix_counts.filter(pl.col("coverage_ratio") >= float(min_template_coverage))
         .sort(sort_by, descending=sort_desc)
         .with_columns(pl.cum_count("template_uid").over("target_id").alias("model_id"))
         .filter(pl.col("model_id") <= int(n_models))
@@ -212,14 +227,20 @@ def predict_tbm(
     valid_counts = valid_candidates.group_by("target_id").agg(pl.len().alias("n_valid"))
     missing_targets = target_ids.join(valid_counts, on="target_id", how="left").filter(pl.col("n_valid").is_null() | (pl.col("n_valid") <= 0))
     missing_n = int(missing_targets.select(pl.len()).collect().item())
+    missing_examples = missing_targets.select("target_id").head(8).collect().get_column("target_id").to_list() if missing_n > 0 else []
     if missing_n > 0:
-        examples = missing_targets.select("target_id").head(8).collect().get_column("target_id").to_list()
-        raise_error(
-            stage,
-            location,
-            "alvos sem templates validos para TBM (cobertura insuficiente para export estrito)",
-            impact=str(missing_n),
-            examples=[str(x) for x in examples],
+        if not bool(allow_missing_targets):
+            raise_error(
+                stage,
+                location,
+                "alvos sem templates validos para TBM (cobertura insuficiente para export estrito)",
+                impact=str(missing_n),
+                examples=[str(x) for x in missing_examples],
+            )
+        print(
+            f"[{stage}] [{location}] alvos sem templates validos para TBM; mantendo saida parcial para fallback do roteador | "
+            f"impacto={missing_n} | exemplos={','.join(str(x) for x in missing_examples) if missing_examples else '-'}",
+            file=sys.stderr,
         )
 
     padded = valid_counts.filter(pl.col("n_valid") < int(n_models)).with_columns(
@@ -240,6 +261,8 @@ def predict_tbm(
         .with_columns(pl.coalesce([pl.col("template_uid"), pl.col("first_template_uid")]).alias("template_uid"))
         .select("target_id", "model_id", "template_uid")
     )
+    if bool(allow_missing_targets):
+        chosen = chosen.filter(pl.col("template_uid").is_not_null())
 
     resids = resids_df.lazy()
 
@@ -254,7 +277,7 @@ def predict_tbm(
             pl.col("z"),
         )
     )
-    out_lf = (
+    out_lf_raw = (
         expanded.join(templates_norm_lf, on=["template_uid", "resid"], how="left")
         .select(
             pl.col("target_id"),
@@ -272,10 +295,7 @@ def predict_tbm(
         .sort(["target_id", "model_id", "resid"])
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_lf.sink_parquet(str(out_path), engine="streaming")
-
-    missing_coords = pl.scan_parquet(str(out_path)).filter(pl.col("x").is_null() | pl.col("y").is_null() | pl.col("z").is_null())
+    missing_coords = out_lf_raw.filter(pl.col("x").is_null() | pl.col("y").is_null() | pl.col("z").is_null())
     missing_coords_n = int(missing_coords.select(pl.len()).collect().item())
     if missing_coords_n > 0:
         examples = (
@@ -287,7 +307,29 @@ def predict_tbm(
             .get_column("k")
             .to_list()
         )
-        raise_error(stage, location, "TBM gerou coordenadas faltantes apos join (template_uid+resid ausente)", impact=str(missing_coords_n), examples=[str(x) for x in examples])
+        if not bool(allow_missing_targets):
+            raise_error(stage, location, "TBM gerou coordenadas faltantes apos join (template_uid+resid ausente)", impact=str(missing_coords_n), examples=[str(x) for x in examples])
+        print(
+            f"[{stage}] [{location}] TBM com lacunas de template; preenchendo coordenadas dummy para manter pipeline | "
+            f"impacto={missing_coords_n} | exemplos={','.join(str(x) for x in examples[:8]) if examples else '-'}",
+            file=sys.stderr,
+        )
+
+    if bool(allow_missing_targets):
+        resid_dummy_x = (
+            (pl.col("residue_index_1d").cast(pl.Int64).abs() % pl.lit(int(_TBM_DUMMY_RESID_MOD))).cast(pl.Float64)
+            * pl.lit(float(_TBM_DUMMY_COORD_SPACING))
+        )
+        out_lf = out_lf_raw.with_columns(
+            pl.col("x").fill_null(resid_dummy_x).alias("x"),
+            pl.col("y").fill_null(pl.lit(0.0)).alias("y"),
+            pl.col("z").fill_null(pl.lit(0.0)).alias("z"),
+        )
+    else:
+        out_lf = out_lf_raw
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_lf.sink_parquet(str(out_path), engine="streaming")
 
     manifest_path = out_path.parent / "tbm_manifest.json"
     n_rows = int(pl.scan_parquet(str(out_path)).select(pl.len()).collect().item())
@@ -300,13 +342,17 @@ def predict_tbm(
             "targets": rel_or_abs(targets_path, repo_root),
             "predictions": rel_or_abs(out_path, repo_root),
         },
-        "params": {"n_models": int(n_models)},
+        "params": {"n_models": int(n_models), "min_template_coverage": float(min_template_coverage)},
         "stats": {
             "n_rows": int(n_rows),
             "n_targets_with_tbm": int(n_targets_with_tbm),
+            "n_targets_without_template": int(missing_n),
+            "examples_targets_without_template": [str(x) for x in missing_examples],
+            "n_missing_coords_filled": int(missing_coords_n),
             "n_targets_padded": int(padded_count),
             "examples_targets_padded": [str(x) for x in padded_examples],
         },
+        "policy": {"allow_missing_targets": bool(allow_missing_targets)},
         "sha256": {"predictions.parquet": sha256_file(out_path)},
     }
     write_json(manifest_path, manifest)

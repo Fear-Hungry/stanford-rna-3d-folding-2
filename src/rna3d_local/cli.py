@@ -189,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=repo,
                 candidates_path=(repo / args.candidates).resolve(),
                 chemical_features_path=(repo / args.chemical_features).resolve(),
+                templates_path=(repo / args.templates).resolve(),
                 out_dir=(repo / args.out_dir).resolve(),
                 labels_path=None if args.labels is None else (repo / args.labels).resolve(),
                 epochs=int(args.epochs),
@@ -203,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=repo,
                 candidates_path=(repo / args.candidates).resolve(),
                 chemical_features_path=(repo / args.chemical_features).resolve(),
+                templates_path=(repo / args.templates).resolve(),
                 model_path=(repo / args.model).resolve(),
                 config_path=(repo / args.config).resolve(),
                 out_path=(repo / args.out).resolve(),
@@ -219,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
                 targets_path=(repo / args.targets).resolve(),
                 out_path=(repo / args.out).resolve(),
                 n_models=int(args.n_models),
+                allow_missing_targets=bool(args.allow_missing_targets),
+                min_template_coverage=float(args.min_template_coverage),
             )
             _print_json({"predictions": str(out.predictions_path), "manifest": str(out.manifest_path)})
             return 0

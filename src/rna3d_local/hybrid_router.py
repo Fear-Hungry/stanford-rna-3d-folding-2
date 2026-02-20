@@ -214,6 +214,34 @@ def build_hybrid_candidates(
         fallback_used = False
         fallback_source: str | None = None
 
+        # Always prioritize TBM when retrieval confidence indicates strong template homology.
+        tbm_t = _target_subset(tbm, target_id=tid).with_columns(
+            pl.coalesce([pl.col("confidence"), pl.lit(float(score))]).alias("confidence")
+        )
+        if template_strong and tbm_t.height > 0:
+            primary_df = tbm_t.sort(["source", "model_id", "resid"])
+            primary_source = "tbm"
+            rule = f"template_strong->tbm(len_bucket={length_bucket})"
+            primary_df = primary_df.with_columns(pl.lit(rule).alias("route_rule"))
+            candidate_parts.append(primary_df)
+            routing_rows.append(
+                {
+                    "target_id": tid,
+                    "target_length": int(target_length),
+                    "length_bucket": length_bucket,
+                    "short_max_len": int(effective_short_max),
+                    "medium_max_len": int(effective_medium_max),
+                    "template_score": score,
+                    "template_strong": bool(template_strong),
+                    "has_ligand": bool(has_ligand),
+                    "route_rule": rule,
+                    "primary_source": primary_source,
+                    "fallback_used": bool(fallback_used),
+                    "fallback_source": fallback_source,
+                }
+            )
+            continue
+
         if length_bucket == "short":
             foundation_parts: list[pl.DataFrame] = []
             present_sources = 0
@@ -273,9 +301,6 @@ def build_hybrid_candidates(
             mamba_t = pl.DataFrame()
             if se3_mamba is not None:
                 mamba_t = _target_subset(se3_mamba, target_id=tid)
-            tbm_t = _target_subset(tbm, target_id=tid).with_columns(
-                pl.coalesce([pl.col("confidence"), pl.lit(float(score))]).alias("confidence")
-            )
             parts: list[pl.DataFrame] = []
             if mamba_t.height > 0:
                 parts.append(mamba_t)
