@@ -2159,3 +2159,51 @@ Log append-only de experimentos executados.
     - `error_description=""` (até o momento do registro)
 - Conclusao:
   - Submissão refeita com trilha comprovadamente format-safe (`v113`) e validação estrita antes do envio.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-180 (recovery notebook v119 apos remocao de datasets)
+
+- Data UTC: `2026-02-20T14:48:11Z`
+- Plano: `PLAN-180`
+- Objetivo/hipotese:
+  - Recuperar o pipeline notebook-only no Kaggle apos delecao de datasets privados, garantindo execucao completa com export/submissao em formato estrito.
+- Comparacao (baseline vs novo):
+  - Baseline imediato: notebook v118 (erro em export custom por schema de `predictions` sem coluna `ID`).
+  - Novo candidato: notebook v119 usando `export-submission` oficial da CLI.
+- Comandos executados + configuracao efetiva:
+  - Diagnostico de falhas no Kaggle:
+    - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2`
+    - `kaggle kernels output marcux777/stanford-rna3d-submit-prod-v2 -p /tmp/kaggle_kernel_output_v118_b -o`
+    - `rg -n "Traceback|RuntimeError|..." /tmp/kaggle_kernel_output_v118_b/stanford-rna3d-submit-prod-v2.log`
+  - Validacao local do fluxo TBM estrito:
+    - `python -m rna3d_local build-embedding-index ... --encoder mock --embedding-dim 256 --ann-engine none`
+    - `python -m rna3d_local retrieve-templates-latent ... --encoder mock --embedding-dim 256 --ann-engine numpy_bruteforce --top-k 400`
+    - `python -m rna3d_local predict-tbm ... --n-models 5 --min-template-coverage 1.0`
+    - `python -m rna3d_local export-submission --sample ... --predictions ... --out /tmp/tbm_check_v2/submission_cov1.csv`
+    - `python -m rna3d_local check-submission --sample ... --submission /tmp/tbm_check_v2/submission_cov1.csv`
+  - Publicacao/execucao/submissao notebook:
+    - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` (v119)
+    - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2` (ate `COMPLETE`)
+    - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 119 -m "submit notebook v119 strict export fix"`
+    - `kaggle competitions submissions -c stanford-rna-3d-folding-2`
+- Parametros e hiperparametros efetivos:
+  - Retrieval: `top_k=400`, `encoder=mock`, `embedding_dim=256`, `ann_engine=numpy_bruteforce`
+  - TBM: `n_models=5`, `min_template_coverage=1.0`
+  - Normalizacao/clip no notebook: `SUBMISSION_ABS_CLIP=900.0`
+- Seeds usadas:
+  - N/A (pipeline de inferencia deterministico nesta trilha).
+- Versao do codigo e dados:
+  - Codigo: `git c2a715f4d09e96b87fbdd42bee567cb48c14ecb9` (antes do commit final desta rodada)
+  - Notebook: `marcux777/stanford-rna3d-submit-prod-v2` versao `119`
+  - Datasets no kernel: `ckjoshi9/ribonanza-quickstart-3d-templates`, `marcux777/stanford-rna3d-submit-assets-v179`
+- Artefatos gerados em `runs/` + logs:
+  - Kaggle output baixado: `/tmp/kaggle_kernel_output_v119/submission.csv`
+  - Log Kaggle: `/tmp/kaggle_kernel_output_v119/stanford-rna3d-submit-prod-v2.log`
+  - Validacao local: `/tmp/tbm_check_v2/submission_cov1.csv`
+- Metricas/resultado e custo:
+  - `check-submission` local: `ok=true`
+  - Kernel Kaggle v119: `KernelWorkerStatus.COMPLETE`
+  - Submissao Kaggle: status `SubmissionStatus.COMPLETE` (sem `publicScore` exibido ate o fechamento deste registro)
+  - Custo: iteracoes v116->v119 com diagnostico por logs e rerun de notebook
+- Conclusao + proximos passos:
+  - Recovery tecnico concluido: notebook voltou a executar ate o fim e submeter.
+  - Proximo passo: monitorar score efetivo da submissao v119 e, se necessario, comparar com v113 format-safe para decidir trilha produtiva.

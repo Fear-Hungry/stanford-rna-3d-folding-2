@@ -2693,3 +2693,31 @@ Log append-only de mudancas implementadas.
   - `python - <<'PY' ... compile(cell_source, ...) ... PY` (notebook Kaggle) -> `ok`
 - Riscos conhecidos / follow-ups:
   - Com fail-fast estrito, qualquer cobertura incompleta agora bloqueia submissão (comportamento desejado por contrato); para robustez competitiva futura, tratar isso via melhoria real de cobertura de modelos/roteamento, não via fallback sintético.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-180 (recuperacao notebook Kaggle apos remocao de datasets)
+
+- Data UTC: `2026-02-20T14:48:11Z`
+- Plano: `PLAN-180`
+- Resumo:
+  - Recuperado o notebook de submissao para executar com datasets ativos apos remocao dos datasets privados.
+  - Corrigido preflight de binarios para copiar executaveis de `/kaggle/input/...` para `/kaggle/working/bin_exec` antes de aplicar permissao de execucao, evitando erro de filesystem read-only.
+  - Atualizada a pipeline do notebook para comandos CLI existentes (`build-embedding-index` + `retrieve-templates-latent`) e flag correta do TBM (`--min-template-coverage`).
+  - Removido export custom no notebook e substituido por `rna3d_local export-submission` para manter schema oficial.
+  - Push do kernel concluido na versao `119`; execucao remota concluida com `KernelWorkerStatus.COMPLETE`; submit notebook-only criado com sucesso.
+- Arquivos principais tocados:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/kernel-metadata.json`
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python - <<'PY' ... compile(ipynb_cell_source) ... PY` -> `ok compile`
+  - `python -m rna3d_local build-embedding-index ... --encoder mock --embedding-dim 256 --ann-engine none` -> `ok`
+  - `python -m rna3d_local retrieve-templates-latent ... --ann-engine numpy_bruteforce` -> `ok`
+  - `python -m rna3d_local predict-tbm ... --min-template-coverage 1.0` -> `ok`
+  - `python -m rna3d_local export-submission --sample ... --predictions ... --out /tmp/tbm_check_v2/submission_cov1.csv` -> `ok`
+  - `python -m rna3d_local check-submission --sample ... --submission /tmp/tbm_check_v2/submission_cov1.csv` -> `ok=true`
+  - `kaggle kernels push -p kaggle/kernels/stanford-rna3d-submit-prod-v2` -> `Kernel version 119 successfully pushed`
+  - `kaggle kernels status marcux777/stanford-rna3d-submit-prod-v2` -> `KernelWorkerStatus.COMPLETE`
+  - `kaggle competitions submit -c stanford-rna-3d-folding-2 -k marcux777/stanford-rna3d-submit-prod-v2 -f submission.csv -v 119 -m "submit notebook v119 strict export fix"` -> `ok`
+- Riscos conhecidos / follow-ups:
+  - O submit criado em `2026-02-20 14:42:05 UTC` completou processamento, mas ainda sem `publicScore` exibido no momento do registro; manter monitoramento da leaderboard para confirmar score efetivo.

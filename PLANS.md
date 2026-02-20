@@ -3039,3 +3039,22 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
   - `python -m pytest -q tests/test_submit_kaggle_notebook_cli.py tests/test_description_and_submission.py tests/test_tbm.py tests/test_phase2_hybrid.py` passa;
   - nenhum teste espera fallback dummy para ausência de cobertura;
   - export/submissão falha com erro acionável quando faltar qualquer chave obrigatória.
+
+## PLAN-180 - Recuperacao do notebook Kaggle apos remocao de datasets
+
+- Objetivo:
+  - Restaurar o fluxo notebook-only de submissao no Kaggle apos a remocao de datasets privados, mantendo contrato estrito de export/validacao.
+- Hipotese:
+  - Reapontar `dataset_sources` para assets existentes e alinhar o notebook aos comandos reais da CLI evita crash em runtime e elimina `Submission Scoring Error` por formato.
+- Mudancas:
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/kernel-metadata.json`:
+    - atualizar `dataset_sources` para datasets disponiveis.
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`:
+    - preparar binarios executaveis via copia para `/kaggle/working/bin_exec` + `chmod` (sem escrever em `/kaggle/input`);
+    - trocar `retrieve-templates` por `build-embedding-index` + `retrieve-templates-latent`;
+    - corrigir flag de TBM para `--min-template-coverage`;
+    - usar `export-submission` da CLI (schema oficial) no lugar do export custom do notebook.
+- Criterios de aceite:
+  - `kaggle kernels push` bem-sucedido e execucao `KernelWorkerStatus.COMPLETE`;
+  - `submission.csv` presente no output do notebook;
+  - submit notebook-only criado em `stanford-rna-3d-folding-2` sem erro de formato.

@@ -14,12 +14,7 @@
   ],
   "dataset_sources": [
     "ckjoshi9/ribonanza-quickstart-3d-templates",
-    "marcux777/stanford-rna3d-submission-len68-v1",
-    "marcux777/stanford-rna3d-drfold2-official-v1",
-    "marcux777/stanford-rna3d-hybrid-assets-v2",
-    "marcux777/stanford-rna3d-infer-assets-v1",
-    "marcux777/stanford-rna3d-overlay-v1",
-    "marcux777/stanford-rna3d-reboot-src-v2"
+    "marcux777/stanford-rna3d-submit-assets-v179"
   ],
   "kernel_sources": [],
   "competition_sources": [
