@@ -2626,3 +2626,70 @@ Log append-only de mudancas implementadas.
   - `python -m rna3d_local check-submission --sample input/stanford-rna-3d-folding-2/sample_submission.csv --submission runs/20260218_plan136_kernel_output_v100/submission.csv` -> `ok=true`
 - Riscos conhecidos / follow-ups:
   - A validação continua local; para cobertura máxima, manter auditoria de logs/datasets do notebook antes de submits críticos.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-177 (export streaming sem PartitionByKey e sem dummy global)
+
+- Data UTC: `2026-02-20T12:52:32Z`
+- Plano: `PLAN-177`
+- Resumo:
+  - Corrigido o caminho de export streaming para não depender de `pl.PartitionByKey` (incompatível em alguns ambientes Kaggle/Polars).
+  - `_partition_predictions_by_target` agora particiona por `target_id` usando scans filtrados e gravação por partição, com fallback de API de coleta streaming compatível.
+  - Removido o comportamento de “morte silenciosa” no `_export_submission_streaming`: falha de particionamento não ativa mais `dummy` global para todos os alvos.
+  - Adicionado teste de regressão garantindo que quebra de particionamento falha cedo com erro explícito.
+- Arquivos principais tocados:
+  - `src/rna3d_local/submission.py`
+  - `tests/test_description_and_submission.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_description_and_submission.py` -> `7 passed`
+- Riscos conhecidos / follow-ups:
+  - A estratégia de partição por scans filtrados é mais robusta em compatibilidade, porém pode ser mais lenta em datasets muito grandes; monitorar tempo de export no Kaggle.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-178 (particionamento in-memory por target_id)
+
+- Data UTC: `2026-02-20T12:53:55Z`
+- Plano: `PLAN-178`
+- Resumo:
+  - `_partition_predictions_by_target` foi substituída pela versão in-memory (`pl.read_parquet` + `group_by("target_id")`) para remover dependência de APIs de particionamento do Polars.
+  - O diretório de saída de partições agora é recriado quando já existe e está não-vazio, evitando conflitos de run anterior.
+  - Ajustado teste de fail-fast de particionamento para mockar `pl.read_parquet` no novo caminho.
+- Arquivos principais tocados:
+  - `src/rna3d_local/submission.py`
+  - `tests/test_description_and_submission.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_description_and_submission.py` -> `7 passed`
+- Riscos conhecidos / follow-ups:
+  - O caminho in-memory depende de o parquet de entrada caber na RAM; para o tamanho atual do artefato, risco esperado é baixo.
+
+## 2026-02-20 - marcusvinicius/Codex - PLAN-179 (fail-fast estrito sem dummy no submit/export)
+
+- Data UTC: `2026-02-20T13:09:15Z`
+- Plano: `PLAN-179`
+- Resumo:
+  - Removido preenchimento dummy de coordenadas no export de submissão (`submission.py`) tanto no caminho streaming quanto no não-streaming.
+  - `export_submission` agora falha explicitamente quando faltar cobertura de `target/resid/model_id` ou houver coordenadas nulas após agregação.
+  - `tbm.py` deixou de preencher lacunas de template com dummy; lacunas passam a gerar erro de contrato.
+  - `hybrid_router.py` passou a falhar quando não existe cobertura em nenhuma fonte para um alvo (ou quando nenhum candidato é gerado globalmente).
+  - `submit_kaggle_notebook.py` foi endurecido para persistir relatório com stdout/stderr completos antes de levantar erro em falha de submit.
+  - Notebook Kaggle de submissão recebeu preflight operacional: `PYTORCH_CUDA_ALLOC_CONF`, checagem de modo offline e ajuste de permissão de binários.
+  - Testes de regressão foram atualizados para o comportamento estrito (sem fallback silencioso).
+- Arquivos principais tocados:
+  - `src/rna3d_local/submission.py`
+  - `src/rna3d_local/tbm.py`
+  - `src/rna3d_local/hybrid_router.py`
+  - `src/rna3d_local/submit_kaggle_notebook.py`
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`
+  - `tests/test_description_and_submission.py`
+  - `tests/test_tbm.py`
+  - `tests/test_phase2_hybrid.py`
+  - `PLANS.md`
+  - `CHANGES.md`
+- Validacao local executada:
+  - `python -m pytest -q tests/test_description_and_submission.py tests/test_tbm.py tests/test_phase2_hybrid.py` -> `23 passed`
+  - `python -m pytest -q tests/test_submit_kaggle_notebook_cli.py tests/test_description_and_submission.py tests/test_tbm.py tests/test_phase2_hybrid.py` -> `25 passed`
+  - `python - <<'PY' ... compile(cell_source, ...) ... PY` (notebook Kaggle) -> `ok`
+- Riscos conhecidos / follow-ups:
+  - Com fail-fast estrito, qualquer cobertura incompleta agora bloqueia submissão (comportamento desejado por contrato); para robustez competitiva futura, tratar isso via melhoria real de cobertura de modelos/roteamento, não via fallback sintético.

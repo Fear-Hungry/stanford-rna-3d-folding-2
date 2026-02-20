@@ -17,10 +17,6 @@ class TbmResult:
     manifest_path: Path
 
 
-_TBM_DUMMY_RESID_MOD = 300
-_TBM_DUMMY_COORD_SPACING = 3.0
-
-
 def _scan_table(path: Path, *, stage: str, location: str, label: str) -> pl.LazyFrame:
     if not path.exists():
         raise_error(stage, location, f"{label} ausente", impact="1", examples=[str(path)])
@@ -307,26 +303,14 @@ def predict_tbm(
             .get_column("k")
             .to_list()
         )
-        if not bool(allow_missing_targets):
-            raise_error(stage, location, "TBM gerou coordenadas faltantes apos join (template_uid+resid ausente)", impact=str(missing_coords_n), examples=[str(x) for x in examples])
-        print(
-            f"[{stage}] [{location}] TBM com lacunas de template; preenchendo coordenadas dummy para manter pipeline | "
-            f"impacto={missing_coords_n} | exemplos={','.join(str(x) for x in examples[:8]) if examples else '-'}",
-            file=sys.stderr,
+        raise_error(
+            stage,
+            location,
+            "TBM gerou coordenadas faltantes apos join (template_uid+resid ausente)",
+            impact=str(missing_coords_n),
+            examples=[str(x) for x in examples],
         )
-
-    if bool(allow_missing_targets):
-        resid_dummy_x = (
-            (pl.col("residue_index_1d").cast(pl.Int64).abs() % pl.lit(int(_TBM_DUMMY_RESID_MOD))).cast(pl.Float64)
-            * pl.lit(float(_TBM_DUMMY_COORD_SPACING))
-        )
-        out_lf = out_lf_raw.with_columns(
-            pl.col("x").fill_null(resid_dummy_x).alias("x"),
-            pl.col("y").fill_null(pl.lit(0.0)).alias("y"),
-            pl.col("z").fill_null(pl.lit(0.0)).alias("z"),
-        )
-    else:
-        out_lf = out_lf_raw
+    out_lf = out_lf_raw
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_lf.sink_parquet(str(out_path), engine="streaming")
@@ -348,7 +332,7 @@ def predict_tbm(
             "n_targets_with_tbm": int(n_targets_with_tbm),
             "n_targets_without_template": int(missing_n),
             "examples_targets_without_template": [str(x) for x in missing_examples],
-            "n_missing_coords_filled": int(missing_coords_n),
+            "n_missing_coords": int(missing_coords_n),
             "n_targets_padded": int(padded_count),
             "examples_targets_padded": [str(x) for x in padded_examples],
         },

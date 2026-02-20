@@ -8,7 +8,6 @@ from pathlib import Path
 
 # Reduz fragmentacao de VRAM em execucoes com tamanhos de alvo heterogeneos.
 _ALLOC_CONF = "expandable_segments:True,garbage_collection_threshold:0.8"
-os.environ.setdefault("PYTORCH_ALLOC_CONF", _ALLOC_CONF)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", _ALLOC_CONF)
 
 from .errors import raise_error
@@ -131,15 +130,18 @@ def submit_kaggle_notebook(
     if execute_submit:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         report["returncode"] = int(completed.returncode)
-        report["stdout"] = completed.stdout[-2000:]
-        report["stderr"] = completed.stderr[-2000:]
+        report["stdout"] = completed.stdout
+        report["stderr"] = completed.stderr
         if completed.returncode != 0:
+            report["status"] = "FAILED"
+            report_path = submission_path.parent / "submit_notebook_report.json"
+            write_json(report_path, report)
             raise_error(
                 stage,
                 location,
                 "kaggle competitions submit retornou erro",
                 impact="1",
-                examples=[f"returncode={completed.returncode}", completed.stderr[-200:]],
+                examples=[f"returncode={completed.returncode}", (completed.stderr or "")[:500], (completed.stdout or "")[:500]],
             )
         report["status"] = "SUBMITTED"
 

@@ -103,7 +103,7 @@ def test_export_and_check_submission_strict(tmp_path: Path) -> None:
         check_submission(sample_path=sample, submission_path=bad3_path)
 
 
-def test_export_submission_fills_dummy_for_missing_keys_non_streaming(tmp_path: Path) -> None:
+def test_export_submission_fails_when_keys_are_missing_non_streaming(tmp_path: Path) -> None:
     sample = tmp_path / "sample.csv"
     _make_sample(sample)
     long = tmp_path / "predictions_partial.parquet"
@@ -113,17 +113,11 @@ def test_export_submission_fills_dummy_for_missing_keys_non_streaming(tmp_path: 
         ]
     ).write_parquet(long)
     submission = tmp_path / "submission_partial.csv"
-    export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
-    out = pl.read_csv(submission)
-    row1 = out.filter(pl.col("ID") == "Q1_1").row(0, named=True)
-    row2 = out.filter(pl.col("ID") == "Q1_2").row(0, named=True)
-    assert float(row1["x_2"]) == pytest.approx(3.0)
-    assert float(row2["x_1"]) == pytest.approx(6.0)
-    assert float(row2["x_2"]) == pytest.approx(6.0)
-    check_submission(sample_path=sample, submission_path=submission)
+    with pytest.raises(PipelineError, match="predictions long com chave faltante para sample"):
+        export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
 
 
-def test_export_submission_fills_dummy_for_missing_target_streaming(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_export_submission_fails_for_missing_target_streaming(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sample = tmp_path / "sample.csv"
     _make_sample(sample)
     long = tmp_path / "predictions_other_target.parquet"
@@ -134,19 +128,12 @@ def test_export_submission_fills_dummy_for_missing_target_streaming(tmp_path: Pa
         ]
     ).write_parquet(long)
     monkeypatch.setenv("RNA3D_EXPORT_STREAMING", "1")
-    submission = tmp_path / "submission_streaming_dummy.csv"
-    export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
-    out = pl.read_csv(submission)
-    row1 = out.filter(pl.col("ID") == "Q1_1").row(0, named=True)
-    row2 = out.filter(pl.col("ID") == "Q1_2").row(0, named=True)
-    assert float(row1["x_1"]) == pytest.approx(3.0)
-    assert float(row1["x_2"]) == pytest.approx(3.0)
-    assert float(row2["x_1"]) == pytest.approx(6.0)
-    assert float(row2["x_2"]) == pytest.approx(6.0)
-    check_submission(sample_path=sample, submission_path=submission)
+    submission = tmp_path / "submission_streaming.csv"
+    with pytest.raises(PipelineError, match="predictions sem particao do target_id"):
+        export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
 
 
-def test_export_submission_survives_target_level_exception_with_dummy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_export_submission_propagates_target_level_exception_without_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sample = tmp_path / "sample.csv"
     _make_sample(sample)
     long = tmp_path / "predictions_ok.parquet"
@@ -163,21 +150,37 @@ def test_export_submission_survives_target_level_exception_with_dummy(tmp_path: 
         raise RuntimeError(f"boom:{kwargs.get('target_id', 'unknown')}")
 
     monkeypatch.setattr(submission_mod, "_load_target_pred_map", _boom)
-    monkeypatch.setenv("RNA3D_FAILSAFE_PER_TARGET", "1")
+    monkeypatch.setenv("RNA3D_EXPORT_STREAMING", "1")
 
-    submission = tmp_path / "submission_target_failsafe.csv"
-    export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
-    out = pl.read_csv(submission)
-    row1 = out.filter(pl.col("ID") == "Q1_1").row(0, named=True)
-    row2 = out.filter(pl.col("ID") == "Q1_2").row(0, named=True)
-    assert float(row1["x_1"]) == pytest.approx(3.0)
-    assert float(row1["x_2"]) == pytest.approx(3.0)
-    assert float(row2["x_1"]) == pytest.approx(6.0)
-    assert float(row2["x_2"]) == pytest.approx(6.0)
-    check_submission(sample_path=sample, submission_path=submission)
+    submission = tmp_path / "submission_target_failfast.csv"
+    with pytest.raises(RuntimeError, match="boom:Q1"):
+        export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
 
 
-def test_export_submission_dummy_wraps_high_resid_under_contract_limit(tmp_path: Path) -> None:
+def test_export_submission_fails_fast_when_partitioning_breaks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sample = tmp_path / "sample.csv"
+    _make_sample(sample)
+    long = tmp_path / "predictions_ok.parquet"
+    pl.DataFrame(
+        [
+            {"target_id": "Q1", "model_id": 1, "resid": 1, "resname": "A", "x": 1.0, "y": 2.0, "z": 3.0},
+            {"target_id": "Q1", "model_id": 1, "resid": 2, "resname": "C", "x": 1.1, "y": 2.1, "z": 3.1},
+            {"target_id": "Q1", "model_id": 2, "resid": 1, "resname": "A", "x": 4.0, "y": 5.0, "z": 6.0},
+            {"target_id": "Q1", "model_id": 2, "resid": 2, "resname": "C", "x": 4.1, "y": 5.1, "z": 6.1},
+        ]
+    ).write_parquet(long)
+    submission = tmp_path / "submission_should_fail.csv"
+
+    def _boom_scan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AttributeError("PartitionByKey missing")
+
+    monkeypatch.setattr(submission_mod.pl, "read_parquet", _boom_scan)
+    monkeypatch.setenv("RNA3D_EXPORT_STREAMING", "1")
+    with pytest.raises(PipelineError, match="falha ao particionar predictions por target_id"):
+        export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
+
+
+def test_export_submission_fails_for_high_resid_when_target_missing(tmp_path: Path) -> None:
     sample = tmp_path / "sample_high_resid.csv"
     pl.DataFrame(
         [
@@ -200,11 +203,6 @@ def test_export_submission_dummy_wraps_high_resid_under_contract_limit(tmp_path:
             {"target_id": "QX", "model_id": 1, "resid": 1, "resname": "A", "x": 1.0, "y": 2.0, "z": 3.0},
         ]
     ).write_parquet(long)
-    submission = tmp_path / "submission_high_resid_dummy.csv"
-    export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)
-    out = pl.read_csv(submission)
-    row = out.row(0, named=True)
-    assert float(row["x_1"]) == pytest.approx(300.0)
-    assert float(row["x_2"]) == pytest.approx(300.0)
-    assert abs(float(row["x_1"])) <= 1000.0
-    check_submission(sample_path=sample, submission_path=submission)
+    submission = tmp_path / "submission_high_resid_failfast.csv"
+    with pytest.raises(PipelineError, match="predictions long com chave faltante para sample"):
+        export_submission(sample_path=sample, predictions_long_path=long, out_path=submission)

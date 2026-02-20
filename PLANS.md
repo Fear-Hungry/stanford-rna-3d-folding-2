@@ -2978,3 +2978,64 @@ Backlog e planos ativos deste repositorio. Use IDs `PLAN-###`.
 - Criterios de aceite:
   - `python -m pytest -q tests/test_description_and_submission.py` passa.
   - `python -m rna3d_local check-submission --sample ... --submission ...` bloqueia submissão com campo fixo alterado.
+
+## PLAN-177 - Export streaming sem `PartitionByKey` e sem dummy global em falha de particionamento
+
+- Objetivo:
+  - Eliminar o cenário em que erro de particionamento ativa fallback global de coordenadas dummy (linhas retas) no `submission.csv`.
+- Hipotese:
+  - Substituir o particionamento dependente de `pl.PartitionByKey` por estratégia compatível (scan por target) e falhar cedo em erro de particionamento evita “morte silenciosa” e preserva saída real dos modelos.
+- Mudancas:
+  - `src/rna3d_local/submission.py`:
+    - `_partition_predictions_by_target` passa a particionar por `target_id` via scans filtrados e gravação por partição, compatível com versões antigas do Polars;
+    - removido fallback `force_dummy_all_targets` em `_export_submission_streaming`;
+    - erro de particionamento agora interrompe export (fail-fast) em vez de preencher tudo com dummy.
+  - `tests/test_description_and_submission.py`:
+    - novo teste de regressão para garantir falha explícita quando particionamento quebra.
+- Criterios de aceite:
+  - `python -m pytest -q tests/test_description_and_submission.py` passa.
+  - quando o particionamento falha, o export retorna erro explícito e não gera CSV dummy global.
+
+## PLAN-178 - Particionamento in-memory por `target_id` no export de submissão
+
+- Objetivo:
+  - Substituir o particionamento streaming por uma versão in-memory robusta à versão do Polars e simples para o tamanho real do parquet de inferência.
+- Hipotese:
+  - Ler o parquet uma única vez em RAM e escrever partições por `target_id` elimina dependências de APIs variáveis do Polars e evita ativação indevida de fallback dummy.
+- Mudancas:
+  - `src/rna3d_local/submission.py`:
+    - substituir `_partition_predictions_by_target` por implementação in-memory com `pl.read_parquet(..., columns=[...])` e `group_by("target_id")`;
+    - ao detectar diretório de partição pré-existente não-vazio, recriar diretório antes de escrever.
+  - `tests/test_description_and_submission.py`:
+    - ajustar teste de fail-fast para mockar `pl.read_parquet` no caminho de erro de particionamento.
+- Criterios de aceite:
+  - `python -m pytest -q tests/test_description_and_submission.py` passa.
+  - o particionamento escreve arquivos por target em `target_id=<id>/0.parquet`.
+
+## PLAN-179 - Endurecimento fail-fast no pipeline de submissao (sem dummy silencioso)
+
+- Objetivo:
+  - Eliminar coordenadas dummy/fallback silencioso no fluxo de export/submissão e garantir falha explícita quando faltar cobertura real de predição.
+- Hipotese:
+  - Remover preenchimentos sintéticos em `submission.py` e `tbm.py`, e tornar `hybrid_router.py` estrito para ausência de cobertura, evita score artificialmente estável e impede submissões “válidas porém falsas”.
+- Mudancas:
+  - `src/rna3d_local/submission.py`:
+    - remover geração de coordenadas dummy no caminho streaming e não-streaming;
+    - remover `RNA3D_FAILSAFE_PER_TARGET` como modo padrão de sobrevivência;
+    - falhar cedo para target/resid/model ausente e para coordenadas nulas após agregação.
+  - `src/rna3d_local/tbm.py`:
+    - remover preenchimento dummy em lacunas de template;
+    - elevar lacunas de coordenadas para erro explícito.
+  - `src/rna3d_local/hybrid_router.py`:
+    - falhar quando um alvo não tiver cobertura em nenhuma fonte;
+    - falhar quando nenhum candidato global for gerado.
+  - `src/rna3d_local/submit_kaggle_notebook.py`:
+    - registrar stdout/stderr completos e persistir relatório de falha antes de interromper submit.
+  - `kaggle/kernels/stanford-rna3d-submit-prod-v2/stanford-rna3d-submit-prod-v2.ipynb`:
+    - adicionar preflight offline, `PYTORCH_CUDA_ALLOC_CONF` e ajuste de permissão de binários locais.
+  - `tests/`:
+    - atualizar regressões para contrato estrito sem dummy (`test_description_and_submission.py`, `test_tbm.py`, `test_phase2_hybrid.py`).
+- Criterios de aceite:
+  - `python -m pytest -q tests/test_submit_kaggle_notebook_cli.py tests/test_description_and_submission.py tests/test_tbm.py tests/test_phase2_hybrid.py` passa;
+  - nenhum teste espera fallback dummy para ausência de cobertura;
+  - export/submissão falha com erro acionável quando faltar qualquer chave obrigatória.

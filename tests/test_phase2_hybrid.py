@@ -611,7 +611,7 @@ def test_phase2_router_ultralong_falls_back_to_tbm_without_se3(tmp_path: Path) -
     assert routing.item(0, "fallback_used") is False
 
 
-def test_phase2_router_long_survives_when_mamba_and_tbm_missing(tmp_path: Path) -> None:
+def test_phase2_router_long_fails_when_mamba_and_tbm_missing(tmp_path: Path) -> None:
     targets = tmp_path / "targets.csv"
     _write_csv(
         targets,
@@ -623,25 +623,20 @@ def test_phase2_router_long_survives_when_mamba_and_tbm_missing(tmp_path: Path) 
     pl.DataFrame([{"target_id": "TLONG", "final_score": 0.99}]).write_parquet(retrieval)
     tbm = tmp_path / "tbm.parquet"
     pl.DataFrame([], schema={"target_id": pl.Utf8, "model_id": pl.Int32, "resid": pl.Int32, "resname": pl.Utf8, "x": pl.Float64, "y": pl.Float64, "z": pl.Float64}).write_parquet(tbm)
-    out = build_hybrid_candidates(
-        repo_root=tmp_path,
-        targets_path=targets,
-        retrieval_path=retrieval,
-        tbm_path=tbm,
-        out_path=tmp_path / "hybrid_candidates.parquet",
-        routing_path=tmp_path / "routing.parquet",
-        template_score_threshold=0.65,
-        rnapro_path=None,
-        chai1_path=None,
-        boltz1_path=None,
-        se3_mamba_path=None,
-    )
-    candidates = pl.read_parquet(out.candidates_path)
-    routing = pl.read_parquet(out.routing_path)
-    assert candidates.height == 0
-    assert routing.item(0, "fallback_used") is True
-    assert routing.item(0, "fallback_source") == "no_coverage"
-    assert routing.item(0, "primary_source") == "none"
+    with pytest.raises(PipelineError, match="alvo sem cobertura em todas as fontes do roteador"):
+        build_hybrid_candidates(
+            repo_root=tmp_path,
+            targets_path=targets,
+            retrieval_path=retrieval,
+            tbm_path=tbm,
+            out_path=tmp_path / "hybrid_candidates.parquet",
+            routing_path=tmp_path / "routing.parquet",
+            template_score_threshold=0.65,
+            rnapro_path=None,
+            chai1_path=None,
+            boltz1_path=None,
+            se3_mamba_path=None,
+        )
 
 
 def test_phase2_router_fails_when_medium_threshold_not_greater_than_short(tmp_path: Path) -> None:

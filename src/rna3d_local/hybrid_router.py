@@ -340,32 +340,13 @@ def build_hybrid_candidates(
                     recovered_source = source_name
                     break
             if recovered_df is None or recovered_source is None:
-                fallback_used = True
-                fallback_source = "no_coverage"
-                primary_source = "none"
-                rule = f"{rule}_coverage_recovery->none"
-                routing_rows.append(
-                    {
-                        "target_id": tid,
-                        "target_length": int(target_length),
-                        "length_bucket": length_bucket,
-                        "short_max_len": int(effective_short_max),
-                        "medium_max_len": int(effective_medium_max),
-                        "template_score": score,
-                        "template_strong": bool(template_strong),
-                        "has_ligand": bool(has_ligand),
-                        "route_rule": rule,
-                        "primary_source": primary_source,
-                        "fallback_used": bool(fallback_used),
-                        "fallback_source": fallback_source,
-                    }
+                raise_error(
+                    stage,
+                    location,
+                    "alvo sem cobertura em todas as fontes do roteador",
+                    impact="1",
+                    examples=[f"{tid}:len={target_length}", f"bucket={length_bucket}"],
                 )
-                print(
-                    f"[{stage}] [{location}] alvo sem cobertura em todas as fontes; alvo sera preenchido no export da submissao | "
-                    f"impacto=1 | exemplos={tid}:len={target_length}",
-                    file=sys.stderr,
-                )
-                continue
             fallback_used = True
             fallback_source = str(recovered_source)
             primary_df = recovered_df
@@ -397,16 +378,14 @@ def build_hybrid_candidates(
         )
 
     if not candidate_parts:
-        print(
-            f"[{stage}] [{location}] nenhum candidato gerado pelo roteador; export seguira com preenchimento dummy por submissao | "
-            "impacto=1 | exemplos=global",
-            file=sys.stderr,
+        raise_error(
+            stage,
+            location,
+            "nenhum candidato gerado pelo roteador",
+            impact="1",
+            examples=["global"],
         )
-        empty_schema = dict(tbm.schema)
-        empty_schema["route_rule"] = pl.Utf8
-        candidates = pl.DataFrame(schema=empty_schema)
-    else:
-        candidates = pl.concat(candidate_parts, how="vertical_relaxed").sort(["target_id", "source", "model_id", "resid"])
+    candidates = pl.concat(candidate_parts, how="vertical_relaxed").sort(["target_id", "source", "model_id", "resid"])
     write_table(candidates, out_path)
     routing = pl.DataFrame(routing_rows).sort("target_id")
     write_table(routing, routing_path)

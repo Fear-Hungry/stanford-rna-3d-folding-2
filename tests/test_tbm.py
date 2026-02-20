@@ -185,7 +185,7 @@ def test_predict_tbm_allow_missing_targets_writes_empty_valid_parquet(tmp_path: 
     assert set(["target_id", "model_id", "resid", "resname", "x", "y", "z"]).issubset(set(pred.columns))
 
 
-def test_predict_tbm_accepts_partial_template_with_min_coverage_in_permissive_mode(tmp_path: Path) -> None:
+def test_predict_tbm_fails_for_partial_template_without_dummy_fill(tmp_path: Path) -> None:
     retrieval = tmp_path / "retrieval.parquet"
     templates = tmp_path / "templates.parquet"
     targets = tmp_path / "targets.parquet"
@@ -199,22 +199,14 @@ def test_predict_tbm_accepts_partial_template_with_min_coverage_in_permissive_mo
         ]
     ).write_parquet(templates)
 
-    result = predict_tbm(
-        repo_root=tmp_path,
-        retrieval_path=retrieval,
-        templates_path=templates,
-        targets_path=targets,
-        out_path=out,
-        n_models=1,
-        allow_missing_targets=True,
-        min_template_coverage=0.60,
-    )
-    pred = pl.read_parquet(result.predictions_path).sort(["target_id", "model_id", "resid"])
-    assert pred.height == 3
-    assert int(pred.get_column("x").null_count()) == 0
-    assert int(pred.get_column("y").null_count()) == 0
-    assert int(pred.get_column("z").null_count()) == 0
-    row3 = pred.filter(pl.col("resid") == 3).row(0, named=True)
-    assert float(row3["x"]) == pytest.approx(6.0)
-    assert float(row3["y"]) == pytest.approx(0.0)
-    assert float(row3["z"]) == pytest.approx(0.0)
+    with pytest.raises(PipelineError, match="TBM gerou coordenadas faltantes apos join"):
+        predict_tbm(
+            repo_root=tmp_path,
+            retrieval_path=retrieval,
+            templates_path=templates,
+            targets_path=targets,
+            out_path=out,
+            n_models=1,
+            allow_missing_targets=True,
+            min_template_coverage=0.60,
+        )
